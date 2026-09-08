@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "BlockTube — Channel & Video Blocker",
+  "version": "1.0.0",
+  "description": "Permanently remove blocked YouTube channels and videos from recommendations, search, and feeds. Blocklist syncs across your signed-in browsers.",
+  "permissions": [
+    "storage",
+    "contextMenus",
+    "declarativeNetRequest",
+    "alarms"
+  ],
+  "host_permissions": [
+    "*://*.youtube.com/*",
+    "https://api.github.com/*"
+  ],
+  "background": {
+    "service_worker": "background/background.js",
+    "scripts": [
+      "shared/constants.js",
+      "background/gist-sync.js",
+      "background/background.js"
+    ]
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://www.youtube.com/*", "*://m.youtube.com/*"],
+      "js": ["shared/constants.js", "content/content.js"],
+      "css": ["content/content.css"],
+      "run_at": "document_start"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "blocktube@local.extension",
+      "strict_min_version": "115.0"
+    }
+  }
+}

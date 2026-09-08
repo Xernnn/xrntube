@@ -1,0 +1,157 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>BlockTube — Manage blocklist</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div class="head-row">
+          <h1>🚫 BlockTube</h1>
+          <nav class="page-tabs">
+            <button class="page-tab active" data-page="blocklist">Blocklist</button>
+            <button class="page-tab" data-page="keywords">Keywords</button>
+            <button class="page-tab" data-page="settings">Settings</button>
+            <button class="page-tab" data-page="sync">Sync</button>
+          </nav>
+        </div>
+      </header>
+
+      <div id="quota-warning" class="warning" hidden></div>
+
+      <!-- ============ BLOCKLIST ============ -->
+      <div id="page-blocklist" class="page">
+        <div class="toolbar">
+          <input id="search" type="search" placeholder="Search channels or videos…" />
+          <div class="spacer"></div>
+          <button id="export-btn">Export JSON</button>
+          <label class="import-label">
+            Import JSON
+            <input id="import-input" type="file" accept="application/json" hidden />
+          </label>
+        </div>
+
+        <div class="filter-tabs">
+          <button class="filter-tab active" data-tab="all">All</button>
+          <button class="filter-tab" data-tab="full">Full-blocked channels</button>
+          <button class="filter-tab" data-tab="videoOnly">Video-only channels</button>
+          <button class="filter-tab" data-tab="videos">Blocked videos</button>
+          <button class="filter-tab" data-tab="hidden">Hidden (0)</button>
+        </div>
+
+        <div class="channel-controls">
+          <label class="ctl">
+            Sort
+            <select id="sort-by">
+              <option value="recent">Recently blocked</option>
+              <option value="subsDesc">Subscribers: high → low</option>
+              <option value="subsAsc">Subscribers: low → high</option>
+              <option value="name">Name A–Z</option>
+            </select>
+          </label>
+          <label class="ctl">
+            <input type="checkbox" id="hide-small" />
+            Hide channels under
+            <input type="number" id="small-threshold" value="10000" min="0" step="1000" />
+            subs
+          </label>
+          <div class="spacer"></div>
+          <button id="load-subs-btn" hidden>Load sub counts</button>
+          <button id="fetch-all-subs-btn" hidden>Fetch all sub counts</button>
+        </div>
+        <p id="bulk-progress" class="more-note" hidden></p>
+
+        <section id="channel-section">
+          <h2>Blocked channels <span id="channel-total" class="count"></span></h2>
+          <p id="small-note" class="more-note" hidden></p>
+          <ul id="channel-list" class="list"></ul>
+          <p id="channel-empty" class="empty" hidden>Nothing here for this tab.</p>
+          <p id="channel-more" class="more-note" hidden></p>
+        </section>
+
+        <section id="video-section">
+          <div class="section-head">
+            <h2>Blocked videos <span id="video-total" class="count"></span></h2>
+            <button id="clear-videos-btn" class="danger-btn" hidden>Clear all blocked videos</button>
+          </div>
+          <ul id="video-list" class="list"></ul>
+          <p id="video-empty" class="empty" hidden>Nothing here for this tab.</p>
+          <p id="video-more" class="more-note" hidden></p>
+        </section>
+
+        <details id="recent-unblocks" hidden>
+          <summary>Recently unblocked (<span id="recent-count">0</span>) — restore something you removed by mistake</summary>
+          <ul id="recent-list" class="list"></ul>
+          <button id="recent-clear" class="settings-reset">Clear this list</button>
+        </details>
+      </div>
+
+      <!-- ============ KEYWORDS ============ -->
+      <div id="page-keywords" class="page" hidden>
+        <section class="settings-card">
+          <h2>Block videos by title keyword</h2>
+          <p class="settings-blurb">
+            A video whose title contains one of these is removed from feeds and
+            search (and bounces you out if you open it). Tick <em>regex</em> to
+            treat a row as a regular expression instead of plain text. Matching
+            is case-insensitive and happens just after a tile appears (no
+            pre-paint hide for this one).
+          </p>
+          <div class="kw-add">
+            <input id="kw-input" type="text" placeholder="e.g. tier list   ·   reaction   ·   \bLIVE\b" />
+            <label class="kw-regex"><input type="checkbox" id="kw-regex" /> regex</label>
+            <button id="kw-add-btn">Add</button>
+          </div>
+          <ul id="kw-list" class="list"></ul>
+          <p id="kw-empty" class="empty" hidden>No title keywords yet.</p>
+        </section>
+      </div>
+
+      <!-- ============ SETTINGS ============ -->
+      <div id="page-settings" class="page" hidden>
+        <section class="settings-card" id="settings-card">
+          <h2>What this extension changes</h2>
+          <p class="settings-blurb">
+            Blocking channels &amp; videos always works. These toggles control the
+            extra site cleanup — turn off anything you'd rather keep. Some changes
+            need a page refresh to fully take effect.
+          </p>
+          <div id="settings-list"></div>
+          <button id="settings-reset" class="settings-reset">Reset to defaults</button>
+        </section>
+      </div>
+
+      <!-- ============ SYNC ============ -->
+      <div id="page-sync" class="page" hidden>
+        <section class="sync-card" id="sync-card">
+          <h2>Sync across any browser</h2>
+          <p class="sync-blurb">
+            <code>chrome.storage.sync</code> only bridges browsers signed into the
+            same account (Chrome&#8596;Chrome, Firefox&#8596;Firefox). To carry your
+            blocklist between vendors &mdash; say Chrome on the desktop and Firefox
+            on Android &mdash; connect a private <strong>GitHub Gist</strong>. It's
+            free and runs no server.
+            <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener">
+              Create a fine-grained token</a>
+            with only <em>Gists &rarr; Read and write</em> access, then paste it
+            below on each device.
+          </p>
+          <div class="sync-row">
+            <input id="sync-token" type="password" placeholder="github_pat_&hellip;" autocomplete="off" spellcheck="false" />
+            <button id="sync-save">Connect</button>
+          </div>
+          <div class="sync-status" id="sync-status" hidden></div>
+          <div class="sync-actions" id="sync-actions" hidden>
+            <button id="sync-now">Sync now</button>
+            <button id="sync-disconnect" class="sync-danger">Disconnect this device</button>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script src="../shared/constants.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

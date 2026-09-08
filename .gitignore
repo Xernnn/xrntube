@@ -1,0 +1,6 @@
+node_modules/
+/blocktube_backup*.json
+/blocktube-import.json
+/test/.profile*/
+*.log
+.DS_Store

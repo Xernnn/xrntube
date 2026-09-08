@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <span class="logo">🚫</span>
+      <h1>BlockTube</h1>
+    </header>
+
+    <section id="current-page" class="card" hidden>
+      <div class="row" id="video-row" hidden>
+        <span class="label">This video</span>
+        <span class="title" id="video-title"></span>
+        <button class="block-btn" id="block-video-btn">Block video</button>
+      </div>
+      <div id="channel-rows"></div>
+    </section>
+
+    <section id="no-target" class="card muted" hidden>
+      Open a YouTube video or channel page to block it directly from here.
+    </section>
+
+    <section class="stats">
+      <div><strong id="channel-count">0</strong> channels blocked</div>
+      <div><strong id="video-count">0</strong> videos blocked</div>
+    </section>
+
+    <button id="manage-btn" class="secondary-btn">Manage blocklist</button>
+
+    <script src="../shared/constants.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "blocktube",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "for f in background/*.js shared/*.js content/*.js popup/*.js options/*.js; do node --check \"$f\" || exit 1; done && python3 -c \"import json; json.load(open('manifest.json'))\" && echo OK",
+    "test": "node test/run.mjs",
+    "test:one": "node"
+  },
+  "devDependencies": {
+    "playwright": "^1.47.0"
+  }
+}
