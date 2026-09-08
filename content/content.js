@@ -377,6 +377,32 @@
   // above already claims one of its ancestors (see queryTiles() below).
   const LOCKUP_SELECTOR = "yt-lockup-view-model";
 
+  // Playlist / mix cards (their own tags, plus a lockup that carries a
+  // real playlist link — PL… user playlists, UU… uploads, OL… official,
+  // FL… favourites; RD… "mixes" are auto-generated and belong to nobody).
+  const PLAYLIST_TILE_TAGS = [
+    "ytd-playlist-renderer",
+    "ytd-grid-playlist-renderer",
+    "ytd-compact-playlist-renderer",
+    "ytd-radio-renderer",
+    "ytd-compact-radio-renderer",
+    "ytm-playlist-renderer",
+    "ytm-compact-playlist-renderer"
+  ].join(",");
+  const PLAYLIST_LINK_SEL =
+    'a[href*="/playlist?list="], a[href*="&list=PL"], a[href*="?list=PL"], a[href*="&list=UU"], a[href*="?list=UU"], a[href*="&list=OL"], a[href*="&list=FL"]';
+
+  // Community / "Posts" tab entries (and reshares). Handled on their own
+  // path, not via RENDERER_SELECTOR — a post isn't a video tile.
+  const POST_SELECTOR = [
+    "ytd-backstage-post-thread-renderer",
+    "ytd-post-renderer",
+    "ytd-backstage-post-renderer",
+    "ytd-shared-post-renderer",
+    "ytm-post-renderer",
+    "ytm-backstage-post-renderer"
+  ].join(",");
+
   // Every tile-like element in `root`, whether it's one of the legacy
   // ytd-*/ytm-* tags or a standalone `yt-lockup-view-model` — but not a
   // `yt-lockup-view-model` nested inside a legacy tag, since that tag
@@ -428,7 +454,10 @@
     // different whitelist — "hide any tile that (a) links to this channel,
     // (b) looks like an actual video/short (not a bare channel card, which
     // must stay visible per CHANNEL_MODE), and (c) isn't one of the
-    // whitelisted video IDs".
+    // whitelisted video IDs". Soft channels also get playlist/post clauses
+    // here (FULL channels' playlists/posts are already covered by the shared
+    // `inner` rule below, which now includes POST_SELECTOR — no per-channel
+    // cost). Soft channels are few, so a couple of extra clauses each is fine.
     const exceptRules = [];
 
     for (const [key, entry] of newestFirst(channels, INSTANT_HIDE_MAX_CHANNELS)) {
@@ -457,6 +486,14 @@
       links.push(`a[href="${cssStringEscape(key.startsWith("@") ? "/" + key : "/channel/" + key)}"${key.startsWith("@") ? " i" : ""}]`);
       const channelLink = links.join(",");
       if (entry && entry.mode === CHANNEL_MODE.EXCEPT_WHITELIST) {
+        // Playlists + community posts by a soft-blocked channel go regardless
+        // of the age rule (a playlist has no single date). FULL channels get
+        // this for free from the shared `inner` rule below.
+        exceptRules.push(
+          `:is(${PLAYLIST_TILE_TAGS}):has(${channelLink})`,
+          `:is(${RENDERER_SELECTOR},${LOCKUP_SELECTOR}):has(${channelLink}):has(${PLAYLIST_LINK_SEL})`,
+          `:is(${POST_SELECTOR}):has(${channelLink})`
+        );
         // An age-ruled channel keeps its recent uploads visible, and CSS
         // can't tell a tile's publish date — so don't emit a blanket
         // "hide all this channel's videos" rule for it. The JS scrub
@@ -482,7 +519,11 @@
 
     const rules = [];
     if (inner.length) {
-      rules.push(`:is(${RENDERER_SELECTOR},${LOCKUP_SELECTOR}):has(${inner.join(",")}) { display: none !important; }`);
+      // POST_SELECTOR in the :is() so a FULL-blocked channel's community
+      // posts are hidden by the same rule (a post carries the author link).
+      rules.push(
+        `:is(${RENDERER_SELECTOR},${LOCKUP_SELECTOR},${POST_SELECTOR}):has(${inner.join(",")}) { display: none !important; }`
+      );
     }
     exceptRules.forEach((sel) => rules.push(`${sel} { display: none !important; }`));
 
@@ -778,6 +819,7 @@
       scrubVideoActions(document.documentElement);
       scrubMembersOnly(document.documentElement);
       scrubOwnChannelPage(document.documentElement);
+      scrubPosts(document.documentElement);
       recheckHydratingTiles(document.documentElement);
     }, 400);
   }
@@ -928,14 +970,16 @@
     }
 
     const channels = collectChannels(el);
-    if (!videoId && channels.size === 0) return null;
+    const isPlaylist =
+      (el.matches && el.matches(PLAYLIST_TILE_TAGS)) || !!el.querySelector(PLAYLIST_LINK_SEL);
+    if (!videoId && channels.size === 0 && !isPlaylist) return null;
     // Only bother reading the tile's publish text / duration when a blocked
     // channel has an age rule / a duration filter is active — parsing every
     // tile otherwise is wasted work.
     const ageDays = anyAgeRule && videoId ? parseAgeDays(el.textContent || "") : null;
     const durationSec =
       videoId && (durMinSec > 0 || durMaxSec > 0) ? readDurationSec(el) : null;
-    return { videoId, videoTitle, channels, ageDays, durationSec };
+    return { videoId, videoTitle, channels, ageDays, durationSec, isPlaylist };
   }
 
   // Why a tile is blocked, as a short string — null if it isn't. isBlocked()
@@ -960,8 +1004,13 @@
     }
     for (const key of info.channels.keys()) {
       const e = blockedEntryFor(key);
+      if (!e) continue;
+      const via = blockedChannels.has(key) ? "key" : key.charAt(0) === "@" ? "@handle index" : "ucid index";
+      // A playlist made by a blocked channel goes regardless of block mode /
+      // age rule — a playlist has no single publish date, and "block their
+      // videos" naturally covers "block their playlists of those videos".
+      if (info.isPlaylist) return `playlist by blocked channel ${key} (via ${via})`;
       if (channelBlocks(e, info.videoId, info.ageDays)) {
-        const via = blockedChannels.has(key) ? "key" : key.charAt(0) === "@" ? "@handle index" : "ucid index";
         return `channel ${key} (${e.mode || "full"}${e.blockOlderThanDays ? `, >${e.blockOlderThanDays}d` : ""}, via ${via})`;
       }
     }
@@ -1104,6 +1153,33 @@
     }
   }
 
+  // Community / "Posts" tab entries. A post isn't a video tile, so it gets
+  // its own tiny path: if any channel it links to (its author, or a channel
+  // it reshares/mentions) is blocked — and none is allow-listed — it's gone.
+  function processPost(el) {
+    if (!blocklistLoaded || el.dataset.btPost === "1") return;
+    let hit = null;
+    for (const a of el.querySelectorAll('a[href^="/@"], a[href^="/channel/UC"]')) {
+      const key = normalizeChannelKey(a.getAttribute("href") || "");
+      if (!key) continue;
+      if (isAllowlisted(key)) return; // allow-list wins, leave it and don't re-check
+      if (!hit && blockedEntryFor(key)) hit = key;
+    }
+    if (!hit) {
+      el.dataset.btPost = "1";
+      return;
+    }
+    const shelf = findShelfAncestor(el);
+    dbg("removed post —", hit);
+    el.remove();
+    if (shelf) scheduleShelfPrune(shelf);
+  }
+  function scrubPosts(root) {
+    if (!blocklistLoaded || !root.querySelectorAll) return;
+    if (root.matches && root.matches(POST_SELECTOR)) processPost(root);
+    root.querySelectorAll(POST_SELECTOR).forEach(processPost);
+  }
+
   // Throttled backup for members-only content: catches tiles whose badge
   // hydrated after processRenderer already marked them checked, plus the
   // "Membership" / "Members-only content" shelf and the channel Membership
@@ -1145,25 +1221,33 @@
     "ytd-rich-item-renderer",
     "ytd-grid-video-renderer",
     "ytd-video-renderer",
+    "ytd-grid-playlist-renderer",
+    "ytd-playlist-renderer",
     "ytm-rich-item-renderer",
     "yt-lockup-view-model"
   ].join(",");
 
   function updateChannelPageHideCSS(entry) {
-    // CSS can't do date math, so an age-ruled channel is JS-only.
-    if (!entry || entry.blockOlderThanDays > 0) {
+    if (!entry) {
       if (channelPageHideStyle.textContent) channelPageHideStyle.textContent = "";
       return;
     }
-    const wl = Object.keys(entry.whitelist || {});
-    const notWl = wl.length
-      ? `:not(:has(${wl.map((id) => `a[href*="v=${cssStringEscape(id)}"]`).join(",")}))`
-      : "";
-    // Scoped to the channel-page browse container so it can never touch the
-    // home feed (also a ytd-browse). If YouTube drops that attribute the CSS
-    // just no-ops and the JS pass below still clears the grid (with a flash).
-    channelPageHideStyle.textContent =
-      `ytd-browse[page-subtype="channels"] :is(${CHANNEL_PAGE_TILE_SEL}):has(a[href*="watch?v="], a[href*="/shorts/"])${notWl} { display: none !important; }`;
+    const scope = 'ytd-browse[page-subtype="channels"] ';
+    const parts = [];
+    // Videos / Shorts grid — CSS can't do date math, so an age-ruled channel
+    // leaves this to the JS pass. Scoped to the channel-page browse container
+    // so it can never touch the home feed (also a ytd-browse).
+    if (!(entry.blockOlderThanDays > 0)) {
+      const wl = Object.keys(entry.whitelist || {});
+      const notWl = wl.length
+        ? `:not(:has(${wl.map((id) => `a[href*="v=${cssStringEscape(id)}"]`).join(",")}))`
+        : "";
+      parts.push(`${scope}:is(${CHANNEL_PAGE_TILE_SEL}):has(a[href*="watch?v="], a[href*="/shorts/"])${notWl}`);
+    }
+    // The Playlists tab — a playlist has no publish date, so it's hidden for
+    // any blocked mode (including age-ruled).
+    parts.push(`${scope}:is(${CHANNEL_PAGE_TILE_SEL}):has(${PLAYLIST_LINK_SEL})`);
+    channelPageHideStyle.textContent = parts.join(",\n") + " { display: none !important; }";
   }
 
   function scrubOwnChannelPage(root) {
@@ -1175,8 +1259,13 @@
     queryTiles(root).forEach((el) => {
       if (!el.isConnected) return;
       const info = extractInfo(el);
-      if (!info || !info.videoId) return;
-      if (channelBlocks(entry, info.videoId, info.ageDays)) {
+      if (!info) return;
+      // Playlists on the Playlists tab: gone for any blocked mode.
+      // Videos on the Videos/Streams grid: whitelist + age rule still apply.
+      const remove = info.isPlaylist
+        ? true
+        : info.videoId && channelBlocks(entry, info.videoId, info.ageDays);
+      if (remove) {
         const shelf = findShelfAncestor(el);
         el.remove();
         if (shelf) scheduleShelfPrune(shelf);
@@ -1192,6 +1281,7 @@
       }
     }
     queryTiles(root).forEach(processRenderer);
+    scrubPosts(root);
   }
 
   // Playlist tiles in particular can mount their channel byline a moment
@@ -1283,6 +1373,7 @@
     scrubVideoActions(document.documentElement);
     scrubMembersOnly(document.documentElement);
     scrubOwnChannelPage(document.documentElement);
+    scrubPosts(document.documentElement);
   }
 
   // ---------- feature toggles (chrome.storage.sync: bt_settings) ----------
@@ -1371,6 +1462,7 @@
       allowSet = new Set(Object.keys((v && v.list) || {}).map((k) => (k[0] === "@" ? k.toLowerCase() : k)));
       updateInstantHideBlocklistCSS(lastAppliedChannels, lastAppliedVideos);
       queryTiles(document).forEach((el) => delete el.dataset.btChecked);
+      document.querySelectorAll(POST_SELECTOR).forEach((el) => delete el.dataset.btPost);
       sweep(document.documentElement);
     }
   });
@@ -1439,6 +1531,10 @@
       document.querySelector("#above-the-fold") ||
       document.querySelector("ytd-playlist-header-renderer") ||
       document.querySelector("ytd-playlist-sidebar-primary-info-renderer") ||
+      // A standalone community-post permalink (/post/…): the post itself is
+      // the scope, so its author gets picked up by the channel check below.
+      (location.pathname.startsWith("/post/") &&
+        document.querySelector("ytd-backstage-post-renderer, ytd-post-renderer")) ||
       document.querySelector("#owner") ||
       null
     );
@@ -1531,6 +1627,7 @@
       queryTiles(document).forEach((el) => {
         delete el.dataset.btChecked;
       });
+      document.querySelectorAll(POST_SELECTOR).forEach((el) => delete el.dataset.btPost);
       sweep(document.documentElement);
       scrubOwnChannelPage(document.documentElement);
     } else if (msg.type === MSG.GET_PAGE_TARGET) {
@@ -1597,6 +1694,7 @@
     scrubVideoActions(document.documentElement);
     scrubMembersOnly(document.documentElement);
     scrubOwnChannelPage(document.documentElement);
+    scrubPosts(document.documentElement);
     checkCurrentPageAndRedirect();
   });
 

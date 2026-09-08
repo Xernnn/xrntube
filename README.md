@@ -228,18 +228,27 @@ Each row has:
 Clicking the YouTube logo now goes straight to your Subscriptions feed
 instead of bouncing through the (redirected) home page.
 
-## Collab channels and playlists
+## Collab channels, playlists, and community posts
 
 - **Channel collaborations** — when a video credits more than one channel
   (YouTube's multi-channel/collab attribution), every distinct channel link
   found on the tile or watch page is checked, and blocking works from any of
   them — not just the primary uploader. The hover-block menu and the popup
   both list one "Block channel: X" entry per channel found.
-- **Playlist tiles** — playlist and mix cards (`ytd-playlist-renderer`,
-  `ytd-grid-playlist-renderer`, `ytd-compact-playlist-renderer`,
-  `ytd-radio-renderer`, and their `ytm-*` equivalents) are swept the same way
-  video tiles are, so a playlist made by a blocked channel disappears from
-  feeds/search too.
+- **Playlist tiles** — a playlist made by a blocked channel disappears from
+  feeds and search, and from the channel's own **Playlists** tab, for
+  **both** block modes (a playlist has no single publish date, so an age
+  rule doesn't spare it). Matched by the playlist card tags
+  (`ytd-playlist-renderer` etc.) or a `yt-lockup-view-model` carrying a real
+  playlist link (`list=PL…` / `UU…` / `OL…` / `FL…`; auto-generated `RD…`
+  "mixes" belong to nobody and are left alone).
+- **Community posts** — a blocked channel's posts (and reshares/quotes of
+  them) are removed from the home feed, from the channel's **Community /
+  Posts** tab, and from a `/post/…` permalink (a FULL block bounces the
+  permalink; a video-only block strips the post in place). Same for a post
+  that merely links a blocked channel.
+- **Stories** — YouTube discontinued Stories in 2023; there is nothing left
+  to block.
 - **Inside an open playlist** — individual blocked videos are removed from
   the playlist listing and from the "up next" playlist panel/queue.
 - **Direct link to a blocked video or a blocked channel's playlist** —
@@ -331,8 +340,9 @@ Chromium with this extension loaded, drives live youtube.com, and asserts on
 what the content script did. Run it with `npm test` (needs `npm install`
 once for Playwright, and outbound network). `test/README.md` has the
 details. It covers the blocklist, all 12 toggles, channel identity /
-enrich, the age + keyword + duration filters, the never-block list, the
-watch-page layout, and the options UI; `locale-age-test.mjs` checks the
+enrich, the age + keyword + duration filters, the never-block list,
+playlist + community-post removal, the watch-page layout, and the options
+UI; `locale-age-test.mjs` checks the
 "…ago" date parser in 13 languages without a browser. Not covered:
 signed-in surfaces (masthead Create/Notifications, real Subscriptions),
 Firefox, `m.youtube.com`.
@@ -428,12 +438,12 @@ that's how the bugs below were actually found, not guessed:
   (compact/search layout), so it should be clear of both — but if it still
   overlaps something on a particular tile layout, `.bt-block-btn`/
   `.bt-block-menu` in `content/content.css` are the two rules to adjust.
-- A soft-blocked ("all videos except whitelist") channel's playlists aren't
-  covered by the whitelist mechanism — the instant-hide CSS rule for this
-  mode only matches tiles that look like an actual video (carrying a
-  `v=`/`/shorts/` link), so a playlist tile from that channel is left alone
-  entirely, whitelisted or not. If you want a specific playlist gone too,
-  block the channel fully instead.
+- A blocked channel's playlist tile is only caught when it actually shows a
+  link to that channel — in a "More from [channel]" shelf where the byline
+  sits on the shelf header rather than each card, an individual playlist
+  card can still slip through until the shelf is pruned. Playlists on the
+  channel's *own* Playlists tab are handled separately and don't have this
+  gap.
 - **`chrome.storage.sync`** capacity is roughly 480 blocked items total
   before entries fall back to local-only storage (a hard limit of the sync
   API, not this extension). This only limits the *same-vendor* account sync —
