@@ -13,6 +13,7 @@
           <nav class="page-tabs">
             <button class="page-tab active" data-page="blocklist">Blocklist</button>
             <button class="page-tab" data-page="keywords">Keywords</button>
+            <button class="page-tab" data-page="allowlist">Never-block</button>
             <button class="page-tab" data-page="settings">Settings</button>
             <button class="page-tab" data-page="sync">Sync</button>
           </nav>
@@ -41,7 +42,10 @@
           <button class="filter-tab" data-tab="hidden">Hidden (0)</button>
         </div>
 
+        <p id="channel-stats" class="more-note" hidden></p>
+
         <div class="channel-controls">
+          <button id="select-mode-btn" type="button">Select</button>
           <label class="ctl">
             Sort
             <select id="sort-by">
@@ -62,6 +66,18 @@
           <button id="fetch-all-subs-btn" hidden>Fetch all sub counts</button>
         </div>
         <p id="bulk-progress" class="more-note" hidden></p>
+        <p id="enrich-note" class="more-note" hidden></p>
+
+        <div id="bulk-bar" class="bulk-bar" hidden>
+          <span id="bulk-count">0 selected</span>
+          <button id="bulk-select-all" type="button">Select all shown</button>
+          <button id="bulk-clear-sel" type="button">Clear</button>
+          <span class="spacer"></span>
+          <button id="bulk-hide" type="button">Hide</button>
+          <button id="bulk-videoonly" type="button">Video-only mode</button>
+          <button id="bulk-allow" type="button">Never-block</button>
+          <button id="bulk-unblock" type="button" class="danger-btn">Unblock</button>
+        </div>
 
         <section id="channel-section">
           <h2>Blocked channels <span id="channel-total" class="count"></span></h2>
@@ -106,6 +122,41 @@
           </div>
           <ul id="kw-list" class="list"></ul>
           <p id="kw-empty" class="empty" hidden>No title keywords yet.</p>
+
+          <h2 style="margin-top:22px">Block videos by length</h2>
+          <p class="settings-blurb">
+            Also removes any video whose duration badge is outside this range —
+            handy for cutting Shorts-style clips or multi-hour streams. Leave a
+            field blank for “no limit”.
+          </p>
+          <div class="kw-add">
+            <label class="kw-regex">Shorter than
+              <input id="dur-min" type="number" min="0" step="5" style="width:64px" /> sec</label>
+            <label class="kw-regex">Longer than
+              <input id="dur-max" type="number" min="0" step="5" style="width:64px" /> min</label>
+            <button id="dur-save">Apply</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- ============ NEVER-BLOCK (allow-list) ============ -->
+      <div id="page-allowlist" class="page" hidden>
+        <section class="settings-card">
+          <h2>Never block these channels</h2>
+          <p class="settings-blurb">
+            A hard override. Anything from a channel on this list stays visible
+            even if a title keyword, a duration rule, an age rule, or a
+            collaborator block would otherwise hide it — and its own page and
+            DNR redirect are dropped too. Add a channel by <code>@handle</code>,
+            its <code>UC…</code> ID, or a full channel URL. Syncs with your
+            blocklist.
+          </p>
+          <div class="kw-add">
+            <input id="allow-input" type="text" placeholder="@handle   ·   UC…   ·   https://youtube.com/@handle" />
+            <button id="allow-add-btn">Add</button>
+          </div>
+          <ul id="allow-list" class="list"></ul>
+          <p id="allow-empty" class="empty" hidden>Nothing here yet.</p>
         </section>
       </div>
 

@@ -45,7 +45,14 @@ self.BlockTube.MSG = {
   // the token and runs the push/pull/merge cycle.
   GET_SYNC_STATUS: "GET_SYNC_STATUS",
   SET_SYNC_CONFIG: "SET_SYNC_CONFIG",
-  SYNC_NOW: "SYNC_NOW"
+  SYNC_NOW: "SYNC_NOW",
+  // Channel allow-list ("never block these"): a hard override that wins over
+  // every block path — a collaborator block, a title-keyword / duration
+  // filter, an age rule. ALLOW_CHANNEL adds a key ("UC…" or "@handle"),
+  // DISALLOW_CHANNEL removes it. Stored in chrome.storage.sync under
+  // ALLOWLIST_KEY and carried in the GET_BLOCKLIST / BLOCKLIST_UPDATED payload.
+  ALLOW_CHANNEL: "ALLOW_CHANNEL",
+  DISALLOW_CHANNEL: "DISALLOW_CHANNEL"
 };
 
 // FULL: nothing from this channel exists anymore — its own page, videos, and
@@ -94,6 +101,10 @@ self.BlockTube.SETTINGS_KEY = "bt_settings";
 // ts: <ms> }. A video whose title matches any pattern is scrubbed (JS only —
 // CSS can't match text). ts drives last-write-wins in the gist merge.
 self.BlockTube.KEYWORDS_KEY = "bt_keywords";
+// chrome.storage.sync. { list: { [channelKey]: { note?, ts } }, ts: <ms> } —
+// channels that must never be hidden, whatever else matches. `ts` drives
+// last-write-wins in the gist merge (same scheme as KEYWORDS_KEY).
+self.BlockTube.ALLOWLIST_KEY = "bt_allowlist";
 self.BlockTube.DEFAULT_SETTINGS = {
   removeShorts: true, // shelves, tiles, the full-screen player, /shorts redirects
   redirectHomepage: true, // youtube.com/ -> Subscriptions (network + SPA)

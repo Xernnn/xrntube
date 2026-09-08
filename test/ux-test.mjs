@@ -23,7 +23,9 @@ const send = (m) => opt.evaluate((mm) => chrome.runtime.sendMessage(mm), m);
 
 // --- page tabs ---
 const pages = await opt.locator(".page-tab").count();
-pages === 4 ? ok("4 page tabs (Blocklist / Keywords / Settings / Sync)") : fail("page tabs: " + pages);
+pages === 5
+  ? ok("5 page tabs (Blocklist / Keywords / Never-block / Settings / Sync)")
+  : fail("page tabs: " + pages);
 const blVisible = await opt.locator("#page-blocklist").isVisible();
 const setHidden = await opt.locator("#page-settings").isHidden();
 blVisible && setHidden ? ok("Blocklist page visible, Settings hidden by default") : fail(`bl=${blVisible} setHidden=${setHidden}`);

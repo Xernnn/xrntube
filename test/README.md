@@ -28,6 +28,11 @@ Each `*-test.mjs` is standalone: it launches its own persistent context
 `FAIL: …` lines, and sets `process.exitCode` non-zero on any failure.
 `EXT_PATH` is derived from the file's location, so the folder can move.
 
+`locale-age-test.mjs` is the one exception — it's **pure Node, no browser**:
+it slices `AGE_UNITS` + `parseAgeDays()` straight out of `content/content.js`
+and checks the relative-date parser against real "…ago" strings in 13
+languages. Fast, and the only test that runs offline.
+
 ## Known flaky assertion
 
 `settings-test.mjs` — "removeShorts on: 0 Shorts shelves remain" occasionally

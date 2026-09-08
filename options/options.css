@@ -328,6 +328,25 @@ header h1 {
   margin: 8px 2px 0;
 }
 
+button.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #1a73e8;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+#channel-stats {
+  color: #555;
+  font-weight: 500;
+}
+
+#enrich-note {
+  color: #8a6d1a;
+}
+
 /* ---- channel controls (sort / hide-small / bulk subs) ---- */
 .channel-controls {
   display: flex;
@@ -375,6 +394,54 @@ header h1 {
   background: #b3261e;
   border-color: #b3261e;
   color: #fff;
+}
+
+#select-mode-btn.active {
+  background: #1a73e8;
+  border-color: #1a73e8;
+  color: #fff;
+}
+
+/* ---- bulk action bar ---- */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  background: #eef3fe;
+  border: 1px solid #cfe0fd;
+  border-radius: 8px;
+}
+
+.bulk-bar .spacer {
+  flex: 1;
+}
+
+.bulk-bar button {
+  padding: 6px 11px;
+  border: 1px solid #ccc;
+  background: #fff;
+  border-radius: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.bulk-bar button:hover {
+  background: #f0f0f0;
+}
+
+#bulk-count {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1a3d7c;
+}
+
+.row-check {
+  margin-right: 8px;
+  flex: none;
 }
 
 section {

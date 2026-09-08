@@ -33,7 +33,7 @@
 // this file, then background.js, which calls gistSync.init(host).
 // ---------------------------------------------------------------------------
 (() => {
-  const { STORAGE, SYNC, KEYWORDS_KEY } = self.BlockTube;
+  const { STORAGE, SYNC, KEYWORDS_KEY, ALLOWLIST_KEY } = self.BlockTube;
   const API = "https://api.github.com";
 
   let host = null;
@@ -147,7 +147,11 @@
           channels: parsed.channels || {},
           videos: parsed.videos || {},
           tombstones: parsed.tombstones || {},
-          keywords: parsed.keywords && Array.isArray(parsed.keywords.list) ? parsed.keywords : { list: [], ts: 0 }
+          keywords: parsed.keywords && Array.isArray(parsed.keywords.list) ? parsed.keywords : { list: [], ts: 0 },
+          allowlist:
+            parsed.allowlist && parsed.allowlist.list && typeof parsed.allowlist.list === "object"
+              ? parsed.allowlist
+              : { list: {}, ts: 0 }
         };
       } catch {
         // Corrupt or hand-edited file — treat as empty; our push heals it.
@@ -173,13 +177,40 @@
 
   // ---- merge -----------------------------------------------------------
   function emptySnapshot() {
-    return { v: SYNC.SCHEMA_VERSION, channels: {}, videos: {}, tombstones: {}, keywords: { list: [], ts: 0 } };
+    return {
+      v: SYNC.SCHEMA_VERSION,
+      channels: {},
+      videos: {},
+      tombstones: {},
+      keywords: { list: [], ts: 0 },
+      allowlist: { list: {}, ts: 0 }
+    };
   }
 
   async function readLocalKeywords() {
     const r = await chrome.storage.sync.get(KEYWORDS_KEY);
     const k = r[KEYWORDS_KEY];
-    return k && Array.isArray(k.list) ? { list: k.list, ts: Number(k.ts) || 0 } : { list: [], ts: 0 };
+    return k && Array.isArray(k.list)
+      ? { list: k.list, ts: Number(k.ts) || 0, durMinSec: Number(k.durMinSec) || 0, durMaxSec: Number(k.durMaxSec) || 0 }
+      : { list: [], ts: 0, durMinSec: 0, durMaxSec: 0 };
+  }
+  function kwFingerprint(kw) {
+    return stableStringify({
+      list: (kw && kw.list) || [],
+      durMinSec: (kw && kw.durMinSec) || 0,
+      durMaxSec: (kw && kw.durMaxSec) || 0
+    });
+  }
+
+  async function readLocalAllowlist() {
+    const r = await chrome.storage.sync.get(ALLOWLIST_KEY);
+    const a = r[ALLOWLIST_KEY];
+    return a && a.list && typeof a.list === "object"
+      ? { list: a.list, ts: Number(a.ts) || 0 }
+      : { list: {}, ts: 0 };
+  }
+  function allowFingerprint(al) {
+    return stableStringify((al && al.list) || {});
   }
 
   function entryTs(e) {
@@ -255,9 +286,15 @@
       stableStringify({ channels: s.channels || {}, videos: s.videos || {}, tombstones: s.tombstones || {} });
     return norm(a) === norm(b);
   }
-  // Full comparison incl. keywords — decides whether a push is needed.
+  // Full comparison incl. keywords (list + duration bounds, ignoring ts) and
+  // the channel allow-list — decides whether a push is needed, so a
+  // duration-only or allow-list-only edit still pushes.
   function sameBlocklist(a, b) {
-    return sameBlocklistCore(a, b) && stableStringify((a.keywords && a.keywords.list) || []) === stableStringify((b.keywords && b.keywords.list) || []);
+    return (
+      sameBlocklistCore(a, b) &&
+      kwFingerprint(a.keywords) === kwFingerprint(b.keywords) &&
+      allowFingerprint(a.allowlist) === allowFingerprint(b.allowlist)
+    );
   }
 
   function mapValues(obj, fn) {
@@ -278,12 +315,14 @@
       const local = await host.loadAll(); // { channels, videos }
       const localTombs = await host.getTombstones(); // { "kind:id": ts }
       const localKw = await readLocalKeywords();
+      const localAllow = await readLocalAllowlist();
       const localSnapshot = {
         v: SYNC.SCHEMA_VERSION,
         channels: mapValues(local.channels, stripRuntime),
         videos: mapValues(local.videos, stripRuntime),
         tombstones: { ...localTombs },
-        keywords: localKw
+        keywords: localKw,
+        allowlist: localAllow
       };
 
       await ensureGistId(localSnapshot);
@@ -296,6 +335,13 @@
       merged.keywords = (remoteKw.ts || 0) > (localKw.ts || 0) ? remoteKw : localKw;
       if (merged.keywords !== localKw) {
         await chrome.storage.sync.set({ [KEYWORDS_KEY]: merged.keywords }).catch(() => {});
+      }
+
+      // Channel allow-list: same last-write-wins on the whole object by its ts.
+      const remoteAllow = remote.allowlist || { list: {}, ts: 0 };
+      merged.allowlist = (remoteAllow.ts || 0) > (localAllow.ts || 0) ? remoteAllow : localAllow;
+      if (merged.allowlist !== localAllow) {
+        await chrome.storage.sync.set({ [ALLOWLIST_KEY]: merged.allowlist }).catch(() => {});
       }
       mergeKind(
         "channel",

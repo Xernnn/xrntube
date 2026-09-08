@@ -96,6 +96,10 @@ password; if it leaks, revoke it on GitHub and paste a fresh one.
    submit it to addons.mozilla.org (works fine as an *unlisted* add-on — no
    public review needed, just Mozilla's automated signing).
 
+For development there are npm scripts: `npm run lint:firefox` (web-ext lint),
+`npm run run:firefox` (launch Firefox with it loaded), `npm run build:firefox`
+(package a `.zip`). They need a local Firefox binary.
+
 ## Install on Firefox for Android
 
 Stable Firefox for Android only runs extensions that came through
@@ -113,7 +117,7 @@ on desktop). The practical path:
 above doesn't match what you see, check the current instructions at
 `extensionworkshop.com` before assuming something's broken.)
 
-## Block videos by title keyword
+## Block videos by title keyword or length
 
 The **Keywords** tab in the options page takes a list of words or phrases —
 any video whose title contains one is removed from feeds and search (and
@@ -121,6 +125,12 @@ bounces you out if you open it directly). Tick *regex* on a row to treat it
 as a regular expression. Matching is case-insensitive. This runs just after
 a tile appears (a hair slower than the channel/video blocking, which hides
 before paint). Keywords sync like the blocklist.
+
+The same tab has a **Block videos by length** block: set a minimum (in
+seconds) and/or a maximum (in minutes) and any video whose duration badge
+falls outside that range is removed too — handy for cutting Shorts-style
+clips or multi-hour streams. Leave a field blank for "no limit". These sync
+with the keyword list.
 
 ## Two ways to block a channel
 
@@ -156,23 +166,43 @@ channel name and a "3 days ago"-style date; on the **channel's own page**
 (Videos / Streams / Home tabs) the tiles have no byline, so BlockTube handles
 that page specially — visiting a "block all videos" channel now empties its
 video grid too (whitelisted videos still show; the age rule is applied there
-as well). The date reading is English-language only.
+as well). The "N days ago"-style date is read in ~15 languages; the
+absolute-date fallback on a watch page ("Jan 5, 2024") is English-only.
+
+## Never-block list
+
+The **Never-block** tab is a hard allow-list. Anything from a channel on it
+stays visible even if a title keyword, a length rule, an age rule, a
+collaborator block, or a direct block would otherwise hide it — and its own
+page stops redirecting. Add a channel by `@handle`, `UC…` ID, or a full
+channel URL. Use it for a channel you've swept up in a broad rule but want
+back, without having to unpick the rule. It syncs with everything else.
+(A tile that was already removed before you allow-listed the channel comes
+back on YouTube's next re-render, not instantly.)
 
 ## Managing a big blocklist
 
-The options page has four top-level tabs — **Blocklist**, **Keywords**,
-**Settings**, and **Sync** — so the keyword list, feature toggles and the
-GitHub-Gist setup aren't in the way of the list. It opens on whichever you
-used last.
+The options page has five top-level tabs — **Blocklist**, **Keywords**,
+**Never-block**, **Settings**, and **Sync** — so the keyword list, allow-list,
+feature toggles and the GitHub-Gist setup aren't in the way of the list. It
+opens on whichever you used last.
 
 Within **Blocklist**, **filter tabs** — All / Full-blocked channels /
 Video-only channels / Blocked videos / Hidden — narrow the view, and up to
-300 rows show per section (narrow further with the search box). A
-video-only channel's whitelist/age-rule panel is collapsed until you click
-it. There's a **Clear all N blocked videos** button that unblocks every video
-at once (channels untouched), and a **Recently unblocked** list under it with
-a **Restore** button — so an accidental unblock, or that mass-clear, can be
-undone. Each row has:
+300 rows show per section (narrow further with the search box). A one-line
+summary above the list breaks the blocklist down by mode and shows the total
+subscriber reach it's hiding. A video-only channel's whitelist/age-rule
+panel is collapsed until you click it. There's a **Clear all N blocked
+videos** button that unblocks every video at once (channels untouched), and a
+**Recently unblocked** list under it with a **Restore** button — so an
+accidental unblock, or that mass-clear, can be undone.
+
+**Select** (top-left of the channel controls) turns on checkboxes: tick a
+few channels — or **Select all shown** — and a bar appears to **Hide**,
+switch to **Video-only mode**, add to **Never-block**, or **Unblock** the
+whole selection at once.
+
+Each row has:
 
 - **Hide** — takes the row out of the manager without unblocking it, for
   entries you've reviewed and don't want to keep scrolling past. The
@@ -296,6 +326,17 @@ extension.
 
 ## What's actually been tested against live YouTube
 
+There's now a real end-to-end test suite in `test/` — each file launches
+Chromium with this extension loaded, drives live youtube.com, and asserts on
+what the content script did. Run it with `npm test` (needs `npm install`
+once for Playwright, and outbound network). `test/README.md` has the
+details. It covers the blocklist, all 12 toggles, channel identity /
+enrich, the age + keyword + duration filters, the never-block list, the
+watch-page layout, and the options UI; `locale-age-test.mjs` checks the
+"…ago" date parser in 13 languages without a browser. Not covered:
+signed-in surfaces (masthead Create/Notifications, real Subscriptions),
+Firefox, `m.youtube.com`.
+
 Everything above was originally written without ever loading the extension
 in a real browser. A chunk of it has since been verified against the real
 site (Chromium, loaded with this extension, not signed into any account) —
@@ -418,4 +459,15 @@ popup/                       quick-block UI for the current page
 options/                      full blocklist manager, import/export, sync setup
 shared/constants.js          message types + storage config shared everywhere
 icons/
+test/                        end-to-end suite (npm test) — real Chromium + live YouTube
+package.json                 dev tooling only (Playwright, web-ext); no build step
 ```
+
+## Debugging "why isn't this blocked?"
+
+Add `?bt-debug` to any YouTube URL (or run
+`localStorage.setItem("bt_debug", "1")` once). The console then logs every
+removal with the reason, and `window.__blockTube` — reachable by switching
+the console's JavaScript-context dropdown to **BlockTube** — gives you
+`state()` and `why("<CSS selector>")`, which explains a tile: the channel
+keys it carries, how each resolves against the blocklist, and the verdict.

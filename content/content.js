@@ -1,5 +1,5 @@
 (() => {
-  const { MSG, CHANNEL_MODE, DEFAULT_SETTINGS, SETTINGS_KEY, KEYWORDS_KEY } = self.BlockTube;
+  const { MSG, CHANNEL_MODE, DEFAULT_SETTINGS, SETTINGS_KEY, KEYWORDS_KEY, ALLOWLIST_KEY } = self.BlockTube;
 
   // Where blocked content — and now Home and Shorts entirely — get sent instead.
   const SAFE_LANDING_URL = "https://www.youtube.com/feed/subscriptions";
@@ -12,6 +12,178 @@
   // as before; the real values arrive async from chrome.storage.sync just after
   // document_start (see the loader near the bottom).
   let settings = { ...DEFAULT_SETTINGS };
+
+  // ---------- debug mode ----------
+  // Enable with ?bt-debug in the URL or localStorage.setItem("bt_debug","1").
+  // Logs every removal with a reason, and exposes window.__blockTube for
+  // "why isn't this blocking?" — the recurring failure mode being a channel
+  // whose key format on the tile doesn't match how it's stored.
+  const DEBUG = (() => {
+    try {
+      return /[?&]bt-debug\b/.test(location.search) || localStorage.getItem("bt_debug") === "1";
+    } catch {
+      return /[?&]bt-debug\b/.test(location.search);
+    }
+  })();
+  function dbg(...a) {
+    if (DEBUG) console.debug("%c[BlockTube]", "color:#c00;font-weight:bold", ...a);
+  }
+
+  // ---------- UI-language labels ----------
+  // Almost all of YouTube's chrome is matched here by tag name, href, or a
+  // stable id/class — all locale-proof. A few things have no such handle and
+  // can only be matched by their visible text: the watch-page action buttons
+  // (Share / Save / Clip / Thanks / Download / More), the masthead Create and
+  // voice-search buttons, the "Join" membership button + "Members only" badge,
+  // and the guide's Explore / "More from YouTube" / "Report history" entries.
+  // Those read from LABELS[lang] below, with the English terms always merged in
+  // (YouTube frequently leaves some controls in English on a partly-localised
+  // UI). A language that isn't listed just gets the English set. To add one,
+  // copy the `en` block and translate the strings — all lowercase, and include
+  // every wording variant you see (comma-separated is fine as separate array
+  // items). The relative-date parser (parseAgeDays) is separate and already
+  // language-independent (see AGE_UNITS).
+  const UI_LANG = (() => {
+    const primary = (s) => (s || "").toLowerCase().split(/[-_]/)[0];
+    try {
+      return (
+        primary(document.documentElement.getAttribute("lang")) ||
+        primary(navigator.language) ||
+        "en"
+      );
+    } catch {
+      return "en";
+    }
+  })();
+  const LABELS_BY_LANG = {
+    en: {
+      share: ["share"],
+      save: ["save", "save to playlist"],
+      clip: ["clip"],
+      thanks: ["thanks"],
+      download: ["download"],
+      more: ["more actions"],
+      report: ["report"],
+      create: ["create"],
+      voice: ["search with your voice", "voice search"],
+      join: ["join"],
+      membersOnly: ["members only", "member only"],
+      membership: ["membership", "memberships", "members-only content", "members only content"],
+      explore: ["explore"],
+      moreFromYouTube: ["more from youtube"],
+      reportHistory: ["report history"],
+      shorts: ["shorts"]
+    },
+    vi: {
+      share: ["chia sẻ"],
+      save: ["lưu", "lưu vào danh sách phát"],
+      clip: ["đoạn video", "clip"],
+      thanks: ["cảm ơn"],
+      download: ["tải xuống"],
+      more: ["thao tác khác"],
+      report: ["báo cáo"],
+      create: ["tạo"],
+      voice: ["tìm kiếm bằng giọng nói"],
+      join: ["tham gia"],
+      membersOnly: ["chỉ dành cho thành viên"],
+      membership: ["tư cách thành viên", "nội dung chỉ dành cho thành viên"],
+      explore: ["khám phá"],
+      moreFromYouTube: ["thêm từ youtube"],
+      reportHistory: ["nhật ký báo cáo", "lịch sử báo cáo"],
+      shorts: ["shorts"]
+    },
+    es: {
+      share: ["compartir"],
+      save: ["guardar", "guardar en lista de reproducción"],
+      clip: ["recortar", "clip"],
+      thanks: ["gracias"],
+      download: ["descargar"],
+      more: ["más acciones"],
+      report: ["denunciar"],
+      create: ["crear"],
+      voice: ["buscar con la voz", "búsqueda por voz"],
+      join: ["unirse"],
+      membersOnly: ["solo para miembros", "sólo para miembros"],
+      membership: ["membresía", "membresías", "contenido solo para miembros"],
+      explore: ["explorar"],
+      moreFromYouTube: ["más de youtube"],
+      reportHistory: ["historial de denuncias"],
+      shorts: ["shorts"]
+    },
+    pt: {
+      share: ["compartilhar", "partilhar"],
+      save: ["salvar", "guardar", "salvar na playlist"],
+      clip: ["clipe", "clip"],
+      thanks: ["agradecer", "obrigado"],
+      download: ["fazer o download", "transferir", "baixar"],
+      more: ["mais ações"],
+      report: ["denunciar"],
+      create: ["criar"],
+      voice: ["pesquisar com a voz", "pesquisa por voz"],
+      join: ["participar", "tornar-se membro"],
+      membersOnly: ["apenas para membros", "só para membros"],
+      membership: ["assinatura do canal", "associação", "conteúdo exclusivo para membros"],
+      explore: ["explorar"],
+      moreFromYouTube: ["mais do youtube"],
+      reportHistory: ["histórico de denúncias"],
+      shorts: ["shorts"]
+    },
+    fr: {
+      share: ["partager"],
+      save: ["enregistrer", "enregistrer dans une playlist"],
+      clip: ["extrait", "clip"],
+      thanks: ["merci"],
+      download: ["télécharger"],
+      more: ["plus d'actions"],
+      report: ["signaler"],
+      create: ["créer"],
+      voice: ["recherche vocale", "effectuer une recherche vocale"],
+      join: ["adhérer", "rejoindre"],
+      membersOnly: ["réservé aux membres"],
+      membership: ["abonnement à la chaîne", "adhésion", "contenu réservé aux membres"],
+      explore: ["explorer"],
+      moreFromYouTube: ["plus de youtube"],
+      reportHistory: ["historique des signalements"],
+      shorts: ["shorts"]
+    },
+    de: {
+      share: ["teilen"],
+      save: ["speichern", "in playlist speichern"],
+      clip: ["clip"],
+      thanks: ["danke", "danken"],
+      download: ["herunterladen", "download"],
+      more: ["weitere aktionen"],
+      report: ["melden"],
+      create: ["erstellen"],
+      voice: ["sprachsuche", "mit der stimme suchen"],
+      join: ["beitreten"],
+      membersOnly: ["nur für mitglieder"],
+      membership: ["mitgliedschaft", "mitgliedschaften", "nur für mitglieder verfügbare inhalte"],
+      explore: ["entdecken"],
+      moreFromYouTube: ["mehr von youtube"],
+      reportHistory: ["meldeverlauf"],
+      shorts: ["shorts"]
+    }
+  };
+  const L = (() => {
+    const en = LABELS_BY_LANG.en;
+    const loc = LABELS_BY_LANG[UI_LANG];
+    if (!loc || loc === en) return en;
+    const out = {};
+    for (const k of Object.keys(en)) {
+      out[k] = Array.from(new Set([...(loc[k] || []), ...en[k]]));
+    }
+    return out;
+  })();
+  if (DEBUG) dbg("UI language:", UI_LANG, LABELS_BY_LANG[UI_LANG] ? "(table found)" : "(English fallback)");
+
+  // CSS attribute-selector list matching aria-label against any of `labels`.
+  // exact: [aria-label="x" i]  ·  substring: [aria-label*="x" i]
+  const cssEsc = (s) => s.replace(/["\\]/g, "\\$&");
+  function ariaSel(prefix, labels, { substring = false } = {}) {
+    const op = substring ? "*=" : "=";
+    return labels.map((l) => `${prefix}[aria-label${op}"${cssEsc(l)}" i]`).join(",\n      ");
+  }
 
   // ---------- instant, pre-paint hiding via CSS (not just MutationObserver + remove()) ----------
   // A MutationObserver callback always runs at least one animation frame
@@ -44,13 +216,13 @@
       ytm-guide-entry-renderer:has(a[href="/shorts/"])
         { display: none !important; }`,
     cleanMasthead: `
-      ytd-masthead [aria-label="Create" i],
+      ${ariaSel("ytd-masthead ", L.create)},
       ytd-masthead [aria-label*="notification" i],
       ytd-notification-topbar-button-renderer
         { display: none !important; }`,
     hideVoiceSearch: `
       #voice-search-button,
-      ytd-masthead [aria-label="Search with your voice" i],
+      ${ariaSel("ytd-masthead ", L.voice)},
       .mobile-topbar-header [aria-label*="voice" i]
         { display: none !important; }`,
     accountButtonOnHover: `
@@ -66,12 +238,9 @@
         opacity: 1 !important;
       }`,
     hideVideoActions: `
-      ytd-watch-metadata #actions yt-button-view-model:has([aria-label="Share" i]),
-      ytd-watch-metadata #actions yt-button-view-model:has([aria-label="Save to playlist" i]),
-      ytd-watch-metadata #actions yt-button-view-model:has([aria-label="Clip" i]),
-      ytd-watch-metadata #actions yt-button-view-model:has([aria-label="Thanks" i]),
+      ytd-watch-metadata #actions yt-button-view-model:has(:is(${ariaSel("", [].concat(L.share, L.save, L.clip, L.thanks))})),
       ytd-watch-metadata #actions ytd-download-button-renderer,
-      ytd-watch-metadata #actions yt-icon-button:has([aria-label="More actions" i])
+      ytd-watch-metadata #actions yt-icon-button:has(:is(${ariaSel("", L.more)}))
         { display: none !important; }`,
     hideMemberships: `
       /* the "Join" (channel membership) button, watch page + channel page */
@@ -263,6 +432,16 @@
     const exceptRules = [];
 
     for (const [key, entry] of newestFirst(channels, INSTANT_HIDE_MAX_CHANNELS)) {
+      // Allow-listed channels are never hidden — skip their pre-paint rule too
+      // (also covers the entry's scraped handle/ucid, which isAllowlisted sees
+      // only via the storage key; check those explicitly).
+      if (
+        isAllowlisted(key) ||
+        (entry && entry.handle && isAllowlisted(entry.handle)) ||
+        (entry && entry.ucid && isAllowlisted(entry.ucid))
+      ) {
+        continue;
+      }
       // Modern YouTube tiles link the channel byline via /@handle, not
       // /channel/UC…. An imported list is keyed by UC… ids, so prefer the
       // entry's scraped `handle` for matching; fall back to /channel/UC…
@@ -404,11 +583,14 @@
 
   // ---------- guide sidebar: strip Home/Shorts/Explore/etc. and its footer ----------
   // "Explore"/"More from YouTube"/"Report history" don't have one single
-  // stable link to key off, so those are matched by their visible label.
-  // "Shorts" is also matched here as a backup — confirmed live that the
-  // full guide drawer's Shorts entry (unlike the always-visible mini guide)
-  // has no href on its anchor at all.
-  const HIDDEN_NAV_LABELS = new Set(["Shorts", "Explore", "More from YouTube", "Report history", "Report"]);
+  // stable link to key off, so those are matched by their visible label
+  // (localised via LABELS_BY_LANG, English merged in). "Shorts" is also
+  // matched here as a backup — confirmed live that the full guide drawer's
+  // Shorts entry (unlike the always-visible mini guide) has no href on its
+  // anchor at all. Compared case-insensitively.
+  const HIDDEN_NAV_LABELS = new Set(
+    [].concat(L.shorts, L.explore, L.moreFromYouTube, L.reportHistory, L.report).map((s) => s.toLowerCase())
+  );
   const GUIDE_FOOTER_SIGNAL_RE = /Test new features|How YouTube works|Policy\s*&\s*Safety/i;
   const GUIDE_CONTAINER_SELECTOR = [
     "ytd-mini-guide-renderer",
@@ -459,7 +641,7 @@
         "ytd-guide-entry-renderer, ytd-mini-guide-entry-renderer, ytd-guide-section-renderer, ytm-pivot-bar-item-renderer, ytm-guide-entry-renderer"
       )
       .forEach((el) => {
-        if (HIDDEN_NAV_LABELS.has(navLabelOf(el))) el.remove();
+        if (HIDDEN_NAV_LABELS.has(navLabelOf(el).toLowerCase())) el.remove();
       });
     // The little-print link list + copyright line at the bottom of the guide.
     // Scoped to ytd-guide-renderer and gated on its distinctive text so this
@@ -472,7 +654,10 @@
   }
 
   // ---------- masthead: strip Create and Notifications ----------
-  const MASTHEAD_HIDE_RE = /^create$/i;
+  // "Create" is localised (LABELS_BY_LANG, English merged); the notification
+  // button is also removed by tag name above, so its text match staying
+  // English-only is only a fallback.
+  const MASTHEAD_CREATE_LABELS = new Set(L.create.map((s) => s.toLowerCase()));
   const MASTHEAD_HIDE_NOTIF_RE = /notification/i;
   function scrubMasthead(root) {
     if (!settings.cleanMasthead) return;
@@ -483,7 +668,7 @@
       .querySelectorAll("button, a, yt-icon-button, ytd-button-renderer, tp-yt-paper-icon-button, ytd-topbar-menu-button-renderer")
       .forEach((el) => {
         const label = (el.getAttribute("aria-label") || el.getAttribute("title") || "").trim();
-        if (MASTHEAD_HIDE_RE.test(label) || MASTHEAD_HIDE_NOTIF_RE.test(label)) {
+        if (MASTHEAD_CREATE_LABELS.has(label.toLowerCase()) || MASTHEAD_HIDE_NOTIF_RE.test(label)) {
           const wrapper =
             el.closest(
               "ytd-button-renderer, ytd-notification-topbar-button-renderer, ytd-topbar-menu-button-renderer, yt-icon-button, tp-yt-paper-icon-button"
@@ -547,13 +732,13 @@
   }
 
   // ---------- watch-page action row: Share / Save / Download / Clip / "..." ----------
-  // Matched by aria-label (English only, like scrubMasthead/scrubGuide) inside
-  // ytd-watch-metadata's #actions container. Removing "More actions" also takes
-  // Report out of reach (it only lives in that popup). Like/Dislike are left
-  // alone — their labels ("like this video…", "Dislike this video") aren't in
-  // the list, and we never remove the row's shared ytd-menu-renderer wrapper.
+  // Matched by aria-label (localised via LABELS_BY_LANG, English always merged
+  // in) inside ytd-watch-metadata's #actions container. Removing "More actions"
+  // also takes Report out of reach (it only lives in that popup). Like/Dislike
+  // are left alone — their labels aren't in the list, and we never remove the
+  // row's shared ytd-menu-renderer wrapper.
   const VIDEO_ACTION_LABELS = new Set(
-    ["share", "save to playlist", "save", "download", "clip", "thanks", "more actions", "report"].map((s) => s)
+    [].concat(L.share, L.save, L.clip, L.thanks, L.download, L.more, L.report).map((s) => s.toLowerCase())
   );
   function scrubVideoActions(root) {
     if (!settings.hideVideoActions) return;
@@ -623,6 +808,7 @@
   // entry, matching the storage key, a scraped @handle, or a scraped UC id.
   function blockedEntryFor(key) {
     if (!key) return undefined;
+    if (isAllowlisted(key)) return undefined; // allow-list wins over any block
     if (blockedChannels.has(key)) return blockedChannels.get(key);
     if (key.charAt(0) === "@") return blockedByHandle.get(key.toLowerCase());
     if (key.startsWith("UC")) return blockedByUcid.get(key);
@@ -635,15 +821,34 @@
 
   // Parses YouTube's relative "published" text ("3 days ago", "2 weeks ago",
   // "Streamed 5 months ago", "1 year ago") into an approximate age in days.
-  // English-locale only (breaks under a non-English UI — a documented
-  // tradeoff, same as scrubGuide's label matching). Returns null if no such
-  // phrase is found.
-  const AGE_RE = /(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago/i;
-  const AGE_UNIT_DAYS = { second: 1 / 86400, minute: 1 / 1440, hour: 1 / 24, day: 1, week: 7, month: 30, year: 365 };
+  // Language-independent: each entry matches "<number> <unit>" (in that order,
+  // which holds for every locale YouTube ships — "vor 3 Wochen", "hace 3
+  // semanas", "il y a 3 semaines", "3週間前", "3주 전", …) for one unit,
+  // across ~15 languages' spellings. Ordered largest-unit-first so "month"
+  // never loses to a partial "min" match. Returns null if nothing matches.
+  // [unit spellings across ~15 languages, days-per-unit]. Anchored by the
+  // preceding "<number><optional space>", which is enough on its own to stop
+  // a short token (Turkish "ay" = month) matching inside a longer word
+  // ("day"): after the digits the cursor sits on the first unit letter, so
+  // "1 day" can only match the "day…" alternative, never "ay". Ordered
+  // largest-unit-first. No \b — word boundaries don't work after the
+  // diacritics / Cyrillic / CJK many of these end in.
+  const AGE_UNITS = [
+    [["years?", "yrs?", "années?", "ans?", "años?", "anos?", "jahren?", "anni", "anno", "jaar", "jaren", "tahun", "năm", "yıl", "годо?в?", "года?", "лет", "년", "年"], 365],
+    [["months?", "mos?", "mois", "mes(?:es)?", "monaten?", "mesi", "mese", "maand(?:en)?", "bulan", "tháng", "ay", "месяц(?:ев|а)?", "개월", "ヶ月", "か月", "カ月", "ヵ月"], 30],
+    [["weeks?", "wks?", "semaines?", "semanas?", "wochen?", "settiman[ae]", "weken?", "minggu", "tuần", "hafta", "недел(?:ь|и|ю)?", "주", "週間", "週"], 7],
+    [["days?", "jours?", "d[ií]as?", "tag(?:en?)?", "giorni?", "dagen?", "hari", "ngày", "gün", "дн(?:ей|я)?", "день", "일", "日"], 1],
+    [["hours?", "hrs?", "heures?", "horas?", "stunden?", "ore", "ora", "uur", "uren", "jam", "giờ", "saat", "час(?:ов|а)?", "시간", "時間"], 1 / 24],
+    [["minutes?", "mins?", "minutos?", "minuten?", "minuti", "minuto", "menit", "phút", "dakika", "минут(?:ы|у)?", "분", "分"], 1 / 1440],
+    [["seconds?", "secs?", "secondes?", "segundos?", "sekunden?", "secondi", "secondo", "seconden?", "detik", "giây", "saniye", "секунд(?:ы|у)?", "초", "秒"], 1 / 86400]
+  ].map(([alts, days]) => [new RegExp(`(\\d+)\\s*(?:${alts.join("|")})`, "i"), days]);
   function parseAgeDays(text) {
-    const m = (text || "").match(AGE_RE);
-    if (!m) return null;
-    return parseInt(m[1], 10) * AGE_UNIT_DAYS[m[2].toLowerCase()];
+    const t = text || "";
+    for (const [re, days] of AGE_UNITS) {
+      const m = t.match(re);
+      if (m) return parseInt(m[1], 10) * days;
+    }
+    return null;
   }
 
   // Whether a given blocked channel entry blocks a specific video. Pass
@@ -724,20 +929,46 @@
 
     const channels = collectChannels(el);
     if (!videoId && channels.size === 0) return null;
-    // Only bother reading the tile's publish text when some blocked channel
-    // actually has an age rule — parsing every tile otherwise is wasted work.
+    // Only bother reading the tile's publish text / duration when a blocked
+    // channel has an age rule / a duration filter is active — parsing every
+    // tile otherwise is wasted work.
     const ageDays = anyAgeRule && videoId ? parseAgeDays(el.textContent || "") : null;
-    return { videoId, videoTitle, channels, ageDays };
+    const durationSec =
+      videoId && (durMinSec > 0 || durMaxSec > 0) ? readDurationSec(el) : null;
+    return { videoId, videoTitle, channels, ageDays, durationSec };
   }
 
-  function isBlocked(info) {
-    if (!info) return false;
-    if (info.videoId && blockedVideoIds.has(info.videoId)) return true;
-    if (info.videoId && matchesKeyword(info.videoTitle)) return true;
-    for (const key of info.channels.keys()) {
-      if (channelBlocks(blockedEntryFor(key), info.videoId, info.ageDays)) return true;
+  // Why a tile is blocked, as a short string — null if it isn't. isBlocked()
+  // is just "reason != null"; keeping them one function means the debug log
+  // and the real decision can never disagree.
+  function blockReason(info) {
+    if (!info) return null;
+    // Allow-list: a hard override. If any channel on this tile is allow-listed,
+    // nothing hides it — not a keyword/duration filter, not a collaborator
+    // block, not an age rule.
+    if (allowSet.size) {
+      for (const key of info.channels.keys()) if (isAllowlisted(key)) return null;
     }
-    return false;
+    if (info.videoId && blockedVideoIds.has(info.videoId)) return "blocked video id";
+    if (info.videoId && info.videoTitle && keywordMatchers.some((r) => r.test(info.videoTitle))) {
+      return `keyword match: "${info.videoTitle.slice(0, 60)}"`;
+    }
+    const d = info.durationSec;
+    if (d != null && d > 0) {
+      if (durMinSec > 0 && d < durMinSec) return `duration ${d}s < ${durMinSec}s`;
+      if (durMaxSec > 0 && d > durMaxSec) return `duration ${d}s > ${durMaxSec}s`;
+    }
+    for (const key of info.channels.keys()) {
+      const e = blockedEntryFor(key);
+      if (channelBlocks(e, info.videoId, info.ageDays)) {
+        const via = blockedChannels.has(key) ? "key" : key.charAt(0) === "@" ? "@handle index" : "ucid index";
+        return `channel ${key} (${e.mode || "full"}${e.blockOlderThanDays ? `, >${e.blockOlderThanDays}d` : ""}, via ${via})`;
+      }
+    }
+    return null;
+  }
+  function isBlocked(info) {
+    return blockReason(info) !== null;
   }
 
   function injectBlockButton(el, info) {
@@ -823,29 +1054,42 @@
   }
 
   // A tile counts as "members only" if it carries a badge whose text is
-  // exactly "Members only" — covers the new `badge-shape` view-model badge
-  // and the legacy `.badge-style-type-members-only`. Text match because the
-  // new badge's class (`ytBadgeShapeCommerce`) is shared with other paid
-  // badges.
-  const MEMBERS_ONLY_RE = /^members?[\s-]?only$/i;
+  // exactly the localised "Members only" phrase — covers the new `badge-shape`
+  // view-model badge and the legacy `.badge-style-type-members-only`. Text
+  // match because the new badge's class (`ytBadgeShapeCommerce`) is shared
+  // with other paid badges.
+  const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Compare on a squashed form (spaces/hyphens removed) so "Members only",
+  // "members-only" and "membersonly" all match the same entry.
+  const squash = (s) => s.toLowerCase().replace(/[\s\-]+/g, "");
+  const MEMBERS_ONLY_SET = new Set([...L.membersOnly, "members only", "member only"].map(squash));
+  const membersOnlyText = (s) => MEMBERS_ONLY_SET.has(squash(s));
+  // Looser: matches a "Members only" / "Membership" shelf title anywhere in it.
+  const MEMBERSHIP_ANY_RE = new RegExp(
+    [...new Set([...L.membersOnly, ...L.membership])].map(reEscape).join("|"),
+    "i"
+  );
   function isMembersOnlyTile(el) {
     if (el.querySelector(".badge-style-type-members-only")) return true;
     return Array.from(
       el.querySelectorAll("badge-shape, ytd-badge-supported-renderer .badge, .badge, [class*='badge' i]")
-    ).some((b) => MEMBERS_ONLY_RE.test((b.textContent || "").trim()));
+    ).some((b) => membersOnlyText((b.textContent || "").trim()));
   }
 
   function processRenderer(el) {
     if (el.dataset.btChecked === "1") return;
     if (settings.hideMemberships && isMembersOnlyTile(el)) {
       const shelf = findShelfAncestor(el);
+      dbg("removed", el.tagName.toLowerCase(), "— members-only");
       el.remove();
       if (shelf) scheduleShelfPrune(shelf);
       return;
     }
     const info = extractInfo(el);
-    if (isBlocked(info)) {
+    const reason = blockReason(info);
+    if (reason) {
       const shelf = findShelfAncestor(el);
+      dbg("removed", el.tagName.toLowerCase(), "—", reason);
       el.remove();
       if (shelf) scheduleShelfPrune(shelf);
       return;
@@ -877,10 +1121,11 @@
     root.querySelectorAll(SHELF_SELECTOR).forEach((sh) => {
       if (!sh.isConnected) return;
       const title = (sh.querySelector("#title, .title, h2, yt-formatted-string#title, span.title") || {}).textContent || "";
-      if (/members?[\s-]?only|membership/i.test(title.trim())) sh.remove();
+      if (MEMBERSHIP_ANY_RE.test(title.trim())) sh.remove();
     });
+    const membershipTabSet = new Set([...L.membership, ...L.membersOnly, "members", "membership"].map((s) => s.toLowerCase()));
     root.querySelectorAll("yt-tab-shape, tp-yt-paper-tab, [role='tab']").forEach((t) => {
-      if (t.isConnected && /^members(hip)?$/i.test((t.textContent || "").trim())) t.remove();
+      if (t.isConnected && membershipTabSet.has((t.textContent || "").trim().toLowerCase())) t.remove();
     });
   }
 
@@ -971,7 +1216,7 @@
     });
     // Video tiles left un-checked by processRenderer because a keyword filter
     // is on and their title hadn't hydrated — re-process just those.
-    if (keywordMatchers.length) {
+    if (anyFilter()) {
       root
         .querySelectorAll("ytd-video-renderer, ytd-rich-item-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer")
         .forEach((el) => {
@@ -1053,6 +1298,8 @@
   // A video whose title matches any pattern is scrubbed. JS-scrub only — CSS
   // can't match text — so there's a one-frame window vs. the :has() layer.
   let keywordMatchers = [];
+  let durMinSec = 0; // block videos shorter than this (0 = off) — catches Shorts-in-disguise / clip spam
+  let durMaxSec = 0; // block videos longer than this  (0 = off) — catches streams
   function applyKeywords(rec) {
     const list = (rec && Array.isArray(rec.list) ? rec.list : []).slice(0, 200);
     keywordMatchers = list
@@ -1068,10 +1315,40 @@
         }
       })
       .filter(Boolean);
+    durMinSec = Math.max(0, Math.floor(Number(rec && rec.durMinSec) || 0));
+    durMaxSec = Math.max(0, Math.floor(Number(rec && rec.durMaxSec) || 0));
   }
-  function matchesKeyword(title) {
-    if (!title || !keywordMatchers.length) return false;
-    return keywordMatchers.some((r) => r.test(title));
+  function anyFilter() {
+    return keywordMatchers.length > 0 || durMinSec > 0 || durMaxSec > 0;
+  }
+  // "M:SS" / "H:MM:SS" → seconds; null if not parseable.
+  function parseDurationSec(text) {
+    const m = (text || "").match(/\b(\d{1,2}):([0-5]\d)(?::([0-5]\d))?\b/);
+    if (!m) return null;
+    return m[3] ? +m[1] * 3600 + +m[2] * 60 + +m[3] : +m[1] * 60 + +m[2];
+  }
+  // Pull a video's length off its tile. Scans the duration/time-status badges
+  // specifically (a tile can carry other badges like "4K"/"New", and a title
+  // can contain a stray "12:30"), taking the first that parses as a time.
+  function readDurationSec(el) {
+    const nodes = el.querySelectorAll(
+      "ytd-thumbnail-overlay-time-status-renderer, #time-status, .badge-shape-wiz__text, badge-shape .badge-shape-wiz__text, .ytp-time-duration"
+    );
+    for (const n of nodes) {
+      const s = parseDurationSec(n.textContent || "");
+      if (s != null) return s;
+    }
+    return null;
+  }
+  function matchesFilter(info) {
+    if (!info || !info.videoId) return false;
+    if (info.videoTitle && keywordMatchers.some((r) => r.test(info.videoTitle))) return true;
+    const d = info.durationSec;
+    if (d != null && d > 0) {
+      if (durMinSec > 0 && d < durMinSec) return true;
+      if (durMaxSec > 0 && d > durMaxSec) return true;
+    }
+    return false;
   }
 
   chrome.storage.sync.get({ [SETTINGS_KEY]: DEFAULT_SETTINGS, [KEYWORDS_KEY]: null }, (res) => {
@@ -1089,10 +1366,28 @@
       queryTiles(document).forEach((el) => delete el.dataset.btChecked);
       sweep(document.documentElement);
     }
+    if (changes[ALLOWLIST_KEY]) {
+      const v = changes[ALLOWLIST_KEY].newValue;
+      allowSet = new Set(Object.keys((v && v.list) || {}).map((k) => (k[0] === "@" ? k.toLowerCase() : k)));
+      updateInstantHideBlocklistCSS(lastAppliedChannels, lastAppliedVideos);
+      queryTiles(document).forEach((el) => delete el.dataset.btChecked);
+      sweep(document.documentElement);
+    }
   });
 
   // ---------- load blocklist from background, stay live-updated ----------
-  function applyBlocklist(channels, videos) {
+  // Channels the user has put on the allow-list: a hard "never hide anything
+  // from this channel", overriding every block path (direct, collaborator,
+  // title keyword, duration, age rule). @handle keys are lowercased.
+  let allowSet = new Set();
+  function isAllowlisted(key) {
+    if (!key || !allowSet.size) return false;
+    return allowSet.has(key) || allowSet.has(String(key).toLowerCase());
+  }
+  function applyBlocklist(channels, videos, allowlist) {
+    if (allowlist && typeof allowlist === "object") {
+      allowSet = new Set(Object.keys(allowlist).map((k) => (k[0] === "@" ? k.toLowerCase() : k)));
+    }
     blockedChannels = new Map(Object.entries(channels || {}));
     blockedByHandle = new Map();
     blockedByUcid = new Map();
@@ -1105,11 +1400,24 @@
     blockedVideoIds = new Set(Object.keys(videos || {}));
     anyAgeRule = Array.from(blockedChannels.values()).some((e) => e && e.blockOlderThanDays > 0);
     updateInstantHideBlocklistCSS(channels, videos);
+    dbg(
+      "blocklist applied —",
+      blockedChannels.size,
+      "channels,",
+      blockedByHandle.size,
+      "handle-indexed,",
+      blockedByUcid.size,
+      "ucid-indexed,",
+      blockedVideoIds.size,
+      "videos,",
+      keywordMatchers.length,
+      "keywords"
+    );
   }
 
   chrome.runtime.sendMessage({ type: MSG.GET_BLOCKLIST }, (res) => {
     if (!res) return;
-    applyBlocklist(res.channels, res.videos);
+    applyBlocklist(res.channels, res.videos, res.allowlist);
     blocklistLoaded = true;
     // catch anything YouTube already inserted before the blocklist arrived
     sweep(document.documentElement);
@@ -1187,10 +1495,11 @@
 
     if (!blocklistLoaded) return;
     const target = getCurrentPageTarget();
+    if (target.channels.some((c) => isAllowlisted(c.key))) return; // allow-list wins
     const ageDays = anyAgeRule && target.videoId ? currentPageAgeDays() : null;
     const blocked =
       (target.videoId && blockedVideoIds.has(target.videoId)) ||
-      (target.videoId && matchesKeyword(target.videoTitle)) ||
+      matchesFilter(target) ||
       target.channels.some((c) => channelBlocks(blockedEntryFor(c.key), target.videoId, ageDays));
     if (blocked) {
       window.location.href = SAFE_LANDING_URL;
@@ -1217,7 +1526,7 @@
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === MSG.BLOCKLIST_UPDATED) {
-      applyBlocklist(msg.channels, msg.videos);
+      applyBlocklist(msg.channels, msg.videos, msg.allowlist);
       // a newly-blocked id might match tiles already marked "checked"; force a recheck
       queryTiles(document).forEach((el) => {
         delete el.dataset.btChecked;
@@ -1290,4 +1599,52 @@
     scrubOwnChannelPage(document.documentElement);
     checkCurrentPageAndRedirect();
   });
+
+  // ---------- debug surface (only when DEBUG) ----------
+  if (DEBUG) {
+    console.debug(
+      "%c[BlockTube] debug mode on%c — every removal is logged below with its reason. " +
+        "For __blockTube.state() / __blockTube.why('<selector>'), switch the console's " +
+        "JavaScript context (top-left dropdown) to “BlockTube”.",
+      "color:#c00;font-weight:bold",
+      "color:inherit;font-weight:normal"
+    );
+    window.__blockTube = {
+      state: () => ({
+        channels: blockedChannels.size,
+        byHandle: blockedByHandle.size,
+        byUcid: blockedByUcid.size,
+        videos: blockedVideoIds.size,
+        keywords: keywordMatchers.length,
+        durMinSec,
+        durMaxSec,
+        anyAgeRule,
+        settings,
+        blocklistLoaded
+      }),
+      // Explain a tile: pass an element or a CSS selector (first match).
+      why: (elOrSel) => {
+        const el = typeof elOrSel === "string" ? document.querySelector(elOrSel) : elOrSel;
+        if (!el) return "no element";
+        const info = extractInfo(el);
+        if (!info) return "not a tile (no video id / channel link)";
+        const channels = [...info.channels.keys()].map((k) => ({
+          key: k,
+          blockedEntry: !!blockedEntryFor(k),
+          via: blockedChannels.has(k) ? "key" : blockedByHandle.has(k.toLowerCase()) ? "@handle" : blockedByUcid.has(k) ? "ucid" : "—"
+        }));
+        return {
+          videoId: info.videoId,
+          title: info.videoTitle,
+          durationSec: info.durationSec,
+          ageDays: info.ageDays,
+          channels,
+          verdict: blockReason(info) || "NOT blocked"
+        };
+      },
+      // Toggle persistent debug (survives reload) without the URL param.
+      enable: () => localStorage.setItem("bt_debug", "1"),
+      disable: () => localStorage.removeItem("bt_debug")
+    };
+  }
 })();

@@ -6,7 +6,7 @@ if (typeof importScripts === "function") {
   importScripts("../shared/constants.js", "./gist-sync.js");
 }
 
-const { MSG, STORAGE, CHANNEL_MODE, SYNC, SETTINGS_KEY, DEFAULT_SETTINGS } = self.BlockTube;
+const { MSG, STORAGE, CHANNEL_MODE, SYNC, SETTINGS_KEY, DEFAULT_SETTINGS, ALLOWLIST_KEY } = self.BlockTube;
 
 // A cross-device clock: gist-sync.js feeds GitHub's response Date header back
 // through syncHost.setClockOffset so last-write-wins merges aren't corrupted by
@@ -399,6 +399,33 @@ async function getSettings() {
   return { ...DEFAULT_SETTINGS, ...(res[SETTINGS_KEY] || {}) };
 }
 
+// { list: { [channelKey]: {note?, ts} }, ts } — channels that must never be
+// blocked. `@handle` keys are stored lowercased so a DOM link and a stored
+// key compare regardless of case.
+async function getAllowlist() {
+  const res = await chrome.storage.sync.get(ALLOWLIST_KEY);
+  const a = res[ALLOWLIST_KEY];
+  return a && a.list && typeof a.list === "object" ? { list: a.list, ts: Number(a.ts) || 0 } : { list: {}, ts: 0 };
+}
+function normAllowKey(key) {
+  const k = String(key || "").trim();
+  if (!k) return null;
+  if (k.startsWith("@")) return k.toLowerCase();
+  const m = k.match(/(UC[\w-]{22})/);
+  return m ? m[1] : k;
+}
+async function setAllowed(key, on, note) {
+  const norm = normAllowKey(key);
+  if (!norm) return { list: {}, ts: 0 };
+  const cur = await getAllowlist();
+  const list = { ...cur.list };
+  if (on) list[norm] = { note: note || "", ts: Date.now() };
+  else delete list[norm];
+  const next = { list, ts: Date.now() };
+  await chrome.storage.sync.set({ [ALLOWLIST_KEY]: next }).catch(() => {});
+  return next;
+}
+
 async function rebuildDnrRules(state) {
   const settings = await getSettings();
   const existing = await chrome.declarativeNetRequest.getDynamicRules();
@@ -418,8 +445,10 @@ async function rebuildDnrRules(state) {
   // soft-blocked channel can't be targeted here (this rule only has the
   // channel's URL, not a list of its video IDs); content.js's
   // checkCurrentPageAndRedirect() closes that gap after the page renders.
+  const allow = (await getAllowlist()).list;
+  const isAllowed = (key) => !!allow[normAllowKey(key)];
   const fullyBlockedChannelKeys = Object.entries(state.channels)
-    .filter(([, entry]) => entry.mode !== CHANNEL_MODE.EXCEPT_WHITELIST)
+    .filter(([key, entry]) => entry.mode !== CHANNEL_MODE.EXCEPT_WHITELIST && !isAllowed(key))
     .sort(byTsDesc)
     .slice(0, DNR_MAX_CHANNEL_RULES)
     .map(([key]) => key);
@@ -626,7 +655,8 @@ async function broadcastUpdate(state, { fromSync = false } = {}) {
   const payload = {
     type: MSG.BLOCKLIST_UPDATED,
     channels: state.channels,
-    videos: state.videos
+    videos: state.videos,
+    allowlist: (await getAllowlist()).list
   };
   const tabs = await chrome.tabs.query({ url: ["*://www.youtube.com/*", "*://m.youtube.com/*"] });
   for (const tab of tabs) {
@@ -642,7 +672,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     switch (msg.type) {
       case MSG.GET_BLOCKLIST: {
         const state = await loadAll();
-        sendResponse({ channels: state.channels, videos: state.videos });
+        sendResponse({ channels: state.channels, videos: state.videos, allowlist: (await getAllowlist()).list });
+        break;
+      }
+      case MSG.ALLOW_CHANNEL:
+      case MSG.DISALLOW_CHANNEL: {
+        await setAllowed(msg.id, msg.type === MSG.ALLOW_CHANNEL, msg.note);
+        await broadcastUpdate(await loadAll());
+        sendResponse({ ok: true });
         break;
       }
       case MSG.BLOCK_CHANNEL: {

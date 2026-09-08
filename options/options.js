@@ -16,9 +16,14 @@ let bulkStop = false;
 // than this and you're meant to narrow with search or a tab.
 const RENDER_CAP = 300;
 
+// Bulk-select mode: channel rows grow a checkbox and an action bar appears.
+let selectMode = false;
+const selected = new Set();
+
 async function refresh() {
   state = await chrome.runtime.sendMessage({ type: MSG.GET_BLOCKLIST });
   render();
+  if (typeof renderAllowlist === "function") renderAllowlist();
   if (typeof renderRecentUnblocks === "function") renderRecentUnblocks();
 }
 
@@ -138,6 +143,10 @@ function render() {
     smallNote.textContent = `${hiddenBySmall} channel${hiddenBySmall === 1 ? "" : "s"} under ${smallThreshold.toLocaleString()} subs hidden.`;
   }
 
+  renderChannelStats(allChannels, allVideos);
+  renderEnrichNote(allChannels);
+  syncBulkBar();
+
   const clearVideosBtn = document.getElementById("clear-videos-btn");
   if (clearVideosBtn) {
     const total = allVideos.length;
@@ -157,6 +166,101 @@ function render() {
   } else {
     warning.hidden = true;
   }
+}
+
+// One-line summary above the channel list: counts by mode + total reach.
+function renderChannelStats(allChannels, allVideos) {
+  const el = document.getElementById("channel-stats");
+  if (!el) return;
+  if (!allChannels.length) {
+    el.hidden = true;
+    return;
+  }
+  let full = 0;
+  let video = 0;
+  let hidden = 0;
+  let subSum = 0;
+  let subKnown = 0;
+  let biggest = null;
+  for (const [, e] of allChannels) {
+    if (e.mode === CHANNEL_MODE.EXCEPT_WHITELIST) video++;
+    else full++;
+    if (e.hidden) hidden++;
+    const n = subsToNumber(e.subs);
+    if (n != null) {
+      subSum += n;
+      subKnown++;
+      if (!biggest || n > biggest.n) biggest = { n, name: e.name || e.handle };
+    }
+  }
+  const parts = [
+    `${allChannels.length.toLocaleString()} channels`,
+    `${full.toLocaleString()} full`,
+    `${video.toLocaleString()} video-only`
+  ];
+  if (hidden) parts.push(`${hidden.toLocaleString()} hidden`);
+  parts.push(`${allVideos.length.toLocaleString()} videos`);
+  if (subKnown) {
+    parts.push(`~${fmtCount(subSum)} subs blocked (of ${subKnown.toLocaleString()} known)`);
+    if (biggest) parts.push(`biggest: ${biggest.name} (${fmtCount(biggest.n)})`);
+  }
+  el.textContent = parts.join("  ·  ");
+  el.hidden = false;
+}
+
+function fmtCount(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K";
+  return String(n);
+}
+
+// Warn about UC…-keyed channels with no scraped @handle yet — modern feed
+// tiles link by @handle, so those can slip through until enriched.
+function renderEnrichNote(allChannels) {
+  const el = document.getElementById("enrich-note");
+  if (!el) return;
+  if (bulkRunning) {
+    el.hidden = true;
+    return;
+  }
+  // UC…-keyed, still no @handle, and not scraped in the last week (a fresh
+  // scrape that still found no handle means the channel genuinely has none —
+  // deleted/terminated — so stop nagging about it).
+  const RECENTLY = 7 * 24 * 60 * 60 * 1000;
+  const unresolved = allChannels
+    .filter(([id, e]) => id.startsWith("UC") && !e.handle && !(e.subsAt && Date.now() - e.subsAt < RECENTLY))
+    .map(([id]) => id);
+  if (!unresolved.length) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  el.replaceChildren();
+  el.append(
+    `${unresolved.length.toLocaleString()} channel${unresolved.length === 1 ? "" : "s"} have no @handle yet — feed tiles link by @handle, so these may not be fully blocked until resolved. `
+  );
+  const b = document.createElement("button");
+  b.textContent = "Resolve now";
+  b.className = "linklike";
+  b.addEventListener("click", () => {
+    bulkFetchSubs(unresolved, document.getElementById("fetch-all-subs-btn"), "Resolved");
+  });
+  el.appendChild(b);
+}
+
+// Keep the bulk-select bar and per-row checkboxes in sync with `selectMode` /
+// `selected`. Called at the end of every render().
+function syncBulkBar() {
+  const bar = document.getElementById("bulk-bar");
+  const modeBtn = document.getElementById("select-mode-btn");
+  if (!bar || !modeBtn) return;
+  modeBtn.classList.toggle("active", selectMode);
+  // Drop selections for rows no longer in the blocklist at all.
+  for (const id of [...selected]) if (!state.channels || !state.channels[id]) selected.delete(id);
+  bar.hidden = !selectMode;
+  const countEl = document.getElementById("bulk-count");
+  if (countEl) countEl.textContent = `${selected.size} selected`;
 }
 
 function renderList(listEl, emptyEl, moreEl, entries, build) {
@@ -234,6 +338,19 @@ function buildChannelRow(id, entry) {
 
   const top = document.createElement("div");
   top.className = "row-top";
+
+  if (selectMode) {
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.className = "row-check";
+    check.checked = selected.has(id);
+    check.addEventListener("change", () => {
+      if (check.checked) selected.add(id);
+      else selected.delete(id);
+      syncBulkBar();
+    });
+    top.appendChild(check);
+  }
 
   const name = document.createElement("span");
   name.className = "item-name";
@@ -478,6 +595,76 @@ function extractVideoId(text) {
   return m ? m[1] : null;
 }
 
+// "@handle" | "UC…" | a channel URL -> a normalized channel key, or null.
+function extractChannelKey(text) {
+  const s = (text || "").trim();
+  if (!s) return null;
+  let m = s.match(/(UC[\w-]{22})/);
+  if (m) return m[1];
+  m = s.match(/@[\w.-]{2,}/);
+  if (m) return m[0].toLowerCase();
+  return null;
+}
+
+// ---------- "Never-block" allow-list ----------
+function renderAllowlist() {
+  const ul = document.getElementById("allow-list");
+  if (!ul) return;
+  const empty = document.getElementById("allow-empty");
+  const list = (state.allowlist && typeof state.allowlist === "object" && state.allowlist) || {};
+  const keys = Object.keys(list).sort((a, b) => (list[b].ts || 0) - (list[a].ts || 0));
+  ul.innerHTML = "";
+  keys.forEach((key) => {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "item-name";
+    // Show the channel's display name if it's also somewhere in the blocklist.
+    const known = Object.entries(state.channels || {}).find(
+      ([id, e]) => id === key || (e.handle || "").toLowerCase() === key || e.ucid === key
+    );
+    name.textContent = (known && known[1].name) || key;
+    li.appendChild(name);
+    if (known && known[1].name) {
+      const idSpan = document.createElement("span");
+      idSpan.className = "item-id";
+      idSpan.textContent = key;
+      li.appendChild(idSpan);
+    }
+    const rm = document.createElement("button");
+    rm.className = "unblock-btn";
+    rm.textContent = "Remove";
+    rm.addEventListener("click", async () => {
+      rm.disabled = true;
+      await chrome.runtime.sendMessage({ type: MSG.DISALLOW_CHANNEL, id: key });
+      refresh();
+    });
+    li.appendChild(rm);
+    ul.appendChild(li);
+  });
+  if (empty) empty.hidden = keys.length > 0;
+}
+
+function initAllowlist() {
+  const btn = document.getElementById("allow-add-btn");
+  if (!btn) return;
+  const input = document.getElementById("allow-input");
+  const add = async () => {
+    const key = extractChannelKey(input.value);
+    if (!key) {
+      alert("Couldn't read a channel from that — paste an @handle, a UC… ID, or a channel URL.");
+      return;
+    }
+    input.value = "";
+    await chrome.runtime.sendMessage({ type: MSG.ALLOW_CHANNEL, id: key });
+    refresh();
+  };
+  btn.addEventListener("click", add);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") add();
+  });
+}
+initAllowlist();
+
 // ---------- top-level page tabs (Blocklist / Settings / Sync) ----------
 function showPage(name) {
   document.querySelectorAll(".page-tab").forEach((b) => b.classList.toggle("active", b.dataset.page === name));
@@ -531,6 +718,71 @@ document.getElementById("small-threshold").addEventListener("change", (e) => {
   smallThreshold = Math.max(0, Math.floor(Number(e.target.value) || 0));
   if (hideSmall) render();
 });
+
+// ---------- bulk-select mode ----------
+document.getElementById("select-mode-btn").addEventListener("click", () => {
+  selectMode = !selectMode;
+  if (!selectMode) selected.clear();
+  render();
+});
+
+function shownChannelIds() {
+  return Array.from(document.querySelectorAll("#channel-list .channel-row")).map((li) => li.dataset.id);
+}
+
+document.getElementById("bulk-select-all").addEventListener("click", () => {
+  shownChannelIds().forEach((id) => selected.add(id));
+  render();
+});
+document.getElementById("bulk-clear-sel").addEventListener("click", () => {
+  selected.clear();
+  render();
+});
+
+// Run one message per selected channel, then refresh once. `confirmMsg` is
+// shown when destructive; `label` names the op in the final alert.
+async function bulkApply(label, makeMsg, confirmMsg) {
+  const ids = [...selected];
+  if (!ids.length) return;
+  if (confirmMsg && !confirm(confirmMsg.replace("%n", ids.length))) return;
+  const bar = document.getElementById("bulk-bar");
+  bar.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  suppressStorageRefresh = true;
+  for (const id of ids) {
+    const msg = makeMsg(id);
+    if (msg) await chrome.runtime.sendMessage(msg).catch(() => {});
+  }
+  suppressStorageRefresh = false;
+  selected.clear();
+  bar.querySelectorAll("button").forEach((b) => (b.disabled = false));
+  await refresh();
+  alert(`${label}: ${ids.length} channel${ids.length === 1 ? "" : "s"}.`);
+}
+
+document.getElementById("bulk-hide").addEventListener("click", () =>
+  bulkApply("Hidden", (id) => ({ type: MSG.SET_ENTRY_HIDDEN, kind: "channel", id, hidden: true }))
+);
+document.getElementById("bulk-videoonly").addEventListener("click", () =>
+  bulkApply("Switched to video-only", (id) => ({
+    type: MSG.SET_CHANNEL_MODE,
+    id,
+    mode: CHANNEL_MODE.EXCEPT_WHITELIST
+  }))
+);
+document.getElementById("bulk-allow").addEventListener("click", () =>
+  bulkApply(
+    "Added to never-block",
+    (id) => ({ type: MSG.ALLOW_CHANNEL, id }),
+    "Never-block %n selected channel(s)? They stay in the blocklist but nothing from them will be hidden."
+  )
+);
+document.getElementById("bulk-unblock").addEventListener("click", () =>
+  bulkApply(
+    "Unblocked",
+    (id) => ({ type: MSG.UNBLOCK_CHANNEL, id }),
+    "Unblock %n selected channel(s)? You can restore recent ones from “Recently unblocked”."
+  )
+);
 
 // Scrape sub counts for a set of channel ids, a few in parallel, with a small
 // stagger so youtube.com isn't hammered. Repaints once at the end.
@@ -630,11 +882,66 @@ document.getElementById("export-btn").addEventListener("click", () => {
   URL.revokeObjectURL(url);
 });
 
+// Original BlockTube export → this extension's { channels, videos } shape.
+// filterData.channelId / .videoId are text lists: each real id is preceded by
+// a `// Blocked by … (<name>) (<M/D/YYYY, h:mm:ss AM/PM>)` line.
+function convertOldBlockTube(raw) {
+  const fd = raw.filterData || {};
+  const COMMENT_RE = /^\/\/\s*Blocked by [^(]*\((.*)\) \((\d{1,2}\/\d{1,2}\/\d{4}[^)]*)\)\s*$/;
+  const toTs = (s) => {
+    const t = Date.parse(s);
+    return Number.isNaN(t) ? Date.now() : t;
+  };
+  const parse = (lines, idRe) => {
+    const out = {};
+    let name = "";
+    let ts = 0;
+    for (const ln of lines || []) {
+      const s = String(ln).trim();
+      if (!s) continue;
+      if (s.startsWith("//")) {
+        const m = s.match(COMMENT_RE);
+        if (m) {
+          name = m[1].trim();
+          ts = toTs(m[2]);
+        } else if (!s.startsWith("// Add your")) {
+          // name with a stray newline landed on the comment line — keep going
+        }
+        continue;
+      }
+      if (idRe.test(s) && !out[s]) {
+        out[s] = { name, ts: ts || Date.now() };
+        name = "";
+        ts = 0;
+      }
+    }
+    return out;
+  };
+  const chRaw = parse(fd.channelId, /^(UC[\w-]{22}|@[\w.-]+)$/);
+  const vidRaw = parse(fd.videoId, /^[\w-]{11}$/);
+  const channels = {};
+  for (const [id, v] of Object.entries(chRaw)) {
+    channels[id] = { name: v.name, ts: v.ts, mode: "full", whitelist: {} };
+  }
+  const videos = {};
+  for (const [id, v] of Object.entries(vidRaw)) videos[id] = { title: v.name, ts: v.ts };
+  return { channels, videos };
+}
+
 document.getElementById("import-input").addEventListener("change", async (e) => {
   const file = e.target.files[0];
   if (!file) return;
   try {
-    const data = JSON.parse(await file.text());
+    let data = JSON.parse(await file.text());
+    // Accept the original BlockTube export shape too (filterData.channelId is a
+    // text list: a "// Blocked by … (Name) (Date)" comment then the id).
+    if (data && data.filterData && Array.isArray(data.filterData.channelId)) {
+      data = convertOldBlockTube(data);
+      alert(
+        `Detected an old-BlockTube export — converted to ${Object.keys(data.channels).length} ` +
+          `channels and ${Object.keys(data.videos).length} videos.`
+      );
+    }
     if (!data || typeof data !== "object" || (!data.channels && !data.videos)) {
       throw new Error("no \"channels\" or \"videos\" object found");
     }
@@ -906,7 +1213,7 @@ function initSync() {
 initSync();
 
 // ---------- title-keyword filters ----------
-let keywords = { list: [], ts: 0 };
+let keywords = { list: [], ts: 0, durMinSec: 0, durMaxSec: 0 };
 
 function renderKeywords() {
   const ul = document.getElementById("kw-list");
@@ -941,17 +1248,42 @@ function renderKeywords() {
 
 async function saveKeywords() {
   keywords.ts = Date.now();
-  await chrome.storage.sync.set({ [KEYWORDS_KEY]: { list: keywords.list, ts: keywords.ts } });
+  await chrome.storage.sync.set({
+    [KEYWORDS_KEY]: {
+      list: keywords.list,
+      ts: keywords.ts,
+      durMinSec: keywords.durMinSec || 0,
+      durMaxSec: keywords.durMaxSec || 0
+    }
+  });
   chrome.runtime.sendMessage({ type: MSG.SYNC_NOW }).catch(() => {});
   renderKeywords();
+}
+
+function renderDuration() {
+  const mn = document.getElementById("dur-min");
+  const mx = document.getElementById("dur-max");
+  if (!mn) return;
+  mn.value = keywords.durMinSec ? String(keywords.durMinSec) : "";
+  mx.value = keywords.durMaxSec ? String(Math.round(keywords.durMaxSec / 60)) : "";
 }
 
 function initKeywords() {
   if (!document.getElementById("kw-list")) return;
   chrome.storage.sync.get(KEYWORDS_KEY).then((r) => {
     const k = r[KEYWORDS_KEY];
-    if (k && Array.isArray(k.list)) keywords = { list: k.list, ts: Number(k.ts) || 0 };
+    if (k && Array.isArray(k.list)) {
+      keywords = { list: k.list, ts: Number(k.ts) || 0, durMinSec: Number(k.durMinSec) || 0, durMaxSec: Number(k.durMaxSec) || 0 };
+    }
     renderKeywords();
+    renderDuration();
+  });
+
+  document.getElementById("dur-save").addEventListener("click", () => {
+    keywords.durMinSec = Math.max(0, Math.floor(Number(document.getElementById("dur-min").value) || 0));
+    keywords.durMaxSec = Math.max(0, Math.floor(Number(document.getElementById("dur-max").value) || 0)) * 60;
+    saveKeywords();
+    renderDuration();
   });
 
   const add = () => {
@@ -982,8 +1314,12 @@ function initKeywords() {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === "sync" && changes[KEYWORDS_KEY]) {
       const k = changes[KEYWORDS_KEY].newValue;
-      keywords = k && Array.isArray(k.list) ? { list: k.list, ts: Number(k.ts) || 0 } : { list: [], ts: 0 };
+      keywords =
+        k && Array.isArray(k.list)
+          ? { list: k.list, ts: Number(k.ts) || 0, durMinSec: Number(k.durMinSec) || 0, durMaxSec: Number(k.durMaxSec) || 0 }
+          : { list: [], ts: 0, durMinSec: 0, durMaxSec: 0 };
       renderKeywords();
+      renderDuration();
     }
   });
 }
