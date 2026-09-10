@@ -1,20 +1,31 @@
-const { MSG, STORAGE, CHANNEL_MODE, SETTINGS_KEY, DEFAULT_SETTINGS, KEYWORDS_KEY } = self.BlockTube;
+const { MSG, STORAGE, CHANNEL_MODE, SETTINGS_KEY, DEFAULT_SETTINGS, KEYWORDS_KEY, SETTING_GROUPS, resolveSettings } =
+  self.BlockTube;
 
 let state = { channels: {}, videos: {} };
 let filter = "";
-// Which filter tab is active: "all" | "full" | "videoOnly" | "videos" | "hidden"
+// Which filter tab is active: "all" | "full" | "videoOnly" | "videos" | "nosubs" | "hidden"
 let tab = "all";
-// Channel sort: "recent" | "subsDesc" | "subsAsc" | "name"
-let sortBy = "recent";
+// Channel sort: "recent" | "subsDesc" | "subsAsc" | "name".
+// Biggest-first by default — the whole point of the sub counts is to see who
+// the heavy hitters are; keep the <select> in options.html in step.
+let sortBy = "subsDesc";
 // Hide channels whose known sub count is below `smallThreshold` (unknown = kept).
 let hideSmall = false;
 let smallThreshold = 10000;
 // "Fetch all sub counts" run control.
 let bulkRunning = false;
 let bulkStop = false;
-// Cap on rows rendered per section — the blocklist can hold thousands; more
-// than this and you're meant to narrow with search or a tab.
+// How many rows a section renders before the "Show more" control. The
+// blocklist can hold thousands and building every row up front makes the page
+// crawl, so lists start capped and grow on demand instead of being truncated
+// outright — `shown` tracks the current limit per section and is reset
+// whenever the visible set changes (tab / search / sort).
 const RENDER_CAP = 300;
+const RENDER_STEP = 500;
+let shown = { channel: RENDER_CAP, video: RENDER_CAP };
+function resetShown() {
+  shown = { channel: RENDER_CAP, video: RENDER_CAP };
+}
 
 // Bulk-select mode: channel rows grow a checkbox and an action bar appears.
 let selectMode = false;
@@ -52,7 +63,8 @@ function render() {
   const hiddenCount =
     allChannels.filter(([, e]) => e.hidden).length + allVideos.filter(([, e]) => e.hidden).length;
 
-  const wantChannels = tab === "all" || tab === "full" || tab === "videoOnly" || tab === "hidden";
+  const wantChannels =
+    tab === "all" || tab === "full" || tab === "videoOnly" || tab === "nosubs" || tab === "hidden";
   const wantVideos = tab === "all" || tab === "videos" || tab === "hidden";
 
   const channelSort = {
@@ -76,6 +88,11 @@ function render() {
     .filter(([, e]) => {
       if (tab === "full") return e.mode !== CHANNEL_MODE.EXCEPT_WHITELIST;
       if (tab === "videoOnly") return e.mode === CHANNEL_MODE.EXCEPT_WHITELIST;
+      // Channels with no usable subscriber *number*: never fetched, or the
+      // channel hides its count, or the scrape came back "n/a". These are the
+      // ones the sub-count sort can't place and the size filter can't judge,
+      // so they get a tab of their own to work through.
+      if (tab === "nosubs") return subsToNumber(e.subs) == null;
       return true;
     })
     .filter(([, e]) => {
@@ -99,6 +116,11 @@ function render() {
   });
   const hiddenTab = document.querySelector('.filter-tab[data-tab="hidden"]');
   if (hiddenTab) hiddenTab.textContent = `Hidden (${hiddenCount})`;
+  const noSubsTab = document.querySelector('.filter-tab[data-tab="nosubs"]');
+  if (noSubsTab) {
+    const n = allChannels.filter(([, e]) => subsToNumber(e.subs) == null && !e.hidden).length;
+    noSubsTab.textContent = `No sub count (${n})`;
+  }
 
   document.getElementById("channel-total").textContent = `(${allChannels.length})`;
   document.getElementById("video-total").textContent = `(${allVideos.length})`;
@@ -115,7 +137,8 @@ function render() {
     document.getElementById("channel-empty"),
     document.getElementById("channel-more"),
     channelEntries,
-    ([id, entry]) => buildChannelRow(id, entry)
+    ([id, entry]) => buildChannelRow(id, entry),
+    "channel"
   );
   renderList(
     document.getElementById("video-list"),
@@ -125,14 +148,15 @@ function render() {
     ([id, entry]) =>
       buildRow(entry.title || id, id, "video", entry, () =>
         chrome.runtime.sendMessage({ type: MSG.UNBLOCK_VIDEO, id })
-      )
+      ),
+    "video"
   );
 
   const subsBtn = document.getElementById("load-subs-btn");
   if (subsBtn) subsBtn.hidden = !bulkRunning && !wantChannels;
   const fetchAllBtn = document.getElementById("fetch-all-subs-btn");
   if (fetchAllBtn && !bulkRunning) {
-    const missing = allChannels.filter(([, e]) => !subsFresh(e)).length;
+    const missing = allChannels.filter(([, e]) => !subsAttempted(e)).length;
     fetchAllBtn.hidden = !wantChannels || missing === 0;
     fetchAllBtn.textContent = `Fetch all sub counts (${missing})`;
   }
@@ -143,6 +167,7 @@ function render() {
     smallNote.textContent = `${hiddenBySmall} channel${hiddenBySmall === 1 ? "" : "s"} under ${smallThreshold.toLocaleString()} subs hidden.`;
   }
 
+  setNavCount("nav-blocklist", allChannels.length + allVideos.length);
   renderChannelStats(allChannels, allVideos);
   renderEnrichNote(allChannels);
   syncBulkBar();
@@ -169,6 +194,11 @@ function render() {
 }
 
 // One-line summary above the channel list: counts by mode + total reach.
+function setNavCount(id, n) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = n ? String(n) : "";
+}
+
 function renderChannelStats(allChannels, allVideos) {
   const el = document.getElementById("channel-stats");
   if (!el) return;
@@ -263,40 +293,75 @@ function syncBulkBar() {
   if (countEl) countEl.textContent = `${selected.size} selected`;
 }
 
-function renderList(listEl, emptyEl, moreEl, entries, build) {
+function renderList(listEl, emptyEl, moreEl, entries, build, key) {
+  const limit = shown[key] || RENDER_CAP;
   listEl.innerHTML = "";
-  entries.slice(0, RENDER_CAP).forEach((e) => listEl.appendChild(build(e)));
+  entries.slice(0, limit).forEach((e) => listEl.appendChild(build(e)));
   emptyEl.hidden = entries.length > 0;
-  if (moreEl) {
-    moreEl.hidden = entries.length <= RENDER_CAP;
-    if (entries.length > RENDER_CAP) {
-      moreEl.textContent = `Showing ${RENDER_CAP} of ${entries.length}. Narrow with search or a tab.`;
-    }
-  }
+  if (!moreEl) return;
+
+  // The rest of the list is reachable, not just announced: "Show more" grows
+  // the limit a step at a time and "Show all" drops it entirely. Rendering
+  // every row up front is what the cap exists to avoid, so growing on demand
+  // keeps a 5,000-entry blocklist openable while still letting you get to the
+  // bottom of it.
+  moreEl.hidden = entries.length <= limit;
+  if (entries.length <= limit) return;
+  moreEl.replaceChildren();
+  moreEl.append(`Showing ${limit.toLocaleString()} of ${entries.length.toLocaleString()}. `);
+
+  const more = document.createElement("button");
+  more.className = "linklike";
+  const step = Math.min(RENDER_STEP, entries.length - limit);
+  more.textContent = `Show ${step.toLocaleString()} more`;
+  more.addEventListener("click", () => {
+    shown[key] = limit + RENDER_STEP;
+    render();
+  });
+  moreEl.appendChild(more);
+
+  moreEl.append(" · ");
+  const all = document.createElement("button");
+  all.className = "linklike";
+  all.textContent = `Show all ${entries.length.toLocaleString()}`;
+  all.addEventListener("click", () => {
+    shown[key] = Infinity;
+    render();
+  });
+  moreEl.appendChild(all);
 }
 
 function buildRow(label, id, kind, entry, onUnblock) {
+  // Same two-line shape as a channel row: title on its own line, id and any
+  // tags underneath, actions on the right.
   const li = document.createElement("li");
 
-  const name = document.createElement("span");
+  const main = document.createElement("div");
+  main.className = "row-main";
+
+  const name = document.createElement("div");
   name.className = "item-name";
   name.textContent = label;
-  li.appendChild(name);
+  main.appendChild(name);
 
+  const meta = document.createElement("div");
+  meta.className = "row-meta";
   const idSpan = document.createElement("span");
   idSpan.className = "item-id";
   idSpan.textContent = id;
-  li.appendChild(idSpan);
-
+  meta.appendChild(idSpan);
   if (entry.localOnly) {
     const tag = document.createElement("span");
     tag.className = "local-tag";
     tag.textContent = "local only";
-    li.appendChild(tag);
+    meta.appendChild(tag);
   }
+  main.appendChild(meta);
+  li.appendChild(main);
 
-  li.appendChild(buildHideBtn(kind, id, entry));
-
+  const actions = document.createElement("div");
+  actions.className = "row-actions";
+  actions.appendChild(buildHideBtn(kind, id, entry));
   const btn = document.createElement("button");
   btn.className = "unblock-btn";
   btn.textContent = "Unblock";
@@ -304,14 +369,12 @@ function buildRow(label, id, kind, entry, onUnblock) {
     await onUnblock();
     refresh();
   });
-  li.appendChild(btn);
+  actions.appendChild(btn);
+  li.appendChild(actions);
 
   return li;
 }
 
-// "Hide" removes a row from the blocklist manager without unblocking it — for
-// entries you've reviewed and don't want to keep scrolling past. The Hidden tab
-// shows them again with "Unhide".
 function buildHideBtn(kind, id, entry) {
   const btn = document.createElement("button");
   btn.className = "hide-btn";
@@ -352,54 +415,63 @@ function buildChannelRow(id, entry) {
     top.appendChild(check);
   }
 
-  const name = document.createElement("span");
+  // Two lines, not one: the name reads on its own, and everything that used to
+  // compete with it (id, sub count, block mode, local-only) drops to a quiet
+  // meta line underneath. A row is scanned far more often than it is acted on.
+  const main = document.createElement("div");
+  main.className = "row-main";
+
+  const name = document.createElement("div");
   name.className = "item-name";
   name.textContent = entry.name || entry.handle || id;
-  top.appendChild(name);
+  main.appendChild(name);
 
-  // Secondary identifier line. A channel keyed by @handle never gets one — the
-  // handle is already a readable identifier and shows as/above the name. A
-  // UC…-keyed channel shows its @handle once known (raw UC id kept as a
-  // tooltip), or the UC id until then — but not if that just duplicates the
-  // name line.
-  const idLabel = id.startsWith("@") ? null : entry.handle || id;
-  if (idLabel && idLabel !== (name.textContent || "")) {
+  const meta = document.createElement("div");
+  meta.className = "row-meta";
+
+  // A channel keyed by @handle needs no separate id — the handle already is
+  // one. A UC…-keyed channel shows its @handle once known (raw id as tooltip).
+  const idLabel = id.startsWith("@") ? id : entry.handle || id;
+  if (idLabel && idLabel !== name.textContent) {
     const idSpan = document.createElement("span");
     idSpan.className = "item-id";
     idSpan.textContent = idLabel;
     if (!id.startsWith("@") && entry.handle) idSpan.title = id;
-    top.appendChild(idSpan);
+    meta.appendChild(idSpan);
   }
 
-  top.appendChild(buildSubsChip(id, entry));
+  meta.appendChild(buildSubsChip(id, entry));
+
+  const isSoft = entry.mode === CHANNEL_MODE.EXCEPT_WHITELIST;
+  const modeTag = document.createElement("span");
+  modeTag.className = "mode-tag" + (isSoft ? " soft" : "");
+  modeTag.textContent = isSoft ? "Video-only" : "Full block";
+  modeTag.title = isSoft
+    ? "Its page stays reachable; its videos are blocked except the ones you allow."
+    : "The channel and everything from it is gone.";
+  meta.appendChild(modeTag);
 
   if (entry.localOnly) {
     const tag = document.createElement("span");
     tag.className = "local-tag";
     tag.textContent = "local only";
-    top.appendChild(tag);
+    tag.title = "Past the account-sync quota — stored on this device (still rides the gist, if connected).";
+    meta.appendChild(tag);
   }
+  main.appendChild(meta);
+  top.appendChild(main);
 
-  const isSoft = entry.mode === CHANNEL_MODE.EXCEPT_WHITELIST;
-  const modeTag = document.createElement("span");
-  modeTag.className = "mode-tag";
-  modeTag.textContent = isSoft ? "videos blocked (whitelist)" : "full block";
-  top.appendChild(modeTag);
+  // Right-hand column: only the action you actually reach for, plus a
+  // disclosure for the rest. Everything secondary lives in the drawer below
+  // rather than as four more buttons fighting for the same line.
+  const actions = document.createElement("div");
+  actions.className = "row-actions";
 
-  const modeBtn = document.createElement("button");
-  modeBtn.className = "mode-toggle-btn";
-  modeBtn.textContent = isSoft ? "Switch to full block" : "Switch to whitelist mode";
-  modeBtn.addEventListener("click", async () => {
-    await chrome.runtime.sendMessage({
-      type: MSG.SET_CHANNEL_MODE,
-      id,
-      mode: isSoft ? CHANNEL_MODE.FULL : CHANNEL_MODE.EXCEPT_WHITELIST
-    });
-    refresh();
-  });
-  top.appendChild(modeBtn);
-
-  top.appendChild(buildHideBtn("channel", id, entry));
+  const moreBtn = document.createElement("button");
+  moreBtn.className = "row-more-btn";
+  moreBtn.textContent = "⋯";
+  moreBtn.title = "More options";
+  moreBtn.setAttribute("aria-expanded", "false");
 
   const unblockBtn = document.createElement("button");
   unblockBtn.className = "unblock-btn";
@@ -408,27 +480,52 @@ function buildChannelRow(id, entry) {
     await chrome.runtime.sendMessage({ type: MSG.UNBLOCK_CHANNEL, id });
     refresh();
   });
-  top.appendChild(unblockBtn);
-
+  actions.append(moreBtn, unblockBtn);
+  top.appendChild(actions);
   li.appendChild(top);
-  if (isSoft) li.appendChild(buildWhitelistSection(id, entry));
+
+  const drawer = document.createElement("div");
+  drawer.className = "row-drawer";
+  drawer.hidden = true;
+
+  const drawerBtns = document.createElement("div");
+  drawerBtns.className = "drawer-btns";
+  const modeBtn = document.createElement("button");
+  modeBtn.className = "mode-toggle-btn";
+  modeBtn.textContent = isSoft ? "Switch to full block" : "Switch to video-only";
+  modeBtn.addEventListener("click", async () => {
+    await chrome.runtime.sendMessage({
+      type: MSG.SET_CHANNEL_MODE,
+      id,
+      mode: isSoft ? CHANNEL_MODE.FULL : CHANNEL_MODE.EXCEPT_WHITELIST
+    });
+    refresh();
+  });
+  drawerBtns.append(modeBtn, buildHideBtn("channel", id, entry));
+  drawer.appendChild(drawerBtns);
+
+  // The whitelist / age-rule editor only means anything in video-only mode.
+  if (isSoft) drawer.appendChild(buildWhitelistSection(id, entry));
+  li.appendChild(drawer);
+
+  moreBtn.addEventListener("click", () => {
+    drawer.hidden = !drawer.hidden;
+    moreBtn.setAttribute("aria-expanded", String(!drawer.hidden));
+    moreBtn.classList.toggle("open", !drawer.hidden);
+  });
+
   return li;
 }
 
-// Subscriber count chip. Shows the cached value if present, else a button that
-// scrapes it once (background does the fetch — see FETCH_CHANNEL_SUBS).
-const SUBS_STALE_MS = 30 * 24 * 60 * 60 * 1000;
-function subsFresh(entry) {
-  return entry && entry.subs && entry.subsAt && Date.now() - entry.subsAt < SUBS_STALE_MS;
+function subsAttempted(entry) {
+  return !!(entry && entry.subsAt);
 }
 function buildSubsChip(id, entry) {
   const chip = document.createElement("span");
   chip.className = "subs-chip";
-  const fresh = subsFresh(entry);
   if (entry.subs) {
     chip.textContent = entry.subs === "hidden" ? "subs hidden" : entry.subs + " subs";
     chip.title = "Click to refresh";
-    if (!fresh) chip.classList.add("stale");
   } else {
     chip.textContent = "get subs";
     chip.classList.add("action");
@@ -613,6 +710,7 @@ function renderAllowlist() {
   const empty = document.getElementById("allow-empty");
   const list = (state.allowlist && typeof state.allowlist === "object" && state.allowlist) || {};
   const keys = Object.keys(list).sort((a, b) => (list[b].ts || 0) - (list[a].ts || 0));
+  setNavCount("nav-allowlist", keys.length);
   ul.innerHTML = "";
   keys.forEach((key) => {
     const li = document.createElement("li");
@@ -683,12 +781,14 @@ try {
 
 document.getElementById("search").addEventListener("input", (e) => {
   filter = e.target.value.trim().toLowerCase();
+  resetShown(); // a different set of rows — start from the top again
   render();
 });
 
 document.querySelectorAll(".filter-tab").forEach((btn) => {
   btn.addEventListener("click", () => {
     tab = btn.dataset.tab;
+    resetShown();
     render();
   });
 });
@@ -707,6 +807,7 @@ document.getElementById("clear-videos-btn").addEventListener("click", async (e) 
 
 document.getElementById("sort-by").addEventListener("change", (e) => {
   sortBy = e.target.value;
+  resetShown();
   render();
 });
 
@@ -851,7 +952,7 @@ document.getElementById("load-subs-btn").addEventListener("click", (e) => {
   }
   const ids = Array.from(document.querySelectorAll("#channel-list .channel-row")).map((li) => li.dataset.id);
   bulkFetchSubs(
-    ids.filter((id) => state.channels[id] && !subsFresh(state.channels[id])),
+    ids.filter((id) => state.channels[id] && !subsAttempted(state.channels[id])),
     e.currentTarget,
     "Done"
   );
@@ -865,7 +966,7 @@ document.getElementById("fetch-all-subs-btn").addEventListener("click", (e) => {
     bulkStop = true;
     return;
   }
-  const ids = Object.keys(state.channels).filter((id) => !subsFresh(state.channels[id]));
+  const ids = Object.keys(state.channels).filter((id) => !subsAttempted(state.channels[id]));
   if (ids.length > 500 && !confirm(`Fetch subscriber counts for ${ids.length} channels? This takes a while — you can Stop and resume.`)) {
     return;
   }
@@ -952,7 +1053,7 @@ document.getElementById("import-input").addEventListener("change", async (e) => 
     });
     await refresh();
     if (res && res.ok) {
-      const need = Object.keys(state.channels).filter((id) => !subsFresh(state.channels[id]));
+      const need = Object.keys(state.channels).filter((id) => !subsAttempted(state.channels[id]));
       const go =
         need.length > 0 &&
         confirm(
@@ -985,122 +1086,150 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 // ---------- feature toggles ("What this extension changes") ----------
-const SETTING_DEFS = [
-  {
-    key: "removeShorts",
-    label: "Remove Shorts",
-    desc: "Shelves and tiles in feeds & search, the full-screen Shorts player, and /shorts links (all redirect to Subscriptions)."
-  },
-  {
-    key: "redirectHomepage",
-    label: "Skip the homepage",
-    desc: "Open youtube.com straight to your Subscriptions feed instead of the recommendations home page."
-  },
-  {
-    key: "logoToSubscriptions",
-    label: "Logo → Subscriptions",
-    desc: "The YouTube logo in the top bar goes to Subscriptions instead of the home feed."
-  },
-  {
-    key: "cleanSidebar",
-    label: "Trim the left sidebar",
-    desc: "Hide Home, Shorts, Explore, More from YouTube, Report history, and the small-print footer. Subscriptions and Library stay."
-  },
-  {
-    key: "cleanMasthead",
-    label: "Trim the top bar",
-    desc: "Hide the Create (+) and Notifications buttons."
-  },
-  {
-    key: "removeRelated",
-    label: "Hide related videos",
-    desc: "Remove the “up next” column next to the player and widen the video/description/comments column into the space."
-  },
-  {
-    key: "removeEndScreen",
-    label: "Hide end-screen suggestions",
-    desc: "Remove the grid of suggested videos that covers the player at the end, plus the teaser cards that pop up mid-video."
-  },
-  {
-    key: "hideVoiceSearch",
-    label: "Hide the voice-search button",
-    desc: "Remove the microphone “Search with your voice” button next to the search bar."
-  },
-  {
-    key: "accountButtonOnHover",
-    label: "Auto-hide the account button",
-    desc: "Fade out your account avatar in the top-right corner; it reappears when you hover that corner."
-  },
-  {
-    key: "hideVideoActions",
-    label: "Hide the video action buttons",
-    desc: "On a watch page, remove Share, Save, Download, Clip and the “⋯” more menu (which is where Report lives). Like/Dislike and Subscribe stay."
-  },
-  {
-    key: "hideMemberships",
-    label: "Hide channel memberships",
-    desc: "Remove the “Join” button, members-only videos and shelves wherever they appear, and the Membership tab on channels."
-  },
-  {
-    key: "hideSearchSuggestions",
-    label: "Hide search autocomplete",
-    desc: "Remove the dropdown of suggested/trending searches that appears while you type in the search box."
-  }
-];
-
+// ---------------- "What gets hidden" ----------------
+// Two levels: a group is a heading with a master switch, and every leaf under
+// it is one thing removed from YouTube. Only leaves are stored (see
+// SETTING_GROUPS in shared/constants.js) — the master is derived from its
+// leaves, so it can never disagree with what is actually applied.
 let currentSettings = { ...DEFAULT_SETTINGS };
+let settingsFilter = "";
+
+const settingsListEl = () => document.getElementById("settings-list");
+
+async function writeSettings(next) {
+  currentSettings = next;
+  await chrome.storage.sync.set({ [SETTINGS_KEY]: currentSettings });
+  renderSettings();
+}
+
+function matchesSettingFilter(group, item) {
+  if (!settingsFilter) return true;
+  const hay = `${group.label} ${group.desc} ${item.label} ${item.desc}`.toLowerCase();
+  return hay.includes(settingsFilter);
+}
+
+function buildToggle(className, checked, onChange, key) {
+  const label = document.createElement("label");
+  label.className = className;
+  if (key) label.dataset.key = key;
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = checked;
+  cb.addEventListener("change", () => onChange(cb.checked));
+  const slider = document.createElement("span");
+  slider.className = "slider";
+  label.append(cb, slider);
+  return { label, cb };
+}
 
 function renderSettings() {
-  const list = document.getElementById("settings-list");
+  const list = settingsListEl();
   if (!list) return;
-  list.innerHTML = "";
-  for (const def of SETTING_DEFS) {
-    const row = document.createElement("div");
-    row.className = "setting-row";
+  list.replaceChildren();
+  let shown = 0;
 
-    const text = document.createElement("div");
-    text.className = "setting-text";
-    const t = document.createElement("div");
-    t.className = "setting-label";
-    t.textContent = def.label;
-    const d = document.createElement("div");
-    d.className = "setting-desc";
-    d.textContent = def.desc;
-    text.append(t, d);
+  for (const group of SETTING_GROUPS) {
+    const items = group.items.filter((it) => matchesSettingFilter(group, it));
+    if (!items.length) continue;
+    shown += items.length;
 
-    const sw = document.createElement("label");
-    sw.className = "switch";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = currentSettings[def.key] !== false;
-    cb.addEventListener("change", async () => {
-      currentSettings = { ...currentSettings, [def.key]: cb.checked };
-      await chrome.storage.sync.set({ [SETTINGS_KEY]: currentSettings });
+    const section = document.createElement("section");
+    section.className = "sgroup";
+    section.dataset.group = group.id;
+
+    const head = document.createElement("header");
+    head.className = "sgroup-head";
+
+    const title = document.createElement("div");
+    title.className = "sgroup-title";
+    const h = document.createElement("h2");
+    h.textContent = group.label;
+    const sub = document.createElement("p");
+    sub.textContent = group.desc;
+    title.append(h, sub);
+
+    // The master reflects the group's leaves: on when all are on, off when
+    // none are, mixed otherwise. Clicking it sets every leaf in the group.
+    const on = group.items.filter((it) => currentSettings[it.key] !== false).length;
+    const all = group.items.length;
+
+    const meta = document.createElement("div");
+    meta.className = "sgroup-meta";
+    const count = document.createElement("span");
+    count.className = "sgroup-count";
+    count.textContent = on === all ? `all ${all} hidden` : on === 0 ? "none hidden" : `${on} of ${all} hidden`;
+    const { label: master, cb: masterCb } = buildToggle("group-toggle", on === all, async (checked) => {
+      const next = { ...currentSettings };
+      for (const it of group.items) next[it.key] = checked;
+      await writeSettings(next);
     });
-    const slider = document.createElement("span");
-    slider.className = "slider";
-    sw.append(cb, slider);
+    masterCb.indeterminate = on > 0 && on < all;
+    master.title = `Turn everything in “${group.label}” ${on === all ? "off" : "on"}`;
+    meta.append(count, master);
+    head.append(title, meta);
 
-    row.append(text, sw);
-    list.appendChild(row);
+    const ul = document.createElement("ul");
+    ul.className = "sitems";
+    for (const item of items) {
+      const li = document.createElement("li");
+      li.className = "sitem";
+      const text = document.createElement("div");
+      text.className = "sitem-text";
+      const lab = document.createElement("div");
+      lab.className = "setting-label";
+      lab.textContent = item.label;
+      const desc = document.createElement("div");
+      desc.className = "setting-desc";
+      desc.textContent = item.desc || "";
+      text.append(lab, desc);
+      const { label: sw } = buildToggle(
+        "switch",
+        currentSettings[item.key] !== false,
+        (checked) => writeSettings({ ...currentSettings, [item.key]: checked }),
+        item.key
+      );
+      li.append(text, sw);
+      ul.appendChild(li);
+    }
+
+    section.append(head, ul);
+    list.appendChild(section);
+  }
+
+  const empty = document.getElementById("settings-empty");
+  if (empty) empty.hidden = shown > 0;
+  const navCount = document.getElementById("nav-settings");
+  if (navCount) {
+    const total = SETTING_GROUPS.reduce((n, g) => n + g.items.length, 0);
+    const active = SETTING_GROUPS.reduce(
+      (n, g) => n + g.items.filter((it) => currentSettings[it.key] !== false).length,
+      0
+    );
+    navCount.textContent = `${active}/${total}`;
   }
 }
 
 async function initSettings() {
-  if (!document.getElementById("settings-card")) return;
-  const res = await chrome.storage.sync.get({ [SETTINGS_KEY]: DEFAULT_SETTINGS });
-  currentSettings = { ...DEFAULT_SETTINGS, ...(res[SETTINGS_KEY] || {}) };
+  if (!settingsListEl()) return;
+  const res = await chrome.storage.sync.get({ [SETTINGS_KEY]: null });
+  currentSettings = resolveSettings(res[SETTINGS_KEY]);
   renderSettings();
 
+  const search = document.getElementById("settings-search");
+  if (search) {
+    search.addEventListener("input", (e) => {
+      settingsFilter = e.target.value.trim().toLowerCase();
+      renderSettings();
+    });
+  }
+
   document.getElementById("settings-reset").addEventListener("click", async () => {
-    currentSettings = { ...DEFAULT_SETTINGS };
-    await chrome.storage.sync.set({ [SETTINGS_KEY]: currentSettings });
-    renderSettings();
+    await writeSettings({ ...DEFAULT_SETTINGS });
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === "sync" && changes[SETTINGS_KEY]) {
-      currentSettings = { ...DEFAULT_SETTINGS, ...(changes[SETTINGS_KEY].newValue || {}) };
+      currentSettings = resolveSettings(changes[SETTINGS_KEY].newValue);
       renderSettings();
     }
   });
@@ -1219,6 +1348,7 @@ function renderKeywords() {
   const ul = document.getElementById("kw-list");
   const empty = document.getElementById("kw-empty");
   if (!ul) return;
+  setNavCount("nav-keywords", keywords.list.length);
   ul.innerHTML = "";
   keywords.list.forEach((k, i) => {
     const li = document.createElement("li");
@@ -1366,4 +1496,24 @@ document.getElementById("recent-clear").addEventListener("click", async () => {
   renderRecentUnblocks();
 });
 
-refresh();
+// Opening this page fetches the subscriber counts (and @handles, and real
+// names) for channels that have never been looked up, then pushes them to the
+// gist — bulkFetchSubs() ends with SYNC_NOW. It is self-limiting: only
+// channels with no recorded attempt qualify, so once the blocklist is
+// resolved this does nothing on subsequent opens, and counts already cached
+// are never re-fetched (see subsAttempted). Resolving @handles is not just
+// cosmetic — a UC…-keyed channel doesn't block modern feed tiles until its
+// handle is known.
+//
+// It runs as the normal bulk job, so the button doubles as Stop and progress
+// shows in the usual place; it just isn't waiting on a click.
+async function autoFetchMissingSubs() {
+  if (bulkRunning) return;
+  const ids = Object.keys(state.channels || {}).filter((id) => !subsAttempted(state.channels[id]));
+  if (!ids.length) return;
+  const btn = document.getElementById("fetch-all-subs-btn");
+  if (!btn) return;
+  await bulkFetchSubs(ids, btn, "Auto-fetched");
+}
+
+refresh().then(autoFetchMissingSubs);

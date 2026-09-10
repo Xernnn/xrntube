@@ -395,8 +395,10 @@ const DNR_MAX_CHANNEL_RULES = 3000; // urlFilter, not regex; keeps total < 4000
 const SAFE_LANDING_URL = "https://www.youtube.com/feed/subscriptions";
 
 async function getSettings() {
-  const res = await chrome.storage.sync.get({ [SETTINGS_KEY]: DEFAULT_SETTINGS });
-  return { ...DEFAULT_SETTINGS, ...(res[SETTINGS_KEY] || {}) };
+  const res = await chrome.storage.sync.get({ [SETTINGS_KEY]: null });
+  // resolveSettings expands the legacy coarse keys an older version wrote, so
+  // an upgrade doesn't quietly switch a disabled DNR rule back on.
+  return self.BlockTube.resolveSettings(res[SETTINGS_KEY]);
 }
 
 // { list: { [channelKey]: {note?, ts} }, ts } — channels that must never be
@@ -447,11 +449,37 @@ async function rebuildDnrRules(state) {
   // checkCurrentPageAndRedirect() closes that gap after the page renders.
   const allow = (await getAllowlist()).list;
   const isAllowed = (key) => !!allow[normAllowKey(key)];
-  const fullyBlockedChannelKeys = Object.entries(state.channels)
+  // A channel has two URL identities (/channel/UC… and /@handle) and an entry
+  // is keyed by only one of them. Emit a rule for BOTH whenever the other one
+  // is known, or navigating by the un-keyed form walks straight past DNR.
+  const toPath = (k) => (k.startsWith("@") ? "/" + k : "/channel/" + k);
+  const blockedEntries = Object.entries(state.channels)
     .filter(([key, entry]) => entry.mode !== CHANNEL_MODE.EXCEPT_WHITELIST && !isAllowed(key))
-    .sort(byTsDesc)
+    .sort(byTsDesc);
+  // Primary keys first, alternates only with the budget left over: under the
+  // cap, every blocked channel keeping the rule for the identity it is keyed
+  // by matters more than any one channel being covered twice.
+  const seenPaths = new Set();
+  const primary = [];
+  const alternate = [];
+  for (const [key, entry] of blockedEntries) {
+    const p = toPath(key);
+    if (!seenPaths.has(p)) {
+      seenPaths.add(p);
+      primary.push(p);
+    }
+    const alt = key.startsWith("@") ? entry.ucid : entry.handle;
+    if (alt && !isAllowed(alt)) {
+      const ap = toPath(alt);
+      if (!seenPaths.has(ap)) {
+        seenPaths.add(ap);
+        alternate.push(ap);
+      }
+    }
+  }
+  const fullyBlockedChannelPaths = primary
     .slice(0, DNR_MAX_CHANNEL_RULES)
-    .map(([key]) => key);
+    .concat(alternate.slice(0, Math.max(0, DNR_MAX_CHANNEL_RULES - primary.length)));
 
   const addRules = [];
 
@@ -461,14 +489,16 @@ async function rebuildDnrRules(state) {
       priority: 1,
       action: { type: "redirect", redirect: { url: SAFE_LANDING_URL } },
       condition: {
-        regexFilter: "[?&]v=" + id + "(&|$)",
+        // The same video is reachable as ?v=<id>, /shorts/<id>, /live/<id>,
+        // /embed/<id> and /v/<id> — matching only "?v=" left the other four
+        // shapes playing a blocked video at the network layer.
+        regexFilter: "([?&]v=|/(?:shorts|live|embed|v)/)" + id + "([&?/]|$)",
         resourceTypes: ["main_frame"]
       }
     });
   });
 
-  fullyBlockedChannelKeys.forEach((key, i) => {
-    const path = key.startsWith("@") ? "/" + key : "/channel/" + key;
+  fullyBlockedChannelPaths.forEach((path, i) => {
     addRules.push({
       id: DNR_RULE_ID_BASE_CHANNEL + i,
       priority: 1,
@@ -493,7 +523,7 @@ async function rebuildDnrRules(state) {
       }
     });
   }
-  if (settings.removeShorts) {
+  if (settings.shortsPlayer) {
     addRules.push({
       id: DNR_RULE_ID_SHORTS,
       priority: 1,
@@ -549,9 +579,30 @@ async function scrapeChannelInfo(key) {
     }
     reader.cancel().catch(() => {});
   } catch {
-    return html ? parseChannelHtml(html) : null;
+    return html ? verifyChannelInfo(key, parseChannelHtml(html)) : null;
   }
-  return parseChannelHtml(html);
+  return verifyChannelInfo(key, parseChannelHtml(html));
+}
+
+// Last line of defence for the identity fields. We asked for ONE specific
+// channel, so whichever identity the page reports for the format we requested
+// by must be the one we requested — if /@foo comes back claiming to be
+// "@bar", the parse latched onto some other channel embedded in the page and
+// the UC id next to it is not "@foo"'s either. Drop both rather than write a
+// stranger's id onto the entry: a wrong ucid/handle cross-indexes the
+// blocklist and generates a DNR redirect against an innocent channel. `subs`
+// and `name` are cosmetic and survive.
+function verifyChannelInfo(key, info) {
+  if (!info || info.rateLimited) return info;
+  const asked = String(key || "");
+  const mismatch = asked.startsWith("@")
+    ? info.handle && info.handle.toLowerCase() !== asked.toLowerCase()
+    : info.ucid && info.ucid !== asked;
+  if (mismatch) {
+    console.debug("[BlockTube] identity mismatch for", asked, "— discarding scraped handle/ucid");
+    return { ...info, handle: null, ucid: null };
+  }
+  return info;
 }
 
 function parseChannelHtml(html) {
@@ -563,10 +614,14 @@ function parseChannelHtml(html) {
   if (subs) subs = subs.replace(/\s+/g, "").trim();
   else if (/"subscriberCountText"/.test(html)) subs = "hidden";
 
+  // Ordered most- to least-authoritative. "canonicalBaseUrl" is LAST because
+  // it is not unique to this page: every video/shelf item in the response
+  // carries its own, so on a page whose first shelf item is someone else's
+  // video it names the WRONG channel.
   const handleM =
     html.match(/"vanityChannelUrl":"https?:\/\/[^"]*\/(@[A-Za-z0-9._-]+)"/i) ||
-    html.match(/"canonicalBaseUrl":"\/(@[A-Za-z0-9._-]+)"/i) ||
-    html.match(/<link[^>]+rel="canonical"[^>]+href="https:\/\/www\.youtube\.com\/(@[A-Za-z0-9._-]+)"/i);
+    html.match(/<link[^>]+rel="canonical"[^>]+href="https:\/\/www\.youtube\.com\/(@[A-Za-z0-9._-]+)"/i) ||
+    html.match(/"canonicalBaseUrl":"\/(@[A-Za-z0-9._-]+)"/i);
   const handle = handleM ? handleM[1] : null;
 
   const nameM =
@@ -582,14 +637,79 @@ function parseChannelHtml(html) {
 
   // The canonical UC… id — lets an @handle-keyed entry also match tiles /
   // navigation that use /channel/UC….
+  //
+  // ORDER MATTERS, and only page-identity sources are safe here. The bare
+  // `"channelId"` and `/channel/UC…` matches that used to lead this list are
+  // NOT unique to the page: a channel page embeds shelves of other people's
+  // videos, each carrying its own channelId. Worse, `"externalId"` (which is
+  // authoritative) sits near the very END of the ~2.4MB document, past the
+  // point the streaming reader above deliberately stops — so on a real
+  // /@handle page the old order fell through to the first `"channelId"` in a
+  // shelf and recorded a STRANGER's UC id. That id then went into
+  // blockedByUcid and into a DNR redirect rule, silently blocking an innocent
+  // channel. <link rel="canonical"> and <meta itemprop> both appear early and
+  // describe only this page.
   const ucM =
-    html.match(/"externalId":"(UC[A-Za-z0-9_-]{22})"/) ||
-    html.match(/"channelId":"(UC[A-Za-z0-9_-]{22})"/) ||
+    html.match(/<link[^>]+rel="canonical"[^>]+href="https?:\/\/[^"]*\/channel\/(UC[A-Za-z0-9_-]{22})"/i) ||
     html.match(/<meta[^>]+itemprop="(?:identifier|channelId)"[^>]+content="(UC[A-Za-z0-9_-]{22})"/i) ||
-    html.match(/\/channel\/(UC[A-Za-z0-9_-]{22})/);
+    html.match(/"externalId":"(UC[A-Za-z0-9_-]{22})"/);
   const ucid = ucM ? ucM[1] : null;
 
   return { subs, handle, name, ucid };
+}
+
+// Which channel does this video belong to? /embed/<id> renders a working
+// player with no channel byline, no canonical link and no ytInitialData the
+// content script can read, so the DOM simply cannot answer this — without a
+// lookup, a blocked channel's video plays fine under /embed/. oEmbed is a
+// small public JSON endpoint (no API key) that returns author_url.
+// Bounded in-memory cache; a service-worker restart just re-fetches.
+const videoChannelCache = new Map(); // videoId -> "@handle" | "UC…" | null
+const VIDEO_CHANNEL_CACHE_MAX = 500;
+async function resolveVideoChannel(videoId) {
+  if (!/^[\w-]{11}$/.test(videoId || "")) return null;
+  if (videoChannelCache.has(videoId)) return videoChannelCache.get(videoId);
+  let key = null;
+  try {
+    const res = await fetch(
+      "https://www.youtube.com/oembed?format=json&url=" +
+        encodeURIComponent("https://www.youtube.com/watch?v=" + videoId)
+    );
+    // 401/404 = private, deleted or age-restricted. Nothing to resolve; cache
+    // the miss so a page that keeps re-checking doesn't keep re-fetching.
+    if (res.ok) {
+      const data = await res.json();
+      const m = String(data.author_url || "").match(/\/(channel\/UC[\w-]{22}|@[\w.-]+)/);
+      if (m) key = m[1].startsWith("channel/") ? m[1].slice("channel/".length) : m[1];
+    }
+  } catch (e) {
+    return null; // offline — don't cache a network failure as "no channel"
+  }
+  if (videoChannelCache.size >= VIDEO_CHANNEL_CACHE_MAX) {
+    videoChannelCache.delete(videoChannelCache.keys().next().value);
+  }
+  videoChannelCache.set(videoId, key);
+  return key;
+}
+
+// A channel is keyed by whichever identity the DOM link the user blocked from
+// happened to carry — but feed tiles link @handles while imports and channel
+// URLs carry UC ids, and DNR needs both. Resolve the other half right when a
+// channel is blocked (fire-and-forget: the block itself must not wait on the
+// network), then rebroadcast so open tabs and the DNR rules pick it up.
+// Without this, blocking a channel from its /@handle page leaves
+// youtube.com/channel/UC… reachable until the next "fetch sub counts" sweep.
+async function enrichChannelIdentity(key) {
+  try {
+    const info = await scrapeChannelInfo(key);
+    if (!info || info.rateLimited) return;
+    if (!info.handle && !info.ucid && info.subs == null && !info.name) return;
+    await applyChannelInfo({ [key]: info });
+    await broadcastUpdate(await loadAll());
+  } catch (e) {
+    // Offline / blocked fetch — the entry still blocks by the key it has.
+    console.debug("[BlockTube] identity enrich failed", e);
+  }
 }
 
 // Merge a { id: {subs, handle, name} } map into the blocklist with ONE storage
@@ -687,6 +807,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const state = await addEntry("channel", msg.id, msg.name, { mode, whitelist: {} });
         await broadcastUpdate(state);
         sendResponse({ ok: true });
+        enrichChannelIdentity(msg.id);
         break;
       }
       case MSG.SET_CHANNEL_MODE: {
@@ -858,6 +979,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           channels: Object.keys(fresh.channels).length,
           videos: Object.keys(fresh.videos).length
         });
+        break;
+      }
+      case MSG.RESOLVE_VIDEO_CHANNEL: {
+        sendResponse({ ok: true, channelKey: await resolveVideoChannel(msg.videoId) });
         break;
       }
       case MSG.REBROADCAST_BLOCKLIST: {

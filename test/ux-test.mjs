@@ -35,7 +35,7 @@ await opt.waitForTimeout(150);
 (await opt.locator("#page-settings").isVisible()) && (await opt.locator("#page-blocklist").isHidden())
   ? ok("clicking Settings tab swaps the visible page")
   : fail("settings tab did not swap");
-(await opt.locator("#settings-list .switch").count()) === 12 ? ok("12 toggles present on Settings page") : fail("toggle count");
+(await opt.locator("#settings-list .switch").count()) === 32 ? ok("32 toggles present on Settings page") : fail("toggle count");
 
 await opt.locator('.page-tab[data-page="sync"]').click();
 await opt.waitForTimeout(150);

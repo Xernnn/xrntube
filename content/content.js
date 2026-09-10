@@ -1,5 +1,5 @@
 (() => {
-  const { MSG, CHANNEL_MODE, DEFAULT_SETTINGS, SETTINGS_KEY, KEYWORDS_KEY, ALLOWLIST_KEY } = self.BlockTube;
+  const { MSG, CHANNEL_MODE, DEFAULT_SETTINGS, SETTINGS_KEY, KEYWORDS_KEY, ALLOWLIST_KEY, resolveSettings } = self.BlockTube;
 
   // Where blocked content — and now Home and Shorts entirely — get sent instead.
   const SAFE_LANDING_URL = "https://www.youtube.com/feed/subscriptions";
@@ -12,6 +12,14 @@
   // as before; the real values arrive async from chrome.storage.sync just after
   // document_start (see the loader near the bottom).
   let settings = { ...DEFAULT_SETTINGS };
+  // Every removable thing has its own switch (see SETTING_GROUPS). These are
+  // the groups a scrub covers: the scrub bails early only when *nothing* in
+  // its group is on, then checks each key where it acts.
+  const SIDEBAR_KEYS = ["sidebarHome", "sidebarShorts", "sidebarExplore", "sidebarMoreFromYouTube", "sidebarReportHistory", "sidebarFooter"];
+  const ACTION_KEYS = ["actionShare", "actionSave", "actionDownload", "actionClip", "actionThanks", "actionMore"];
+  const MEMBERSHIP_KEYS = ["joinButton", "membershipPrices", "membersOnlyTiles", "membershipTab"];
+  const CHANNEL_TAB_KEYS = ["tabPosts", "tabShows", "tabPodcasts", "tabStore", "shortsChannelTab", "membershipTab"];
+  const anyOn = (keys) => keys.some((k) => settings[k]);
 
   // ---------- debug mode ----------
   // Enable with ?bt-debug in the URL or localStorage.setItem("bt_debug","1").
@@ -72,7 +80,11 @@
       explore: ["explore"],
       moreFromYouTube: ["more from youtube"],
       reportHistory: ["report history"],
-      shorts: ["shorts"]
+      shorts: ["shorts"],
+      shows: ["shows"],
+      store: ["store", "shop"],
+      posts: ["posts", "community"],
+      podcasts: ["podcasts"]
     },
     vi: {
       share: ["chia sẻ"],
@@ -90,7 +102,11 @@
       explore: ["khám phá"],
       moreFromYouTube: ["thêm từ youtube"],
       reportHistory: ["nhật ký báo cáo", "lịch sử báo cáo"],
-      shorts: ["shorts"]
+      shorts: ["shorts"],
+      shows: ["chương trình"],
+      store: ["cửa hàng"],
+      posts: ["bài đăng", "cộng đồng"],
+      podcasts: ["podcast"]
     },
     es: {
       share: ["compartir"],
@@ -108,7 +124,11 @@
       explore: ["explorar"],
       moreFromYouTube: ["más de youtube"],
       reportHistory: ["historial de denuncias"],
-      shorts: ["shorts"]
+      shorts: ["shorts"],
+      shows: ["programas", "series"],
+      store: ["tienda"],
+      posts: ["publicaciones", "comunidad"],
+      podcasts: ["podcasts"]
     },
     pt: {
       share: ["compartilhar", "partilhar"],
@@ -126,7 +146,11 @@
       explore: ["explorar"],
       moreFromYouTube: ["mais do youtube"],
       reportHistory: ["histórico de denúncias"],
-      shorts: ["shorts"]
+      shorts: ["shorts"],
+      shows: ["programas", "séries"],
+      store: ["loja"],
+      posts: ["publicações", "comunidade"],
+      podcasts: ["podcasts"]
     },
     fr: {
       share: ["partager"],
@@ -144,7 +168,11 @@
       explore: ["explorer"],
       moreFromYouTube: ["plus de youtube"],
       reportHistory: ["historique des signalements"],
-      shorts: ["shorts"]
+      shorts: ["shorts"],
+      shows: ["émissions", "séries"],
+      store: ["boutique"],
+      posts: ["posts", "publications", "communauté"],
+      podcasts: ["podcasts"]
     },
     de: {
       share: ["teilen"],
@@ -162,7 +190,11 @@
       explore: ["entdecken"],
       moreFromYouTube: ["mehr von youtube"],
       reportHistory: ["meldeverlauf"],
-      shorts: ["shorts"]
+      shorts: ["shorts"],
+      shows: ["sendungen", "serien"],
+      store: ["shop", "store"],
+      posts: ["beiträge", "community"],
+      podcasts: ["podcasts"]
     }
   };
   const L = (() => {
@@ -204,19 +236,26 @@
   // the feature toggles, so this is rebuilt whenever settings change. Each
   // block is emitted only if its toggle is on.
   const STATIC_CSS_PARTS = {
-    cleanSidebar: `
+    sidebarHome: `
       ytd-mini-guide-entry-renderer:has(> a[href="/"]),
-      ytd-mini-guide-entry-renderer:has(> a[href="/shorts/"]),
       ytd-guide-entry-renderer:has(> a[href="/"]),
-      ytd-guide-entry-renderer:has(> a[title="Shorts" i]),
-      ytd-guide-entry-renderer:has(> a[title="Report history" i]),
       ytm-pivot-bar-item-renderer:has(a[href="/"]),
+      ytm-guide-entry-renderer:has(a[href="/"])
+        { display: none !important; }`,
+    sidebarShorts: `
+      ytd-mini-guide-entry-renderer:has(> a[href="/shorts/"]),
+      ytd-guide-entry-renderer:has(> a[href="/shorts/"]),
+      ytd-guide-entry-renderer:has(> a[title="Shorts" i]),
       ytm-pivot-bar-item-renderer:has(a[href="/shorts/"]),
-      ytm-guide-entry-renderer:has(a[href="/"]),
       ytm-guide-entry-renderer:has(a[href="/shorts/"])
         { display: none !important; }`,
-    cleanMasthead: `
-      ${ariaSel("ytd-masthead ", L.create)},
+    sidebarReportHistory: `
+      ytd-guide-entry-renderer:has(> a[title="Report history" i])
+        { display: none !important; }`,
+    mastheadCreate: `
+      ${ariaSel("ytd-masthead ", L.create)}
+        { display: none !important; }`,
+    mastheadNotifications: `
       ytd-masthead [aria-label*="notification" i],
       ytd-notification-topbar-button-renderer
         { display: none !important; }`,
@@ -237,17 +276,33 @@
       ytd-masthead #avatar-btn:hover {
         opacity: 1 !important;
       }`,
-    hideVideoActions: `
-      ytd-watch-metadata #actions yt-button-view-model:has(:is(${ariaSel("", [].concat(L.share, L.save, L.clip, L.thanks))})),
-      ytd-watch-metadata #actions ytd-download-button-renderer,
+    actionShare: `
+      ytd-watch-metadata #actions yt-button-view-model:has(:is(${ariaSel("", L.share)}))
+        { display: none !important; }`,
+    actionSave: `
+      ytd-watch-metadata #actions yt-button-view-model:has(:is(${ariaSel("", L.save)}))
+        { display: none !important; }`,
+    actionClip: `
+      ytd-watch-metadata #actions yt-button-view-model:has(:is(${ariaSel("", L.clip)}))
+        { display: none !important; }`,
+    actionThanks: `
+      ytd-watch-metadata #actions yt-button-view-model:has(:is(${ariaSel("", L.thanks)}))
+        { display: none !important; }`,
+    actionDownload: `
+      ytd-watch-metadata #actions ytd-download-button-renderer
+        { display: none !important; }`,
+    actionMore: `
       ytd-watch-metadata #actions yt-icon-button:has(:is(${ariaSel("", L.more)}))
         { display: none !important; }`,
-    hideMemberships: `
-      /* the "Join" (channel membership) button, watch page + channel page */
+    joinButton: `
+      /* the legacy "Join" (channel membership) button, watch + channel page.
+         The modern channel header's Join is a bare button-view-model with no
+         membership-specific hook — scrubJoinButtons() matches that by label. */
       #sponsor-button,
       ytd-sponsor-button-renderer,
       yt-sponsor-button-view-model
-        { display: none !important; }
+        { display: none !important; }`,
+    membersOnlyTiles: `
       /* legacy members-only tile badge (the new badge-shape one is matched by
          text in scrubMembersOnly since its class is shared with other badges) */
       :is(${["ytd-rich-item-renderer", "ytd-video-renderer", "ytd-grid-video-renderer", "ytd-compact-video-renderer", "yt-lockup-view-model"].join(",")}):has(.badge-style-type-members-only)
@@ -308,7 +363,7 @@
       .ytp-ce-expanding-image,
       .ytp-cards-teaser
         { display: none !important; }`,
-    removeShorts: `
+    shortsFeedTiles: `
       ytd-reel-shelf-renderer,
       ytm-reel-shelf-renderer,
       ytd-reel-item-renderer,
@@ -586,7 +641,7 @@
   const AMBIGUOUS_SHELF_SELECTOR = "ytd-rich-shelf-renderer, ytm-rich-shelf-renderer, grid-shelf-view-model";
 
   function scrubShorts(root) {
-    if (!settings.removeShorts) return;
+    if (!settings.shortsFeedTiles) return;
     if (!root.querySelectorAll) return;
     // Checked first, before the more specific removals below, so it can
     // still see nested Shorts content as evidence before that evidence is
@@ -629,9 +684,16 @@
   // matched here as a backup — confirmed live that the full guide drawer's
   // Shorts entry (unlike the always-visible mini guide) has no href on its
   // anchor at all. Compared case-insensitively.
-  const HIDDEN_NAV_LABELS = new Set(
-    [].concat(L.shorts, L.explore, L.moreFromYouTube, L.reportHistory, L.report).map((s) => s.toLowerCase())
-  );
+  // Built per call now, because each guide entry has its own switch.
+  function activeNavLabels() {
+    const out = new Set();
+    const add = (list) => { for (const s of list) out.add(s.toLowerCase()); };
+    if (settings.sidebarShorts) add(L.shorts);
+    if (settings.sidebarExplore) add(L.explore);
+    if (settings.sidebarMoreFromYouTube) add(L.moreFromYouTube);
+    if (settings.sidebarReportHistory) { add(L.reportHistory); add(L.report); }
+    return out;
+  }
   const GUIDE_FOOTER_SIGNAL_RE = /Test new features|How YouTube works|Policy\s*&\s*Safety/i;
   const GUIDE_CONTAINER_SELECTOR = [
     "ytd-mini-guide-renderer",
@@ -665,14 +727,18 @@
   }
 
   function scrubGuide(root) {
-    if (!settings.cleanSidebar) return;
+    if (!anyOn(SIDEBAR_KEYS)) return;
     if (!root.querySelectorAll) return;
     root.querySelectorAll(GUIDE_CONTAINER_SELECTOR).forEach((guide) => {
       // Home and Shorts: matched by their link, not their tag/label — far
       // less likely to break if YouTube renames the wrapper element again
       // or the UI is in another language. YouTube's actual Shorts link is
       // "/shorts/" (trailing slash) — confirmed against the live site.
-      guide.querySelectorAll('a[href="/"], a[href="/shorts/"]').forEach((a) => {
+      const linkSel = [settings.sidebarHome && 'a[href="/"]', settings.sidebarShorts && 'a[href="/shorts/"]']
+        .filter(Boolean)
+        .join(",");
+      if (!linkSel) return;
+      guide.querySelectorAll(linkSel).forEach((a) => {
         const item = a.closest(NAV_ITEM_WRAPPER_SELECTOR) || a;
         item.remove();
       });
@@ -682,11 +748,12 @@
         "ytd-guide-entry-renderer, ytd-mini-guide-entry-renderer, ytd-guide-section-renderer, ytm-pivot-bar-item-renderer, ytm-guide-entry-renderer"
       )
       .forEach((el) => {
-        if (HIDDEN_NAV_LABELS.has(navLabelOf(el).toLowerCase())) el.remove();
+        if (activeNavLabels().has(navLabelOf(el).toLowerCase())) el.remove();
       });
     // The little-print link list + copyright line at the bottom of the guide.
     // Scoped to ytd-guide-renderer and gated on its distinctive text so this
     // never touches an unrelated #footer elsewhere on the page.
+    if (!settings.sidebarFooter) return;
     root.querySelectorAll("#footer").forEach((el) => {
       if (el.isConnected && el.closest("ytd-guide-renderer") && GUIDE_FOOTER_SIGNAL_RE.test(el.textContent || "")) {
         el.remove();
@@ -701,15 +768,19 @@
   const MASTHEAD_CREATE_LABELS = new Set(L.create.map((s) => s.toLowerCase()));
   const MASTHEAD_HIDE_NOTIF_RE = /notification/i;
   function scrubMasthead(root) {
-    if (!settings.cleanMasthead) return;
+    if (!settings.mastheadCreate && !settings.mastheadNotifications) return;
     const masthead = root.querySelector ? root.querySelector("ytd-masthead, ytm-app-bar-renderer") : null;
     if (!masthead) return;
-    masthead.querySelectorAll("ytd-notification-topbar-button-renderer").forEach((el) => el.remove());
+    if (settings.mastheadNotifications) {
+      masthead.querySelectorAll("ytd-notification-topbar-button-renderer").forEach((el) => el.remove());
+    }
     masthead
       .querySelectorAll("button, a, yt-icon-button, ytd-button-renderer, tp-yt-paper-icon-button, ytd-topbar-menu-button-renderer")
       .forEach((el) => {
         const label = (el.getAttribute("aria-label") || el.getAttribute("title") || "").trim();
-        if (MASTHEAD_CREATE_LABELS.has(label.toLowerCase()) || MASTHEAD_HIDE_NOTIF_RE.test(label)) {
+        const isCreate = settings.mastheadCreate && MASTHEAD_CREATE_LABELS.has(label.toLowerCase());
+        const isNotif = settings.mastheadNotifications && MASTHEAD_HIDE_NOTIF_RE.test(label);
+        if (isCreate || isNotif) {
           const wrapper =
             el.closest(
               "ytd-button-renderer, ytd-notification-topbar-button-renderer, ytd-topbar-menu-button-renderer, yt-icon-button, tp-yt-paper-icon-button"
@@ -778,16 +849,27 @@
   // also takes Report out of reach (it only lives in that popup). Like/Dislike
   // are left alone — their labels aren't in the list, and we never remove the
   // row's shared ytd-menu-renderer wrapper.
-  const VIDEO_ACTION_LABELS = new Set(
-    [].concat(L.share, L.save, L.clip, L.thanks, L.download, L.more, L.report).map((s) => s.toLowerCase())
-  );
+  // Built per call: each button under a video is its own switch. "Report"
+  // rides with More, because removing the overflow menu is what puts it out of
+  // reach in the first place.
+  function activeActionLabels() {
+    const out = new Set();
+    const add = (list) => { for (const s of list) out.add(s.toLowerCase()); };
+    if (settings.actionShare) add(L.share);
+    if (settings.actionSave) add(L.save);
+    if (settings.actionClip) add(L.clip);
+    if (settings.actionThanks) add(L.thanks);
+    if (settings.actionDownload) add(L.download);
+    if (settings.actionMore) { add(L.more); add(L.report); }
+    return out;
+  }
   function scrubVideoActions(root) {
-    if (!settings.hideVideoActions) return;
+    if (!anyOn(ACTION_KEYS)) return;
     if (!root.querySelectorAll) return;
     root.querySelectorAll("ytd-watch-metadata #actions").forEach((actions) => {
       actions.querySelectorAll("[aria-label]").forEach((el) => {
         const label = (el.getAttribute("aria-label") || "").trim().toLowerCase();
-        if (!VIDEO_ACTION_LABELS.has(label) || label.includes("like")) return;
+        if (!activeActionLabels().has(label) || label.includes("like")) return;
         const wrap =
           el.closest(
             "yt-button-view-model, ytd-button-renderer, ytd-download-button-renderer, ytd-toggle-button-renderer"
@@ -810,16 +892,10 @@
     extrasScheduled = true;
     setTimeout(() => {
       extrasScheduled = false;
-      scrubShorts(document.documentElement);
-      scrubGuide(document.documentElement);
-      scrubMasthead(document.documentElement);
-      retargetLogo(document.documentElement);
-      scrubSideRecommendations(document.documentElement);
-      scrubEndScreen(document.documentElement);
-      scrubVideoActions(document.documentElement);
-      scrubMembersOnly(document.documentElement);
-      scrubOwnChannelPage(document.documentElement);
-      scrubPosts(document.documentElement);
+      // Must go through runExtras() rather than repeating its list here — this
+      // is the path the 2s heartbeat drives, so anything listed only in one of
+      // the two copies silently never runs on a normal page load.
+      runExtras();
       recheckHydratingTiles(document.documentElement);
     }, 400);
   }
@@ -830,6 +906,10 @@
   const CHANNEL_HREF_RE = /^\/(channel\/UC[\w-]{22}|@[\w.-]+)/;
   const VIDEO_ID_FROM_QUERY_RE = /[?&]v=([\w-]{11})/;
   const VIDEO_ID_FROM_SHORTS_RE = /\/shorts\/([\w-]{11})/;
+  // YouTube serves the same video under several path shapes. /live/<id> and
+  // /embed/<id> render a real player but carry no "?v=" — without these the
+  // nav guard reads "no video on this page" and lets a blocked video play.
+  const VIDEO_ID_FROM_PATH_RE = /^\/(?:live|embed|v)\/([\w-]{11})/;
 
   let blockedVideoIds = new Set();
   // key -> channel entry ({ name, ts, mode, whitelist, localOnly, handle }),
@@ -1127,7 +1207,7 @@
 
   function processRenderer(el) {
     if (el.dataset.btChecked === "1") return;
-    if (settings.hideMemberships && isMembersOnlyTile(el)) {
+    if (settings.membersOnlyTiles && isMembersOnlyTile(el)) {
       const shelf = findShelfAncestor(el);
       dbg("removed", el.tagName.toLowerCase(), "— members-only");
       el.remove();
@@ -1185,25 +1265,189 @@
   // "Membership" / "Members-only content" shelf and the channel Membership
   // tab (neither is a tile). Gated on hideMemberships.
   function scrubMembersOnly(root) {
-    if (!settings.hideMemberships) return;
+    if (!anyOn(MEMBERSHIP_KEYS)) return;
     if (!root.querySelectorAll) return;
-    queryTiles(root).forEach((el) => {
-      if (el.isConnected && isMembersOnlyTile(el)) {
-        const shelf = findShelfAncestor(el);
-        el.remove();
-        if (shelf) scheduleShelfPrune(shelf);
-      }
-    });
-    root.querySelectorAll(SHELF_SELECTOR).forEach((sh) => {
-      if (!sh.isConnected) return;
-      const title = (sh.querySelector("#title, .title, h2, yt-formatted-string#title, span.title") || {}).textContent || "";
-      if (MEMBERSHIP_ANY_RE.test(title.trim())) sh.remove();
-    });
-    const membershipTabSet = new Set([...L.membership, ...L.membersOnly, "members", "membership"].map((s) => s.toLowerCase()));
-    root.querySelectorAll("yt-tab-shape, tp-yt-paper-tab, [role='tab']").forEach((t) => {
-      if (t.isConnected && membershipTabSet.has((t.textContent || "").trim().toLowerCase())) t.remove();
-    });
+    if (settings.membersOnlyTiles) {
+      queryTiles(root).forEach((el) => {
+        if (el.isConnected && isMembersOnlyTile(el)) {
+          const shelf = findShelfAncestor(el);
+          el.remove();
+          if (shelf) scheduleShelfPrune(shelf);
+        }
+      });
+      root.querySelectorAll(SHELF_SELECTOR).forEach((sh) => {
+        if (!sh.isConnected) return;
+        const title = (sh.querySelector("#title, .title, h2, yt-formatted-string#title, span.title") || {}).textContent || "";
+        if (MEMBERSHIP_ANY_RE.test(title.trim())) sh.remove();
+      });
+    }
+    if (settings.membershipTab) {
+      const membershipTabSet = new Set([...L.membership, ...L.membersOnly, "members", "membership"].map((s) => s.toLowerCase()));
+      root.querySelectorAll(CHANNEL_TAB_SEL).forEach((t) => {
+        if (t.isConnected && membershipTabSet.has((t.textContent || "").trim().toLowerCase())) t.remove();
+      });
+    }
+    if (settings.joinButton) scrubJoinButtons(root);
+    if (settings.membershipPrices) scrubMembershipPrices(root);
   }
+
+  // The Join button is hidden by CSS, but YouTube renders its *price offer*
+  // as separate text beside it ("A$0 for 1st month", "A$7.49/mo") — hiding the
+  // button alone leaves a bare price floating in the channel header.
+  //
+  // Text-matched, so it is scoped hard: only leaf elements, only inside the
+  // channel/watch owner header, and only short strings that are essentially
+  // nothing but a price. A channel page is full of video titles containing
+  // "$5,000" (confirmed live), and those must not be touched — hence the
+  // anchored patterns rather than a loose currency search.
+  const MEMBERSHIP_PRICE_RE = [
+    // "A$7.49/mo", "$4.99 / month", "€3,99/Monat" — anywhere in a short string,
+    // since YouTube renders the offer as "Join  A$7.49/mo" and splits it
+    // across spans.
+    /\d[\d.,]*\s*\/\s*(mo|month|mois|monat|mês|mes|tháng)\b/i,
+    // "A$0 for 1st month", "$0 for first month"
+    /\d[\d.,]*\s+(for|pour|für|por|para|cho)\b.*\b(1st|first|premier|erste[rn]?|primeiro|primer|đầu)\b/i
+  ];
+  // Scope: the whole channel header (plus the watch page's owner row), MINUS
+  // the description blurb. Scoping to just the action row was too tight — the
+  // offer line is not necessarily a child of the button row — but the
+  // description is free text that can legitimately contain "$5/mo", so it is
+  // excluded explicitly rather than by hoping the pattern never matches it.
+  const PRICE_SCOPE_SEL =
+    "yt-flexible-actions-view-model, yt-page-header-renderer, yt-page-header-view-model, #channel-header, #channel-header-container, ytd-video-owner-renderer, #owner, #sponsor-button, ytd-sponsor-button-renderer, yt-sponsor-button-view-model";
+  // Description-specific ONLY. Generic containers (`#content`, `#contents`)
+  // must never appear here: they wrap the header itself on a channel page, so
+  // excluding them silently disables the whole scrub.
+  const PRICE_EXCLUDE_SEL =
+    "#description, #description-container, .ytPageHeaderViewModelDescription, yt-description-preview-view-model, #channel-tagline, ytd-channel-tagline-renderer";
+  function scrubMembershipPrices(root) {
+    if (!root.querySelectorAll) return;
+    for (const scope of root.querySelectorAll(PRICE_SCOPE_SEL)) {
+      if (!scope.isConnected) continue;
+      const hits = [];
+      for (const el of scope.querySelectorAll("*")) {
+        if (!el.isConnected) continue;
+        if (el.closest(PRICE_EXCLUDE_SEL)) continue; // channel description etc.
+        const t = (el.textContent || "").trim();
+        // Bounded strings only: an offer is a line, not a paragraph. Matching
+        // on textContent rather than leaf nodes is what catches "A$7.49/mo"
+        // when YouTube splits it into per-token spans (a leaf-only pass sees
+        // "A$7.49" and "/mo" separately and matches neither). The bound is
+        // generous enough for a whole offer line ("A$0 for 1st month, then
+        // A$7.49/mo") — the filter below takes the OUTERMOST match, so the
+        // line goes as a unit rather than leaving its other half behind. The
+        // bound is what stops that from walking up into the whole header.
+        if (!t || t.length > 90) continue;
+        if (MEMBERSHIP_PRICE_RE.some((re) => re.test(t))) hits.push(el);
+      }
+      // Keep only the outermost matches, then climb to the smallest wrapper
+      // holding nothing but the price so the row doesn't collapse to an empty
+      // padded box.
+      for (const el of hits) {
+        if (!el.isConnected) continue;
+        if (hits.some((other) => other !== el && other.contains(el))) continue;
+        let node = el;
+        const t = (node.textContent || "").trim();
+        while (node.parentElement && node.parentElement !== scope && (node.parentElement.textContent || "").trim() === t) {
+          node = node.parentElement;
+        }
+        node.remove();
+      }
+    }
+  }
+
+  // The "Join" button. The CSS layer covers the old components
+  // (`#sponsor-button` and friends), but the modern channel header renders it
+  // as a plain `button-view-model` inside `yt-flexible-actions-view-model`
+  // with NO membership-specific tag or id — confirmed live — so nothing in
+  // that selector list matched and the button (and the price offer beside it)
+  // stayed on the page. Match it the only way that's left: by its label.
+  // `aria-label` is "Join this channel", so this is a prefix test, not equality.
+  const JOIN_SCOPE_SEL =
+    "yt-flexible-actions-view-model, yt-page-header-renderer, #channel-header, ytd-video-owner-renderer, #owner";
+  const JOIN_BTN_SEL = "button, button-view-model, ytd-button-renderer, yt-button-shape, a[role='button']";
+  function scrubJoinButtons(root) {
+    if (!root.querySelectorAll) return;
+    const joinRe = new RegExp("^(?:" + L.join.map(reEscape).join("|") + ")\\b", "i");
+    for (const scope of root.querySelectorAll(JOIN_SCOPE_SEL)) {
+      if (!scope.isConnected) continue;
+      for (const btn of scope.querySelectorAll(JOIN_BTN_SEL)) {
+        if (!btn.isConnected) continue;
+        const label = (btn.getAttribute("aria-label") || btn.textContent || "").trim();
+        if (!label || !joinRe.test(label)) continue;
+        // Remove the flexible-actions slot rather than the bare button, so the
+        // row doesn't keep its gap — and so an offer rendered inside the same
+        // slot goes with it.
+        const slot =
+          btn.closest(".ytFlexibleActionsViewModelAction, button-view-model, ytd-button-renderer, #sponsor-button") || btn;
+        slot.remove();
+      }
+    }
+  }
+
+  // ---------- channel-page tabs (Shorts / Shows / Store / Posts) ----------
+  // Tabs are `yt-tab-shape` elements identified only by their visible label,
+  // so this reads from LABELS_BY_LANG like the other text-matched chrome.
+  // The Shorts tab also goes when `removeShorts` is on — that toggle's job is
+  // to make Shorts unreachable, and a tab straight into them contradicts it.
+  const CHANNEL_TAB_SEL = "yt-tab-shape, tp-yt-paper-tab, [role='tab']";
+  function scrubChannelTabs(root) {
+    if (!root.querySelectorAll) return;
+    if (!anyOn(CHANNEL_TAB_KEYS)) return;
+    const wanted = new Set();
+    const addAll = (list) => { for (const s of list) wanted.add(s.toLowerCase()); };
+    if (settings.tabShows) addAll(L.shows);
+    if (settings.tabStore) addAll(L.store);
+    if (settings.tabPosts) addAll(L.posts);
+    if (settings.tabPodcasts) addAll(L.podcasts);
+    if (settings.shortsChannelTab) addAll(L.shorts);
+    if (settings.membershipTab) addAll([...L.membership, ...L.membersOnly]);
+    if (!wanted.size) return;
+    root.querySelectorAll(CHANNEL_TAB_SEL).forEach((t) => {
+      if (t.isConnected && wanted.has((t.textContent || "").trim().toLowerCase())) t.remove();
+    });
+
+    // Same targets rendered as a BUTTON rather than a tab. YouTube's channel
+    // header uses generic `ytSpecButtonShapeNext*` buttons with no
+    // tab semantics, so the tab selectors above never see them. Matched on the
+    // exact label and scoped to the header, because those button classes are
+    // shared site-wide (Subscribe is the same family) — anything looser would
+    // strip unrelated buttons.
+    for (const scope of root.querySelectorAll(CHANNEL_TAB_LINK_SCOPE)) {
+      if (!scope.isConnected) continue;
+      for (const b of scope.querySelectorAll("button, button-view-model, ytd-button-renderer, yt-button-shape")) {
+        if (!b.isConnected) continue;
+        const label = (b.getAttribute("aria-label") || b.textContent || "").trim().toLowerCase();
+        if (!label || !wanted.has(label)) continue;
+        (b.closest(".ytFlexibleActionsViewModelAction, button-view-model, ytd-button-renderer") || b).remove();
+      }
+    }
+
+    // Same targets, matched by URL instead of label. Tabs themselves carry no
+    // href (confirmed live), but the header also renders these as plain links
+    // in some layouts — and a link's path is locale-proof, so this catches a
+    // "Community" entry on a UI language whose label isn't in the table.
+    const paths = [];
+    if (settings.tabShows) paths.push("shows");
+    if (settings.tabStore) paths.push("store");
+    if (settings.tabPodcasts) paths.push("podcasts");
+    if (settings.tabPosts) paths.push("community", "posts", "releases");
+    if (settings.shortsChannelTab) paths.push("shorts");
+    if (!paths.length) return;
+    const pathRe = new RegExp("/(?:" + paths.join("|") + ")/?$", "i");
+    for (const a of root.querySelectorAll(CHANNEL_TAB_LINK_SCOPE + " a[href]")) {
+      if (!a.isConnected) continue;
+      const href = a.getAttribute("href") || "";
+      // Only a channel's own sub-tab, i.e. /@handle/community or
+      // /channel/UC…/community — never a bare /shorts feed link elsewhere.
+      if (!/^\/(?:@|channel\/UC|c\/|user\/)/.test(href) || !pathRe.test(href.split("?")[0])) continue;
+      (a.closest(CHANNEL_TAB_SEL) || a).remove();
+    }
+  }
+  // Where such a link may legitimately be treated as a channel tab. Scoped so
+  // a link in a description or a video tile can never be mistaken for one.
+  const CHANNEL_TAB_LINK_SCOPE =
+    "yt-page-header-renderer, yt-page-header-view-model, #channel-header, #channel-header-container, yt-tab-group-shape, tp-yt-paper-tabs, #tabsContent";
 
   // ---------- a blocked channel's OWN page (Videos / Streams / Home tabs) ----------
   // On a channel's own page the video tiles carry no channel byline (you're
@@ -1372,14 +1616,21 @@
     scrubEndScreen(document.documentElement);
     scrubVideoActions(document.documentElement);
     scrubMembersOnly(document.documentElement);
+    scrubChannelTabs(document.documentElement);
     scrubOwnChannelPage(document.documentElement);
     scrubPosts(document.documentElement);
+    // A fresh (non-SPA) load renders its metadata long after the blocklist
+    // arrives, and "yt-navigate-finish" is not guaranteed to fire for it — so
+    // the one-shot checks at load time can both run against an empty page and
+    // miss. Re-checking here (throttled, plus the 2s heartbeat) is what
+    // actually catches a blocked channel's video opened by URL.
+    checkCurrentPageAndRedirect();
   }
 
   // ---------- feature toggles (chrome.storage.sync: bt_settings) ----------
   let settingsLoaded = false;
   function applySettings(next) {
-    settings = { ...DEFAULT_SETTINGS, ...(next || {}) };
+    settings = resolveSettings(next); // expands legacy coarse keys too
     staticInstantHideCSS = buildStaticCSS();
     // rebuild the whole stylesheet (static + blocklist halves)
     updateInstantHideBlocklistCSS(lastAppliedChannels, lastAppliedVideos);
@@ -1442,7 +1693,7 @@
     return false;
   }
 
-  chrome.storage.sync.get({ [SETTINGS_KEY]: DEFAULT_SETTINGS, [KEYWORDS_KEY]: null }, (res) => {
+  chrome.storage.sync.get({ [SETTINGS_KEY]: null, [KEYWORDS_KEY]: null }, (res) => {
     applyKeywords(res[KEYWORDS_KEY]);
     applySettings(res[SETTINGS_KEY]);
     settingsLoaded = true;
@@ -1521,36 +1772,126 @@
   // The container that represents "whose page is this" — scoped narrowly so we
   // never pick up unrelated channels (e.g. from sidebar recommendations, or
   // from other people's videos inside a playlist we're just viewing).
+  const SCOPE_CHANNEL_LINK_SEL = 'a[href^="/@"], a[href^="/channel/UC"]';
   function findScopeForCurrentPage() {
-    return (
-      // The currently-visible Shorts player (checked first: several
-      // ytd-reel-video-renderer elements can be mounted at once for the
-      // vertical feed's neighbors, only one carries is-active).
-      document.querySelector("ytd-reel-video-renderer[is-active]") ||
-      document.querySelector("ytd-watch-metadata") ||
-      document.querySelector("#above-the-fold") ||
-      document.querySelector("ytd-playlist-header-renderer") ||
-      document.querySelector("ytd-playlist-sidebar-primary-info-renderer") ||
-      // A standalone community-post permalink (/post/…): the post itself is
-      // the scope, so its author gets picked up by the channel check below.
-      (location.pathname.startsWith("/post/") &&
-        document.querySelector("ytd-backstage-post-renderer, ytd-post-renderer")) ||
-      document.querySelector("#owner") ||
-      null
-    );
+    // The currently-visible Shorts player wins outright: several
+    // ytd-reel-video-renderer elements are mounted at once for the vertical
+    // feed's neighbours and only one carries is-active.
+    const activeReel = document.querySelector("ytd-reel-video-renderer[is-active]");
+    if (activeReel) return activeReel;
+
+    // Candidates for THIS page type only. A flat "first selector that matches
+    // anything" chain is wrong, for two compounding reasons:
+    //   1. after an SPA navigation YouTube leaves the *other* page types'
+    //      components mounted as empty shells — a /playlist page still has a
+    //      childless `ytd-watch-metadata`, which used to win the chain and
+    //      answer "no channel here", so a blocked channel's playlist pages
+    //      stayed reachable;
+    //   2. even within one page type the first match can be the empty one
+    //      (a /playlist page has two `yt-page-header-renderer`s; only one
+    //      carries the owner byline).
+    // So: restrict by path, then prefer the first candidate that actually
+    // names a channel, falling back to a bare match only if none do.
+    const path = location.pathname;
+    let selectors;
+    if (path === "/playlist") {
+      // The owner byline moved into the shared `yt-page-header-renderer`;
+      // the two legacy tags still render, but empty.
+      selectors = [
+        "yt-page-header-renderer",
+        "ytd-playlist-header-renderer",
+        "ytd-playlist-sidebar-primary-info-renderer"
+      ];
+    } else if (path.startsWith("/post/")) {
+      // A standalone community-post permalink: the post itself is the scope,
+      // so its author gets picked up by the channel check.
+      selectors = ["ytd-backstage-post-renderer", "ytd-post-renderer"];
+    } else {
+      selectors = ["ytd-watch-metadata", "#above-the-fold", "#owner"];
+    }
+
+    let fallback = null;
+    for (const sel of selectors) {
+      for (const el of document.querySelectorAll(sel)) {
+        if (el.querySelector(SCOPE_CHANNEL_LINK_SEL)) return el;
+        if (!fallback) fallback = el;
+      }
+    }
+    return fallback;
+  }
+
+  // Every channel key the CURRENT PAGE claims as its own identity, from the
+  // page's canonical metadata rather than from arbitrary links in the body (a
+  // channel page also links plenty of *other* channels — featured channels,
+  // collaborators — and those must not be treated as "whose page is this").
+  // Used to bridge the two identity formats: the URL carries one, the entry may
+  // be keyed by the other. Header selectors are best-effort; canonical/meta are
+  // the reliable ones.
+  const CHANNEL_HEADER_SEL =
+    "ytd-channel-name, #channel-header, #channel-header-container, yt-page-header-renderer, .page-header-view-model-wiz";
+  function pageIdentityKeys() {
+    const keys = new Set();
+    const add = (raw) => {
+      if (!raw) return;
+      let path = raw;
+      if (/^https?:\/\//i.test(raw)) {
+        try {
+          path = new URL(raw).pathname;
+        } catch {
+          return;
+        }
+      }
+      const key = normalizeChannelKey(path);
+      if (key) keys.add(key);
+    };
+
+    add(document.querySelector('link[rel="canonical"]')?.getAttribute("href"));
+    add(document.querySelector('meta[property="og:url"]')?.getAttribute("content"));
+    // itemprop="identifier" is the VIDEO id on a watch page, so only take a
+    // value that actually looks like a channel id.
+    for (const m of document.querySelectorAll('meta[itemprop="channelId"], meta[itemprop="identifier"]')) {
+      const v = m.getAttribute("content") || "";
+      if (/^UC[\w-]{22}$/.test(v)) keys.add(v);
+    }
+    // The channel header itself carries the other format (a /channel/UC… page
+    // shows the @handle and vice versa) — scoped to the header so featured
+    // channels elsewhere on the page can't leak in.
+    for (const header of document.querySelectorAll(CHANNEL_HEADER_SEL)) {
+      for (const a of header.querySelectorAll('a[href^="/@"], a[href^="/channel/UC"]')) {
+        const key = normalizeChannelKey(a.getAttribute("href") || "");
+        if (key) keys.add(key);
+      }
+    }
+    return keys;
   }
 
   // Info about whatever video/channel(s) the user is currently looking at —
   // used both by the popup's quick-block buttons and by the direct-navigation
   // safety-net redirect below. A video can have multiple channels attached via
   // YouTube's channel-collaboration feature, so this always returns an array.
-  function getCurrentPageTarget() {
+  // `withAliases` is for the block CHECK only (see checkCurrentPageAndRedirect):
+  // it adds the page's other identity formats so a block matches however the
+  // user navigated here. The popup must NOT pass it — it renders one button per
+  // returned channel, and the aliases are the same channel twice.
+  function getCurrentPageTarget(withAliases) {
     const pathKey = normalizeChannelKey(location.pathname);
-    if (pathKey) {
+    const legacyChannelPage = /^\/(?:c|user)\//.test(location.pathname);
+    if (pathKey || legacyChannelPage) {
+      const name = document.title.replace(/ - YouTube$/, "").trim();
+      const keys = new Map();
+      if (pathKey) keys.set(pathKey, name);
+      // The URL carries only ONE of the two identities a channel has, and the
+      // blocklist may be keyed by the other (a @handle-keyed entry vs. a
+      // /channel/UC… URL, or a legacy /c/… // /user/… URL that names neither).
+      // The page's own canonical metadata resolves the rest, so a block sticks
+      // whichever form the user arrives by.
+      if (withAliases || !pathKey) {
+        for (const key of pageIdentityKeys()) if (!keys.has(key)) keys.set(key, name);
+      }
       return {
         videoId: null,
         videoTitle: "",
-        channels: [{ key: pathKey, name: document.title.replace(/ - YouTube$/, "").trim() }]
+        channels: Array.from(keys, ([key, n]) => ({ key, name: n }))
       };
     }
 
@@ -1558,7 +1899,8 @@
     let videoTitle = "";
     const vm =
       (location.pathname + location.search).match(VIDEO_ID_FROM_QUERY_RE) ||
-      location.pathname.match(VIDEO_ID_FROM_SHORTS_RE);
+      location.pathname.match(VIDEO_ID_FROM_SHORTS_RE) ||
+      location.pathname.match(VIDEO_ID_FROM_PATH_RE);
     if (vm) {
       videoId = vm[1];
       videoTitle = document.title.replace(/ - YouTube$/, "").trim();
@@ -1576,21 +1918,34 @@
   // "this video's uploader/collaborator is blocked" or "this playlist belongs
   // to a blocked channel", since neither URL shape carries that information.
   // This runs after the page has actually rendered its own metadata.
+  // We are standing ON the offending page here, so `replace()` — not an
+  // assignment to location.href — is what keeps it out of session history.
+  // With a plain push, Back lands on the blocked page again, and (now that
+  // this check re-runs on a timer) bounces forward, leaving Back apparently
+  // broken. `bounced` stops a slow redirect from being fired repeatedly by
+  // the heartbeat while the new page is still loading.
+  let bounced = false;
+  function bounce() {
+    if (bounced) return;
+    bounced = true;
+    window.location.replace(SAFE_LANDING_URL);
+  }
+
   function checkCurrentPageAndRedirect() {
     // Home and Shorts as destinations — gone entirely when their toggle is on,
     // regardless of the blocklist; sent straight to Subscriptions.
     const path = location.pathname;
     if (settings.redirectHomepage && path === "/") {
-      window.location.href = SAFE_LANDING_URL;
+      bounce();
       return;
     }
-    if (settings.removeShorts && (path === "/shorts" || path.startsWith("/shorts/"))) {
-      window.location.href = SAFE_LANDING_URL;
+    if (settings.shortsPlayer && (path === "/shorts" || path.startsWith("/shorts/"))) {
+      bounce();
       return;
     }
 
     if (!blocklistLoaded) return;
-    const target = getCurrentPageTarget();
+    const target = getCurrentPageTarget(true);
     if (target.channels.some((c) => isAllowlisted(c.key))) return; // allow-list wins
     const ageDays = anyAgeRule && target.videoId ? currentPageAgeDays() : null;
     const blocked =
@@ -1598,8 +1953,39 @@
       matchesFilter(target) ||
       target.channels.some((c) => channelBlocks(blockedEntryFor(c.key), target.videoId, ageDays));
     if (blocked) {
-      window.location.href = SAFE_LANDING_URL;
+      dbg("bouncing off blocked page:", location.pathname, target.channels.map((c) => c.key).join(","));
+      bounce();
+      return;
     }
+    // A player with no readable channel byline — /embed/<id> is the case that
+    // matters, since nothing on that page names the uploader. Ask the
+    // background to resolve it (cached, one request per unseen video) rather
+    // than letting a blocked channel through on a URL shape we can't parse.
+    if (target.videoId && !target.channels.length && blockedChannels.size) {
+      resolveChannelForVideo(target.videoId);
+    }
+  }
+
+  // One in-flight/settled request per video id — checkCurrentPageAndRedirect()
+  // re-runs on a timer, and this must not re-fetch on every tick.
+  const videoChannelAsked = new Map(); // videoId -> channel key | null
+  function resolveChannelForVideo(videoId) {
+    if (videoChannelAsked.has(videoId)) return;
+    videoChannelAsked.set(videoId, null);
+    chrome.runtime.sendMessage({ type: MSG.RESOLVE_VIDEO_CHANNEL, videoId }, (res) => {
+      if (chrome.runtime.lastError || !res || !res.channelKey) return;
+      videoChannelAsked.set(videoId, res.channelKey);
+      // The page may have moved on while we were waiting.
+      const still =
+        (location.pathname + location.search).match(VIDEO_ID_FROM_QUERY_RE) ||
+        location.pathname.match(VIDEO_ID_FROM_SHORTS_RE) ||
+        location.pathname.match(VIDEO_ID_FROM_PATH_RE);
+      if (!still || still[1] !== videoId) return;
+      if (channelBlocks(blockedEntryFor(res.channelKey), videoId, null)) {
+        dbg("bouncing off blocked page (channel resolved via oEmbed):", res.channelKey);
+        bounce();
+      }
+    });
   }
 
   // Best-effort age of the video on the current watch page, for the age-rule
@@ -1630,6 +2016,9 @@
       document.querySelectorAll(POST_SELECTOR).forEach((el) => delete el.dataset.btPost);
       sweep(document.documentElement);
       scrubOwnChannelPage(document.documentElement);
+      // Blocking a channel while you're sitting on its video should take you
+      // off that page, not just scrub the tiles around it.
+      checkCurrentPageAndRedirect();
     } else if (msg.type === MSG.GET_PAGE_TARGET) {
       sendResponse(getCurrentPageTarget());
     }
@@ -1640,12 +2029,20 @@
   // declarativeNetRequest (background.js) handles fresh/typed/external navigation.
   // YouTube's own client-side routing doesn't trigger a new network request, so we
   // intercept its "yt-navigate-start" event and bail out before the blocked page renders.
+  // NOTE on history: these fire BEFORE the blocked page becomes the current
+  // entry, so the current entry is still the innocent page the user is leaving.
+  // They therefore use a normal (pushing) assignment — `location.replace()`
+  // here would erase that referring page from history instead of the blocked
+  // one, and Back would skip past where the user actually came from. The
+  // blocked URL never enters history at all, which is the point.
+  // checkCurrentPageAndRedirect()'s bounce() is the opposite case and must
+  // replace; see the comment there.
   window.addEventListener("yt-navigate-start", (e) => {
     const endpoint = e.detail?.endpoint;
     const webUrl = endpoint?.commandMetadata?.webCommandMetadata?.url || "";
 
     // Shorts — bail before the player even mounts (toggle-gated).
-    if (settings.removeShorts && (endpoint?.reelWatchEndpoint || webUrl.startsWith("/shorts"))) {
+    if (settings.shortsPlayer && (endpoint?.reelWatchEndpoint || webUrl.startsWith("/shorts"))) {
       window.location.href = SAFE_LANDING_URL;
       return;
     }
@@ -1685,16 +2082,25 @@
   // above can't see ahead of time) and re-scrub Shorts/guide/related, since a
   // whole new page's worth of content just mounted.
   window.addEventListener("yt-navigate-finish", () => {
-    scrubShorts(document.documentElement);
-    scrubGuide(document.documentElement);
-    scrubMasthead(document.documentElement);
-    retargetLogo(document.documentElement);
-    scrubSideRecommendations(document.documentElement);
-    scrubEndScreen(document.documentElement);
-    scrubVideoActions(document.documentElement);
-    scrubMembersOnly(document.documentElement);
-    scrubOwnChannelPage(document.documentElement);
-    scrubPosts(document.documentElement);
+    // A soft navigation is a new page view: whatever we bounced off before is
+    // no longer what's on screen.
+    bounced = false;
+    runExtras(); // the scrub batch + checkCurrentPageAndRedirect()
+  });
+
+  // Back/Forward. A page restored from the back/forward cache does NOT re-run
+  // this script and fires no yt-navigate-* event, so without these a blocked
+  // page reached via Back would simply sit there. `bounced` is cleared first:
+  // this is a different page view than the one we already bounced out of.
+  window.addEventListener("pageshow", (e) => {
+    if (e.persisted) {
+      bounced = false;
+      checkCurrentPageAndRedirect();
+    }
+  });
+  window.addEventListener("popstate", () => {
+    bounced = false;
+    scheduleExtrasScrub();
     checkCurrentPageAndRedirect();
   });
 

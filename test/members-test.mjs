@@ -18,14 +18,20 @@ await opt.waitForTimeout(300);
 await opt.locator(".page-tab[data-page='settings']").click();
 await opt.waitForTimeout(150);
 const n = await opt.locator("#settings-list .switch input:checked").count();
-n === 12 ? ok("12 toggles, all on by default") : fail(`checked: ${n}`);
+n === 32 ? ok("32 toggles, all on by default") : fail(`checked: ${n}`);
 
-const KEYS = ["removeShorts","redirectHomepage","logoToSubscriptions","cleanSidebar","cleanMasthead","removeRelated","removeEndScreen","hideVoiceSearch","accountButtonOnHover","hideVideoActions","hideMemberships"];
 const setToggle = async (key, on) => {
-  const i = KEYS.indexOf(key);
-  const cb = opt.locator("#settings-list .switch input").nth(i);
-  if ((await cb.isChecked()) !== on) await opt.locator("#settings-list .switch .slider").nth(i).click();
-  await opt.waitForFunction(([k, v]) => chrome.storage.sync.get("bt_settings").then((r) => r.bt_settings && r.bt_settings[k] === v), [key, on], { timeout: 3000 });
+  // A key may name one switch or several — the coarse toggles this suite used
+  // to flip are now groups of per-element switches (see SETTING_GROUPS).
+  for (const k of [].concat(key)) {
+    const cb = opt.locator(`#settings-list .switch[data-key="${k}"] input`);
+    if ((await cb.isChecked()) !== on) await opt.locator(`#settings-list .switch[data-key="${k}"] .slider`).click();
+    await opt.waitForFunction(
+      ([kk, v]) => chrome.storage.sync.get("bt_settings").then((r) => r.bt_settings && r.bt_settings[kk] === v),
+      [k, on],
+      { timeout: 3000 }
+    );
+  }
 };
 
 async function probeChannel() {
@@ -66,13 +72,13 @@ on.membershipTabCount === 0
   : fail(`${on.membershipTabCount} Membership tab(s) left`);
 
 // --- toggle OFF ---
-await setToggle("hideMemberships", false);
+await setToggle(["joinButton", "membershipPrices", "membersOnlyTiles", "membershipTab"], false);
 const off = await probeChannel();
 console.log("   OFF:", JSON.stringify(off));
 (off.joinBtnDisplay !== "none" && off.tilesStillShowingBadge > 0)
   ? ok(`toggle off: Join button back (${off.joinBtnDisplay}), ${off.tilesStillShowingBadge} members-only tiles visible again`)
   : fail("toggle off did not restore memberships: " + JSON.stringify(off));
-await setToggle("hideMemberships", true);
+await setToggle(["joinButton", "membershipPrices", "membersOnlyTiles", "membershipTab"], true);
 
 await ctx.close();
 console.log("\nDONE");

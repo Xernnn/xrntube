@@ -33,6 +33,16 @@ it slices `AGE_UNITS` + `parseAgeDays()` straight out of `content/content.js`
 and checks the relative-date parser against real "…ago" strings in 13
 languages. Fast, and the only test that runs offline.
 
+## Slow by design
+
+`navguard-test.mjs` is the longest file in the suite (~3 min): it walks every
+URL shape a blocked channel and its videos are reachable by, and each case is
+a real page load plus a settle window. It also waits ~7s after
+`BLOCK_CHANNEL` for the background identity fetch that the `/channel/UC…`
+case depends on. Don't shorten those waits to speed it up — a too-short wait
+turns "the guard is broken" into "the page hadn't rendered yet", which is the
+exact failure mode the file exists to catch.
+
 ## Known flaky assertion
 
 `settings-test.mjs` — "removeShorts on: 0 Shorts shelves remain" occasionally

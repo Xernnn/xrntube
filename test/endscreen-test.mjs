@@ -71,7 +71,7 @@ await opt.waitForTimeout(300);
 await opt.locator(".page-tab[data-page='settings']").click();
 await opt.waitForTimeout(150);
 // removeEndScreen is index 6
-await opt.locator("#settings-list .switch .slider").nth(6).click();
+await opt.locator('#settings-list .switch[data-key="removeEndScreen"] .slider').click();
 await opt.waitForFunction(
   () => chrome.storage.sync.get("bt_settings").then((r) => r.bt_settings && r.bt_settings.removeEndScreen === false),
   null, { timeout: 3000 }
