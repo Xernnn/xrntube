@@ -429,9 +429,12 @@ function buildChannelRow(id, entry) {
   const meta = document.createElement("div");
   meta.className = "row-meta";
 
-  // A channel keyed by @handle needs no separate id — the handle already is
-  // one. A UC…-keyed channel shows its @handle once known (raw id as tooltip).
-  const idLabel = id.startsWith("@") ? id : entry.handle || id;
+  // A channel keyed by @handle gets NO visible id line: the handle is already
+  // a readable identifier, and a row is dense enough without repeating it.
+  // It stays reachable as a tooltip on the name instead. A UC…-keyed channel
+  // does show its @handle once known, with the raw id as the tooltip.
+  if (id.startsWith("@")) name.title = id;
+  const idLabel = id.startsWith("@") ? null : entry.handle || id;
   if (idLabel && idLabel !== name.textContent) {
     const idSpan = document.createElement("span");
     idSpan.className = "item-id";

@@ -376,6 +376,9 @@ async function writeFullState(channels, videos) {
 // the network request before YouTube ever renders it — no flash of content.
 
 const DNR_RULE_ID_BASE_VIDEO = 100000;
+// Sits between the video base (+ DNR_MAX_VIDEO_RULES) and the channel base, so
+// the three ranges can never overlap. Only populated when `blockInEmbeds` is on.
+const DNR_RULE_ID_BASE_EMBED = 300000;
 const DNR_RULE_ID_BASE_CHANNEL = 500000;
 const DNR_RULE_ID_HOME = 900001;
 const DNR_RULE_ID_SHORTS = 900002;
@@ -497,6 +500,24 @@ async function rebuildDnrRules(state) {
       }
     });
   });
+
+  // With the embeds switch on, a blocked video id is stopped inside an
+  // <iframe> too. Sub-frames get `block`, not the redirect the top-level rules
+  // use: navigating someone else's embedded player to our Subscriptions feed
+  // would be a stranger surprise than an empty frame.
+  if (settings.blockInEmbeds) {
+    videoIds.forEach((id, i) => {
+      addRules.push({
+        id: DNR_RULE_ID_BASE_EMBED + i,
+        priority: 2,
+        action: { type: "block" },
+        condition: {
+          regexFilter: "([?&]v=|/(?:shorts|live|embed|v)/)" + id + "([&?/]|$)",
+          resourceTypes: ["sub_frame"]
+        }
+      });
+    });
+  }
 
   fullyBlockedChannelPaths.forEach((path, i) => {
     addRules.push({
@@ -1054,7 +1075,79 @@ chrome.runtime.onStartup.addListener(async () => {
 chrome.runtime.onInstalled.addListener(async () => {
   const state = await loadAll();
   await rebuildDnrRules(state);
+  setUpContextMenus();
 });
+
+// ---------- right-click to block ----------
+// The `contextMenus` permission had been declared for years without a single
+// call behind it. This is what it was for: block straight from a link (or the
+// page you're on) without opening the popup.
+//
+// Menu items can't inspect what you right-clicked before they're shown, so
+// both items always appear on youtube.com and the click handler works out what
+// the URL actually is. A click that resolves to nothing reports back rather
+// than failing silently — feedback goes through the content script's toast, so
+// this needs no `notifications` permission.
+const CTX_BLOCK_CHANNEL = "bt-block-channel";
+const CTX_BLOCK_VIDEO = "bt-block-video";
+
+function setUpContextMenus() {
+  if (!chrome.contextMenus) return;
+  chrome.contextMenus.removeAll(() => {
+    const common = { contexts: ["link", "page", "video"], documentUrlPatterns: ["*://*.youtube.com/*"] };
+    chrome.contextMenus.create({ id: CTX_BLOCK_CHANNEL, title: "BlockTube: block this channel", ...common });
+    chrome.contextMenus.create({ id: CTX_BLOCK_VIDEO, title: "BlockTube: block this video", ...common });
+    void chrome.runtime.lastError; // creating over an existing id is not fatal
+  });
+}
+
+// Same URL shapes the nav guard covers (see content.js) — a link can be any of
+// them, and /c/ and /user/ name neither identity so they can't be keyed.
+const CTX_VIDEO_RE = /(?:[?&]v=|\/(?:shorts|live|embed|v)\/)([\w-]{11})/;
+const CTX_CHANNEL_RE = /youtube\.com\/(channel\/UC[\w-]{22}|@[\w.-]+)/;
+
+function ctxTargetFrom(info) {
+  const url = info.linkUrl || info.srcUrl || info.pageUrl || "";
+  const v = url.match(CTX_VIDEO_RE);
+  const c = url.match(CTX_CHANNEL_RE);
+  const key = c ? (c[1].startsWith("channel/") ? c[1].slice("channel/".length) : c[1]) : null;
+  return { url, videoId: v ? v[1] : null, channelKey: key };
+}
+
+async function toast(tabId, text) {
+  if (tabId == null) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: MSG.SHOW_TOAST, text });
+  } catch {
+    // no content script in that tab (not a YouTube page, or not loaded yet)
+  }
+}
+
+if (chrome.contextMenus) {
+  chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+    const tabId = tab && tab.id;
+    const { videoId, channelKey } = ctxTargetFrom(info);
+
+    if (info.menuItemId === CTX_BLOCK_VIDEO) {
+      if (!videoId) return toast(tabId, "BlockTube: no video in that link.");
+      const state = await addEntry("video", videoId, "");
+      await broadcastUpdate(state);
+      return toast(tabId, "Video blocked.");
+    }
+
+    if (info.menuItemId !== CTX_BLOCK_CHANNEL) return;
+    // A channel link names the channel outright. A video link doesn't, so fall
+    // back to the same oEmbed lookup the /embed/ guard uses.
+    let key = channelKey;
+    if (!key && videoId) key = await resolveVideoChannel(videoId);
+    if (!key) return toast(tabId, "BlockTube: couldn't work out which channel that is.");
+    const state = await addEntry("channel", key, "", { mode: CHANNEL_MODE.FULL, whitelist: {} });
+    await broadcastUpdate(state);
+    // Fills in the real name and the other identity format, as a popup block does.
+    enrichChannelIdentity(key);
+    toast(tabId, `Blocked ${key}.`);
+  });
+}
 
 // ---------- cross-browser sync (background/gist-sync.js) ----------
 // gist-sync.js never touches blocklist storage itself — it goes through this

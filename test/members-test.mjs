@@ -18,7 +18,7 @@ await opt.waitForTimeout(300);
 await opt.locator(".page-tab[data-page='settings']").click();
 await opt.waitForTimeout(150);
 const n = await opt.locator("#settings-list .switch input:checked").count();
-n === 32 ? ok("32 toggles, all on by default") : fail(`checked: ${n}`);
+n === 32 ? ok("32 of 33 toggles on by default (blockInEmbeds is opt-in)") : fail(`checked: ${n}`);
 
 const setToggle = async (key, on) => {
   // A key may name one switch or several — the coarse toggles this suite used

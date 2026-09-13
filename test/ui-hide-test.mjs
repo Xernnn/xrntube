@@ -18,9 +18,9 @@ await opt.waitForTimeout(300);
 await opt.locator(".page-tab[data-page='settings']").click();
 await opt.waitForTimeout(150);
 
-// 10 toggles now, all on
+// Every leaf except blockInEmbeds ships on (it is opt-in).
 const n = await opt.locator("#settings-list .switch input:checked").count();
-n === 32 ? ok("32 toggles, all on by default") : fail(`checked toggles: ${n}`);
+n === 32 ? ok("32 of 33 toggles on by default (blockInEmbeds is opt-in)") : fail(`checked toggles: ${n}`);
 
 const setToggle = async (key, on) => {
   // A key may name one switch or several — the coarse toggles this suite used

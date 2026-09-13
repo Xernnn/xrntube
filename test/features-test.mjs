@@ -69,7 +69,7 @@ await p.reload();
 await p.waitForLoadState("domcontentloaded");
 await p.waitForTimeout(400);
 const tabCount = await p.locator(".filter-tab").count();
-tabCount === 5 ? ok("5 filter tabs render") : fail("tab count: " + tabCount);
+tabCount === 6 ? ok("6 filter tabs render") : fail("tab count: " + tabCount);
 
 await p.locator('.filter-tab[data-tab="videos"]').click();
 await p.waitForTimeout(100);
@@ -95,9 +95,14 @@ fullRows === 1 && subsChips === 1
   ? ok("Full-blocked tab: 1 channel with a subs chip")
   : fail(`full tab wrong: rows=${fullRows} chips=${subsChips}`);
 
-// hide from UI via the button, then check Hidden tab
+// Hide from the UI, then check the Hidden tab. Hide lives in the row's ⋯
+// drawer now — the row keeps only Unblock — so the drawer has to be opened
+// first. That disclosure IS the interaction, so drive it rather than reaching
+// past it into a hidden element.
+await p.locator("#channel-list .row-more-btn").first().click();
+await p.waitForTimeout(300);
 await p.locator("#channel-list .hide-btn").first().click();
-await p.waitForTimeout(200);
+await p.waitForTimeout(300);
 const fullRowsAfterHide = await p.locator("#channel-list li").count();
 await p.locator('.filter-tab[data-tab="hidden"]').click();
 await p.waitForTimeout(150);

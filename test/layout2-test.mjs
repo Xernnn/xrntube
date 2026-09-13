@@ -49,7 +49,7 @@ await opt.waitForTimeout(300);
 await opt.locator('.page-tab[data-page="settings"]').click();
 await opt.waitForTimeout(150);
 const nToggles = await opt.locator("#settings-list .switch").count();
-nToggles === 32 ? ok("32 feature toggles now") : fail("toggle count: " + nToggles);
+nToggles === 33 ? ok("33 feature toggles now") : fail("toggle count: " + nToggles);
 
 const typeSearch = async (p) => {
   await p.goto("https://www.youtube.com/", { waitUntil: "domcontentloaded" });

@@ -29,9 +29,9 @@ await opt.waitForTimeout(150);
 // --- 1. every toggle renders, all on by default ---
 const nSwitches = await opt.locator("#settings-list .switch").count();
 const nChecked = await opt.locator("#settings-list .switch input:checked").count();
-nSwitches === 32 && nChecked === 32
-  ? ok("32 toggles render, all on by default")
-  : fail(`32 toggles: ${nSwitches} rendered, ${nChecked} checked`);
+nSwitches === 33 && nChecked === 32
+  ? ok("33 toggles render; 32 on by default (blockInEmbeds is opt-in)")
+  : fail(`33 toggles: ${nSwitches} rendered, ${nChecked} checked`);
 
 const setToggle = async (key, on) => {
   // A key may name one switch or several — the coarse toggles this suite used
@@ -123,9 +123,13 @@ diag.count === 0
 await opt.locator("#settings-reset").click();
 await opt.waitForTimeout(200);
 const afterReset = await opt.evaluate(() => chrome.storage.sync.get("bt_settings"));
-Object.values(afterReset.bt_settings).every((v) => v === true)
-  ? ok("Reset to defaults -> all toggles true")
-  : fail("reset didn't restore all: " + JSON.stringify(afterReset.bt_settings));
+// Reset restores DEFAULTS, which is not the same as "everything on":
+// blockInEmbeds is opt-in and must come back off.
+const resetSettings = afterReset.bt_settings;
+const offAfterReset = Object.entries(resetSettings).filter(([, v]) => v !== true).map(([k]) => k);
+JSON.stringify(offAfterReset) === JSON.stringify(["blockInEmbeds"])
+  ? ok("Reset to defaults -> every toggle on except the opt-in blockInEmbeds")
+  : fail(`reset didn't restore defaults, off after reset: ${JSON.stringify(offAfterReset)}`);
 
 await opt.waitForTimeout(300);
 if (swErr.length) fail("SW console errors:\n" + swErr.join("\n"));

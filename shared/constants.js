@@ -42,6 +42,11 @@ self.BlockTube.MSG = {
   // cached, so it costs one small request per unseen video, and only on those
   // pages (a normal watch page reads the byline from the DOM instead).
   RESOLVE_VIDEO_CHANNEL: "RESOLVE_VIDEO_CHANNEL",
+  // Background -> content script: show a short transient banner on the page.
+  // The right-click block has no other way to confirm it worked (the thing you
+  // blocked may be off-screen), and this keeps us off the `notifications`
+  // permission, which would be a new install-time prompt for a one-line message.
+  SHOW_TOAST: "SHOW_TOAST",
   // "Recently unblocked" undo log (chrome.storage.local, not synced).
   GET_RECENT_UNBLOCKS: "GET_RECENT_UNBLOCKS",
   RESTORE_UNBLOCK: "RESTORE_UNBLOCK",
@@ -197,13 +202,31 @@ self.BlockTube.SETTING_GROUPS = [
       { key: "tabPodcasts", label: "Podcasts tab", desc: "" },
       { key: "tabStore", label: "Store tab", desc: "" }
     ]
+  },
+  {
+    id: "embeds",
+    label: "Embeds on other sites",
+    desc: "YouTube players embedded in pages elsewhere on the web.",
+    items: [
+      {
+        key: "blockInEmbeds",
+        // The only leaf that starts OFF. Everything else here changes
+        // youtube.com, which you opened deliberately; this one reaches into
+        // every other site you visit, so it has to be a choice you make rather
+        // than one you discover.
+        default: false,
+        label: "Block embedded videos too",
+        desc: "Blank a blocked channel's video when it's embedded in someone else's page. Off by default — this is the only setting that affects sites other than YouTube."
+      }
+    ]
   }
 ];
 
-// Flat { key: true } derived from the tree — the stored shape, all on.
+// Flat { key: bool } derived from the tree — the stored shape. Everything
+// defaults on except a leaf that opts out with `default: false`.
 self.BlockTube.DEFAULT_SETTINGS = {};
 for (const g of self.BlockTube.SETTING_GROUPS) {
-  for (const it of g.items) self.BlockTube.DEFAULT_SETTINGS[it.key] = true;
+  for (const it of g.items) self.BlockTube.DEFAULT_SETTINGS[it.key] = it.default !== false;
 }
 
 // Settings written by an older version used one coarse key per surface. Map

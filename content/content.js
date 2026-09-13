@@ -1,6 +1,63 @@
 (() => {
   const { MSG, CHANNEL_MODE, DEFAULT_SETTINGS, SETTINGS_KEY, KEYWORDS_KEY, ALLOWLIST_KEY, resolveSettings } = self.BlockTube;
 
+  // ---------- embedded players (manifest all_frames) ----------
+  // The manifest injects into frames so a youtube.com/embed/<id> player on
+  // someone else's page can be guarded. That means this file now runs in every
+  // YouTube iframe, so the frame path must stay cheap: bail out here, before
+  // any of the observers, stylesheets and timers below are set up. Only a real
+  // /embed/ player does any work, and only when the opt-in switch is on.
+  //
+  // An embed can only be neutered from the inside — the extension has no
+  // content script on the host page, so it cannot remove the <iframe> element
+  // itself. Blanking the frame is the honest most we can do.
+  if (window.top !== window) {
+    const em = location.pathname.match(/^\/embed\/([\w-]{11})/);
+    if (!em) return;
+    const embedVideoId = em[1];
+    chrome.storage.sync.get({ [SETTINGS_KEY]: null }, (sres) => {
+      if (chrome.runtime.lastError) return;
+      if (!resolveSettings(sres[SETTINGS_KEY]).blockInEmbeds) return;
+      chrome.runtime.sendMessage({ type: MSG.GET_BLOCKLIST }, (bl) => {
+        if (chrome.runtime.lastError || !bl) return;
+        const allow = new Set(Object.keys(bl.allowlist || {}).map((k) => (k[0] === "@" ? k.toLowerCase() : k)));
+        const channels = bl.channels || {};
+        const byHandle = new Map();
+        const byUcid = new Map();
+        for (const [key, entry] of Object.entries(channels)) {
+          if (key.charAt(0) === "@") byHandle.set(key.toLowerCase(), entry);
+          else if (key.startsWith("UC")) byUcid.set(key, entry);
+          if (entry && entry.handle) byHandle.set(String(entry.handle).toLowerCase(), entry);
+          if (entry && entry.ucid) byUcid.set(String(entry.ucid), entry);
+        }
+        const lookup = (key) => {
+          if (!key || allow.has(key[0] === "@" ? key.toLowerCase() : key)) return undefined;
+          return channels[key] || byHandle.get(key.toLowerCase()) || byUcid.get(key);
+        };
+        const blank = () => {
+          document.documentElement.innerHTML =
+            '<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;' +
+            'background:#0f0f0f;color:#888;font:13px system-ui,-apple-system,sans-serif">Blocked by BlockTube</body>';
+          try {
+            document.querySelectorAll("video").forEach((v) => v.pause());
+          } catch {}
+        };
+        if ((bl.videos || {})[embedVideoId]) return blank();
+        // Nothing on an embed page names the uploader, so ask the background
+        // (oEmbed, cached) — the same lookup the top-level /embed/ guard uses.
+        chrome.runtime.sendMessage({ type: MSG.RESOLVE_VIDEO_CHANNEL, videoId: embedVideoId }, (res) => {
+          if (chrome.runtime.lastError || !res || !res.channelKey) return;
+          const entry = lookup(res.channelKey);
+          // A whitelisted video of a video-only channel still plays.
+          if (!entry) return;
+          if (entry.mode === CHANNEL_MODE.EXCEPT_WHITELIST && entry.whitelist && entry.whitelist[embedVideoId]) return;
+          blank();
+        });
+      });
+    });
+    return;
+  }
+
   // Where blocked content — and now Home and Shorts entirely — get sent instead.
   const SAFE_LANDING_URL = "https://www.youtube.com/feed/subscriptions";
 
@@ -493,8 +550,26 @@
   // style engine re-checks on every recalc — measurable jank. So the CSS only
   // covers the most-recently-blocked N (newest = most likely to be scrolling
   // past right now); the rest are caught by the JS scrub one frame later.
-  const INSTANT_HIDE_MAX_CHANNELS = 1500;
-  const INSTANT_HIDE_MAX_VIDEOS = 500;
+  // How many blocked entries get a pre-paint `:has()` rule. This is a pure
+  // anti-flash optimisation — the JS scrub removes everything regardless — and
+  // it is not free: the browser re-evaluates the whole selector list on every
+  // style recalc, so the cost scales with the cap and is paid on every page,
+  // continuously, whether or not any of those channels is present.
+  //
+  // Measured while scrolling a search page for ~11s (style recalc time, and
+  // total CPU as a share of wall):
+  //   no extension   0.05s / 15%
+  //   150 channels   0.14s / 15%
+  //   400 channels   0.21s / 13%
+  //   800 channels   0.42s / 17%
+  //   1500 channels  0.86s / 23%   <- the old cap
+  // At 400 the extension is indistinguishable from not running; at 1500 it is
+  // the single largest thing it costs a normal page. Entries past the cap lose
+  // only the pre-paint hide (a possible one-frame flash), never the block —
+  // and they are the *least* recently blocked, so the ones you are least
+  // likely to meet. Raising this back up is a real, measurable tax.
+  const INSTANT_HIDE_MAX_CHANNELS = 400;
+  const INSTANT_HIDE_MAX_VIDEOS = 250;
   function newestFirst(obj, cap) {
     return Object.entries(obj || {})
       .sort((a, b) => (b[1] && b[1].ts ? b[1].ts : 0) - (a[1] && a[1].ts ? a[1].ts : 0))
@@ -1219,16 +1294,30 @@
     if (reason) {
       const shelf = findShelfAncestor(el);
       dbg("removed", el.tagName.toLowerCase(), "—", reason);
+      notePageSuppressed(1);
       el.remove();
       if (shelf) scheduleShelfPrune(shelf);
       return;
     }
     if (blocklistLoaded) {
-      // Don't lock in "checked" while a keyword filter is active and this
-      // video tile's title hasn't hydrated yet — recheckHydratingTiles() will
-      // come back for it once the title element mounts.
+      // Don't lock in "checked" while a filter is active and the thing it
+      // needs hasn't hydrated yet — recheckHydratingTiles() comes back for
+      // these. A tile marked checked is never looked at again, so getting this
+      // wrong doesn't delay a filter, it disables it: the duration badge
+      // mounts a beat after the tile, and duration was missing from this test
+      // entirely, which silently switched the whole length filter off on a
+      // normal page load.
       const titlePending = keywordMatchers.length && info && info.videoId && !info.videoTitle;
-      if (!titlePending) el.dataset.btChecked = "1";
+      const durPending = (durMinSec > 0 || durMaxSec > 0) && info && info.videoId && info.durationSec == null;
+      // A live stream has no duration and never will, so bound the retries
+      // rather than re-processing it on every pass forever.
+      const tries = Number(el.dataset.btPending || 0);
+      if ((titlePending || durPending) && tries < REHYDRATE_MAX_TRIES) {
+        el.dataset.btPending = String(tries + 1);
+      } else {
+        delete el.dataset.btPending;
+        el.dataset.btChecked = "1";
+      }
       if (info) injectBlockButton(el, info);
     }
   }
@@ -1449,6 +1538,108 @@
   const CHANNEL_TAB_LINK_SCOPE =
     "yt-page-header-renderer, yt-page-header-view-model, #channel-header, #channel-header-container, yt-tab-group-shape, tp-yt-paper-tabs, #tabsContent";
 
+  // ---------- stop a fully-blocked feed loading forever ----------
+  // YouTube's infinite feeds load more whenever a continuation sentinel is in
+  // view. That assumes what it just added made the page taller. When the
+  // blocklist suppresses *everything* — a blocked channel's own grid, or a
+  // search where every result is blocked — the page height never changes, so
+  // the sentinel stays on screen and YouTube fetches the next page
+  // immediately, forever.
+  //
+  // Measured on a video-only-blocked channel's /videos tab, sitting still and
+  // never scrolling: tiles 210 -> 510 -> 690 while document height stayed at
+  // 1388px, node count 12k -> 35k in 24s, 77% CPU, and long tasks up to 1.5s —
+  // which is what makes the whole browser (and the machine) stop responding to
+  // typing. It does not settle on its own; it ends when the tab dies.
+  //
+  // So: when a feed has tiles but *none* of them are visible, drop the
+  // sentinel. YouTube's observer then has nothing to trigger on and the loop
+  // stops. The accumulated hidden tiles get removed too, in bounded batches, so
+  // the DOM doesn't keep the memory.
+  const CONTINUATION_SEL = "ytd-continuation-item-renderer, ytm-continuation-item-renderer";
+  const CURB_MIN_SUPPRESSED = 12; // don't act on a feed that merely hasn't filled yet
+  const CURB_REMOVE_BUDGET = 150; // per pass, so cleanup never becomes a long task
+  const NOTICE_TAG = "bt-blocked-notice";
+
+  // How many tiles this page view has had taken away. Counting removals — not
+  // surviving tiles — is what makes the check below survive its own cleanup:
+  // once the curb has removed everything there is nothing left to count, and a
+  // tile-based test would stop recognising the very state it created.
+  let suppressedOnPage = 0;
+  function notePageSuppressed(n) {
+    suppressedOnPage += n;
+  }
+  function resetPageSuppressed() {
+    suppressedOnPage = 0;
+    document.querySelectorAll(NOTICE_TAG).forEach((el) => el.remove());
+  }
+
+  // YouTube's infinite feeds fetch the next page whenever a continuation
+  // sentinel is in the viewport. That assumes what it just added made the page
+  // taller. When the blocklist suppresses *everything* — a blocked channel's
+  // own grid, or a search where every result is blocked — the height never
+  // changes, the sentinel never leaves the screen, and YouTube fetches forever.
+  //
+  // Measured on a video-only-blocked channel's /videos tab, sitting still:
+  // 22 continuation requests in 30s (0 with the extension off), tiles
+  // 210 -> 510 -> 690 against a document height pinned at 1388px, 12k -> 35k
+  // nodes in 24s, 77% CPU, long tasks up to 1.5s. That last number is why the
+  // machine stops responding to typing. It does not settle; it ends when the
+  // tab dies.
+  //
+  // Removing the sentinel alone does NOT fix it — YouTube re-creates it and
+  // asks again. The page has to become taller than the viewport, so the notice
+  // is the load-bearing part, not decoration. It also answers the question a
+  // silently blank page raises.
+  function curbRunawayFeed() {
+    const sentinel = document.querySelector(CONTINUATION_SEL);
+    if (!sentinel) return;
+    if (suppressedOnPage < CURB_MIN_SUPPRESSED) return; // short, but not by us
+    // Match YouTube's own trigger: it fetches while the sentinel is in (or
+    // near) the viewport. Testing "can the page scroll at all" is NOT the same
+    // thing and gets this wrong — a blocked channel page still scrolls by the
+    // height of its masthead and header (measured 1388px against a 1000px
+    // viewport), so that test passed while the feed underneath was looping.
+    const rect = sentinel.getBoundingClientRect();
+    if (rect.top > window.innerHeight * 1.5) return; // out of range; loading normally
+
+    sentinel.parentNode && document.querySelectorAll(CONTINUATION_SEL).forEach((el) => el.remove());
+
+    // Reclaim whatever is still sitting hidden in the DOM, in bounded batches.
+    let budget = CURB_REMOVE_BUDGET;
+    for (const el of queryTiles(document)) {
+      if (budget-- <= 0) break;
+      if (el.offsetParent === null) el.remove();
+    }
+
+    if (!document.querySelector(NOTICE_TAG)) {
+      // Insert *where the sentinel was* — inside the feed's own contents — so
+      // the height lands above any sentinel YouTube re-creates. Appending after
+      // the grid leaves the sentinel at the top of the viewport and changes
+      // nothing (measured: still 21 requests in 30s).
+      const host = sentinel.parentNode || document.querySelector("ytd-rich-grid-renderer, ytd-section-list-renderer");
+      if (host) {
+        const note = document.createElement(NOTICE_TAG);
+        // Inline styles so neither YouTube's stylesheets nor our own can touch
+        // it, and so it matches none of our scrub selectors. min-height is what
+        // actually breaks the loop.
+        note.style.cssText = [
+          "display:flex",
+          "align-items:center",
+          "justify-content:center",
+          "min-height:90vh",
+          "padding:40px 20px",
+          "color:#888",
+          "font:500 14px/1.6 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif",
+          "text-align:center"
+        ].join(";");
+        note.textContent = "Everything here is blocked by BlockTube.";
+        host.appendChild(note);
+        dbg("runaway feed curbed —", suppressedOnPage, "tiles suppressed; continuation stopped");
+      }
+    }
+  }
+
   // ---------- a blocked channel's OWN page (Videos / Streams / Home tabs) ----------
   // On a channel's own page the video tiles carry no channel byline (you're
   // already there), so the per-tile scrub never links them to the blocklist.
@@ -1511,6 +1702,7 @@
         : info.videoId && channelBlocks(entry, info.videoId, info.ageDays);
       if (remove) {
         const shelf = findShelfAncestor(el);
+        notePageSuppressed(1);
         el.remove();
         if (shelf) scheduleShelfPrune(shelf);
       }
@@ -1541,6 +1733,19 @@
     "ytm-compact-playlist-renderer",
     LOCKUP_SELECTOR
   ].join(",");
+  // How many passes a tile gets to hydrate its title/duration before we stop
+  // asking. The bound exists for a live stream, which has no duration and
+  // never will — without it such a tile is re-examined every pass for the life
+  // of the page.
+  //
+  // Size it off the SLOW path, not the fast one. The throttle is ~400ms, but
+  // it only fires on DOM mutation; once a page goes quiet the 2s heartbeat is
+  // what drives it. At 8 tries that was ~16s, and a late-hydrating tile on a
+  // settled page was still being locked in before its badge arrived (one
+  // 2½-hour video survived a length bound in exactly that way). 25 gives ~50s
+  // on the heartbeat, and the cost of being wrong the other way is only a few
+  // cheap re-reads of a handful of tiles.
+  const REHYDRATE_MAX_TRIES = 25;
   function recheckHydratingTiles(root) {
     if (!root.querySelectorAll) return;
     root.querySelectorAll(REHYDRATE_RECHECK_SELECTOR).forEach((el) => {
@@ -1548,11 +1753,16 @@
       if (el.dataset.btChecked === "1") delete el.dataset.btChecked;
       processRenderer(el);
     });
-    // Video tiles left un-checked by processRenderer because a keyword filter
-    // is on and their title hadn't hydrated — re-process just those.
+    // Video tiles processRenderer left un-checked because a title or duration
+    // badge hadn't hydrated — re-process just those. LOCKUP_SELECTOR belongs
+    // here: search results are `yt-lockup-view-model` now, so leaving it out
+    // meant the modern tiles were never re-examined at all.
     if (anyFilter()) {
       root
-        .querySelectorAll("ytd-video-renderer, ytd-rich-item-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer")
+        .querySelectorAll(
+          "ytd-video-renderer, ytd-rich-item-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, " +
+            LOCKUP_SELECTOR
+        )
         .forEach((el) => {
           if (el.dataset.btChecked !== "1") processRenderer(el);
         });
@@ -1619,6 +1829,7 @@
     scrubChannelTabs(document.documentElement);
     scrubOwnChannelPage(document.documentElement);
     scrubPosts(document.documentElement);
+    curbRunawayFeed();
     // A fresh (non-SPA) load renders its metadata long after the blocklist
     // arrives, and "yt-navigate-finish" is not guaranteed to fire for it — so
     // the one-shot checks at load time can both run against an empty page and
@@ -1773,6 +1984,10 @@
   // never pick up unrelated channels (e.g. from sidebar recommendations, or
   // from other people's videos inside a playlist we're just viewing).
   const SCOPE_CHANNEL_LINK_SEL = 'a[href^="/@"], a[href^="/channel/UC"]';
+  const CHANNEL_LINK_SEL = SCOPE_CHANNEL_LINK_SEL;
+  // The uploader byline on a watch page — the owner and any collaborators,
+  // without the description's links to the same channel's other URL form.
+  const OWNER_BYLINE_SEL = "#owner, ytd-video-owner-renderer, ytm-slim-owner-renderer";
   function findScopeForCurrentPage() {
     // The currently-visible Shorts player wins outright: several
     // ytd-reel-video-renderer elements are mounted at once for the vertical
@@ -1907,7 +2122,20 @@
     }
 
     const scope = findScopeForCurrentPage();
-    const channels = scope ? Array.from(collectChannels(scope), ([key, name]) => ({ key, name })) : [];
+    // For the block CHECK, collect from the whole scope: the more identity
+    // formats we see, the more likely one matches however the entry is keyed.
+    // For the POPUP, narrow to the owner byline first — confirmed live that a
+    // watch page's wider metadata also carries /channel/UC… links from the
+    // *description*, which are the same channel in its other format. Harmless
+    // for the check, but the popup renders one button per entry and would
+    // offer to block the same channel twice. The byline still lists every
+    // collaborator, so genuine multi-channel videos keep a row each.
+    let collectFrom = scope;
+    if (!withAliases && scope && scope.querySelector) {
+      const owner = scope.querySelector(OWNER_BYLINE_SEL);
+      if (owner && owner.querySelector(CHANNEL_LINK_SEL)) collectFrom = owner;
+    }
+    const channels = collectFrom ? Array.from(collectChannels(collectFrom), ([key, name]) => ({ key, name })) : [];
 
     return { videoId, videoTitle, channels };
   }
@@ -1988,6 +2216,53 @@
     });
   }
 
+  // A small transient banner, used by the right-click block to confirm what it
+  // did — the tile you blocked is often not the one you right-clicked, and may
+  // be off-screen entirely. Inline styles and a unique tag name so no YouTube
+  // stylesheet (or ours) can affect it, and so it can't match any of our own
+  // scrub selectors.
+  let toastEl = null;
+  let toastTimer = 0;
+  function showToast(text) {
+    if (!text || !document.body) return;
+    if (!toastEl) {
+      toastEl = document.createElement("bt-toast");
+      toastEl.style.cssText = [
+        "position:fixed",
+        "left:50%",
+        "bottom:28px",
+        "transform:translateX(-50%)",
+        "z-index:2147483647",
+        "max-width:min(90vw,420px)",
+        "padding:10px 16px",
+        "border-radius:10px",
+        "background:rgba(20,20,20,0.94)",
+        "color:#fff",
+        "font:500 13px/1.4 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif",
+        "box-shadow:0 4px 18px rgba(0,0,0,0.35)",
+        "pointer-events:none",
+        "opacity:0",
+        "transition:opacity .15s ease"
+      ].join(";");
+      document.body.appendChild(toastEl);
+    }
+    toastEl.textContent = text;
+    // re-append so it stays on top of anything YouTube added since
+    document.body.appendChild(toastEl);
+    requestAnimationFrame(() => {
+      if (toastEl) toastEl.style.opacity = "1";
+    });
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      if (!toastEl) return;
+      toastEl.style.opacity = "0";
+      setTimeout(() => {
+        if (toastEl && toastEl.parentNode) toastEl.remove();
+        toastEl = null;
+      }, 250);
+    }, 2600);
+  }
+
   // Best-effort age of the video on the current watch page, for the age-rule
   // nav guard. Tries YouTube's relative text first, then an English absolute
   // date ("Jan 5, 2024" / "Premiered Jan 5, 2024"). null if neither is found —
@@ -2021,6 +2296,8 @@
       checkCurrentPageAndRedirect();
     } else if (msg.type === MSG.GET_PAGE_TARGET) {
       sendResponse(getCurrentPageTarget());
+    } else if (msg.type === MSG.SHOW_TOAST) {
+      showToast(msg.text);
     }
     return true;
   });
@@ -2083,8 +2360,9 @@
   // whole new page's worth of content just mounted.
   window.addEventListener("yt-navigate-finish", () => {
     // A soft navigation is a new page view: whatever we bounced off before is
-    // no longer what's on screen.
+    // no longer what's on screen, and the suppressed-tile tally starts over.
     bounced = false;
+    resetPageSuppressed();
     runExtras(); // the scrub batch + checkCurrentPageAndRedirect()
   });
 
@@ -2100,6 +2378,7 @@
   });
   window.addEventListener("popstate", () => {
     bounced = false;
+    resetPageSuppressed();
     scheduleExtrasScrub();
     checkCurrentPageAndRedirect();
   });
