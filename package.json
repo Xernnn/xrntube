@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "for f in background/*.js shared/*.js content/*.js popup/*.js options/*.js; do node --check \"$f\" || exit 1; done && python3 -c \"import json; json.load(open('manifest.json'))\" && echo OK",
+    "check": "for f in background/*.js shared/*.js content/*.js popup/*.js options/*.js test/*.mjs; do node --check \"$f\" || exit 1; done && node -e \"JSON.parse(require('fs').readFileSync('manifest.json','utf8'))\" && echo OK",
     "test": "node test/run.mjs",
     "test:one": "node",
     "lint:firefox": "web-ext lint --source-dir . --ignore-files 'test/**' 'node_modules/**'",
