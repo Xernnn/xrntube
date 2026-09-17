@@ -56,16 +56,20 @@ const verit = bl.channels["@veritasium"];
   ? ok(`@handle channel got a real name: "${verit.name}" (${verit.subs})`)
   : fail("@handle channel not enriched: " + JSON.stringify(verit));
 
+// A UC id naming no channel is *gone*, and saying so is the point: it used to
+// be recorded as nothing at all, which put it back in the fetch queue on every
+// options-page open forever. What must never appear is a number.
 const bogus = bl.channels["UCzzzzzzzzzzzzzzzzzzzzzz"];
-(!bogus || !bogus.subs)
-  ? ok("bogus channel left without a sub count (no crash)")
-  : fail("bogus channel somehow got subs: " + JSON.stringify(bogus));
+const bogusNumber = /\d/.test(String((bogus || {}).subs || ""));
+bogus && bogus.gone && !bogusNumber
+  ? ok("bogus channel recorded as gone, with no number invented for it")
+  : fail("bogus channel: " + JSON.stringify(bogus));
 
 // --- UI: UC-keyed w/ handle shows the @handle not the UC id; @handle row has no redundant id line ---
 await opt.reload();
 await opt.waitForLoadState("domcontentloaded");
 await opt.waitForTimeout(600);
-await opt.locator('.filter-tab[data-tab="full"]').click();
+await opt.selectOption("#filter-by", "full");
 await opt.waitForTimeout(300);
 const uiRows = await opt.evaluate(() => {
   const out = {};

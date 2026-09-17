@@ -68,10 +68,10 @@ if (r && r.ok && /^[\d.,]+\s?[KMB]?$/i.test(r.subs || "")) {
 await p.reload();
 await p.waitForLoadState("domcontentloaded");
 await p.waitForTimeout(400);
-const tabCount = await p.locator(".filter-tab").count();
-tabCount === 5 ? ok("5 filter tabs render") : fail("tab count: " + tabCount);
+const tabCount = await p.locator("#filter-by option").count();
+tabCount === 6 ? ok("6 filter options in the Show control") : fail("filter option count: " + tabCount);
 
-await p.locator('.filter-tab[data-tab="videos"]').click();
+await p.selectOption("#filter-by", "videos");
 await p.waitForTimeout(100);
 const chHiddenOnVideosTab = await p.locator("#channel-section").isHidden();
 const vidRows = await p.locator("#video-list li").count();
@@ -79,7 +79,7 @@ chHiddenOnVideosTab && vidRows === 1
   ? ok("Videos tab: channel section hidden, 1 video row")
   : fail(`Videos tab wrong: chHidden=${chHiddenOnVideosTab} vidRows=${vidRows}`);
 
-await p.locator('.filter-tab[data-tab="videoOnly"]').click();
+await p.selectOption("#filter-by", "videoOnly");
 await p.waitForTimeout(100);
 const voRows = await p.locator("#channel-list li").count();
 const hasWhitelistPanel = await p.locator("#channel-list .whitelist .age-rule").count();
@@ -87,7 +87,7 @@ voRows === 1 && hasWhitelistPanel === 1
   ? ok("Video-only tab: 1 channel with an age-rule control")
   : fail(`videoOnly tab wrong: rows=${voRows} agePanels=${hasWhitelistPanel}`);
 
-await p.locator('.filter-tab[data-tab="full"]').click();
+await p.selectOption("#filter-by", "full");
 await p.waitForTimeout(100);
 const fullRows = await p.locator("#channel-list li").count();
 const subsChips = await p.locator("#channel-list .subs-chip").count();
@@ -95,13 +95,18 @@ fullRows === 1 && subsChips === 1
   ? ok("Full-blocked tab: 1 channel with a subs chip")
   : fail(`full tab wrong: rows=${fullRows} chips=${subsChips}`);
 
-// hide from UI via the button, then check Hidden tab
+// Hide from the UI, then check the Hidden tab. Hide lives in the row's ⋯
+// drawer now — the row keeps only Unblock — so the drawer has to be opened
+// first. That disclosure IS the interaction, so drive it rather than reaching
+// past it into a hidden element.
+await p.locator("#channel-list .row-more-btn").first().click();
+await p.waitForTimeout(300);
 await p.locator("#channel-list .hide-btn").first().click();
-await p.waitForTimeout(200);
+await p.waitForTimeout(300);
 const fullRowsAfterHide = await p.locator("#channel-list li").count();
-await p.locator('.filter-tab[data-tab="hidden"]').click();
+await p.selectOption("#filter-by", "hidden");
 await p.waitForTimeout(150);
-const hiddenTabText = await p.locator('.filter-tab[data-tab="hidden"]').textContent();
+const hiddenTabText = await p.locator('#filter-by option[value="hidden"]').textContent();
 const hiddenRows = await p.locator("#channel-list li").count();
 fullRowsAfterHide === 0 && /Hidden \(1\)/.test(hiddenTabText) && hiddenRows === 1
   ? ok("Hide button works; Hidden tab shows the row and count")

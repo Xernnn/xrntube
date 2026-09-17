@@ -49,7 +49,7 @@ await opt.waitForTimeout(300);
 await opt.locator('.page-tab[data-page="settings"]').click();
 await opt.waitForTimeout(150);
 const nToggles = await opt.locator("#settings-list .switch").count();
-nToggles === 12 ? ok("12 feature toggles now") : fail("toggle count: " + nToggles);
+nToggles === 33 ? ok("33 feature toggles now") : fail("toggle count: " + nToggles);
 
 const typeSearch = async (p) => {
   await p.goto("https://www.youtube.com/", { waitUntil: "domcontentloaded" });
@@ -72,8 +72,10 @@ console.log("   suggestions (default):", JSON.stringify(s1));
   ? ok("search autocomplete hidden by default")
   : fail("autocomplete still visible: " + JSON.stringify(s1));
 
-// toggle off (index 11)
-await opt.locator("#settings-list .switch .slider").nth(11).click();
+// Address the toggle by key, never by position — inserting a setting used
+// to silently re-point this at a different switch, and the failure then
+// surfaced as "autocomplete did not return".
+await opt.locator('#settings-list .switch[data-key="hideSearchSuggestions"] .slider').click();
 await opt.waitForFunction(() => chrome.storage.sync.get("bt_settings").then((r) => r.bt_settings && r.bt_settings.hideSearchSuggestions === false), null, { timeout: 3000 });
 const s2 = await (async () => { const p = await ctx.newPage(); const r = await typeSearch(p); await p.close(); return r; })();
 console.log("   suggestions (toggle off):", JSON.stringify(s2));

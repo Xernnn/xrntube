@@ -18,16 +18,22 @@ await opt.waitForTimeout(300);
 await opt.locator(".page-tab[data-page='settings']").click();
 await opt.waitForTimeout(150);
 
-// 10 toggles now, all on
+// Every leaf except blockInEmbeds ships on (it is opt-in).
 const n = await opt.locator("#settings-list .switch input:checked").count();
-n === 12 ? ok("12 toggles, all on by default") : fail(`checked toggles: ${n}`);
+n === 32 ? ok("32 of 33 toggles on by default (blockInEmbeds is opt-in)") : fail(`checked toggles: ${n}`);
 
-const KEYS = ["removeShorts","redirectHomepage","logoToSubscriptions","cleanSidebar","cleanMasthead","removeRelated","removeEndScreen","hideVoiceSearch","accountButtonOnHover","hideVideoActions"];
 const setToggle = async (key, on) => {
-  const i = KEYS.indexOf(key);
-  const cb = opt.locator("#settings-list .switch input").nth(i);
-  if ((await cb.isChecked()) !== on) await opt.locator("#settings-list .switch .slider").nth(i).click();
-  await opt.waitForFunction(([k, v]) => chrome.storage.sync.get("bt_settings").then((r) => r.bt_settings && r.bt_settings[k] === v), [key, on], { timeout: 3000 });
+  // A key may name one switch or several — the coarse toggles this suite used
+  // to flip are now groups of per-element switches (see SETTING_GROUPS).
+  for (const k of [].concat(key)) {
+    const cb = opt.locator(`#settings-list .switch[data-key="${k}"] input`);
+    if ((await cb.isChecked()) !== on) await opt.locator(`#settings-list .switch[data-key="${k}"] .slider`).click();
+    await opt.waitForFunction(
+      ([kk, v]) => chrome.storage.sync.get("bt_settings").then((r) => r.bt_settings && r.bt_settings[kk] === v),
+      [k, on],
+      { timeout: 3000 }
+    );
+  }
 };
 
 // ---- 1. voice search button (masthead, works signed out) ----
@@ -94,7 +100,7 @@ console.log("   watch actions (ON):", JSON.stringify(actOn));
   ? ok("Share/Save/Download/More gone from the watch action row; Like kept")
   : fail("video actions not fully hidden: " + JSON.stringify(actOn));
 
-await setToggle("hideVideoActions", false);
+await setToggle(["actionShare", "actionSave", "actionDownload", "actionClip", "actionThanks", "actionMore"], false);
 await w.reload({ waitUntil: "domcontentloaded" });
 await w.waitForTimeout(8000);
 const actOff = await w.evaluate(() => {

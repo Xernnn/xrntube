@@ -70,16 +70,29 @@ JSON.stringify(order.sort()) === JSON.stringify(["Big", "Unknown"])
   ? ok("hide-small threshold 60k: only Big + Unknown remain")
   : fail("threshold 60k wrong: " + JSON.stringify(order));
 
-// fetch-all button shows a count of channels missing subs
+// fetch-all button shows a count of channels missing subs. It lives in the
+// blocklist bar's ⋯ menu now — a sweep you run about once, not a control that
+// earns permanent space — so the menu has to be opened to see it.
 await p.evaluate(() => {
-  state = { channels: { a: { name: "A", ts: 1 }, b: { name: "B", ts: 2, subs: "1M", subsAt: Date.now() }, c: { name: "C", ts: 3 } }, videos: {} };
+  const v = self.BlockTube.SUBS_SCRAPE_VERSION;
+  state = {
+    channels: {
+      a: { name: "A", ts: 1 },
+      b: { name: "B", ts: 2, subs: "1M", subsAt: Date.now(), subsV: v },
+      c: { name: "C", ts: 3 }
+    },
+    videos: {}
+  };
   hideSmall = false; sortBy = "recent"; bulkRunning = false; render();
 });
+await p.click("#bl-menu-btn");
+await p.waitForTimeout(150);
 const fa = await p.textContent("#fetch-all-subs-btn");
 const faHidden = await p.locator("#fetch-all-subs-btn").isHidden();
-!faHidden && /Fetch all sub counts \(2\)/.test(fa)
+!faHidden && /\b2\b/.test(fa)
   ? ok('fetch-all button: "' + fa.trim() + '"')
   : fail(`fetch-all button wrong: hidden=${faHidden} text="${fa}"`);
+await p.keyboard.press("Escape");
 
 // --- 2. masthead logo retargeted on a live YouTube page ---
 const yt = await ctx.newPage();

@@ -2,204 +2,261 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>BlockTube — Manage blocklist</title>
+    <title>BlockTube</title>
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
-    <div class="wrap">
-      <header>
-        <div class="head-row">
-          <h1>🚫 BlockTube</h1>
-          <nav class="page-tabs">
-            <button class="page-tab active" data-page="blocklist">Blocklist</button>
-            <button class="page-tab" data-page="keywords">Keywords</button>
-            <button class="page-tab" data-page="allowlist">Never-block</button>
-            <button class="page-tab" data-page="settings">Settings</button>
-            <button class="page-tab" data-page="sync">Sync</button>
-          </nav>
+    <div class="shell">
+      <!-- ============ SIDE NAV ============ -->
+      <aside class="sidenav">
+        <div class="brand"><span class="brand-mark">🚫</span> BlockTube</div>
+        <nav class="nav">
+          <button class="page-tab active" data-page="blocklist">
+            <span class="nav-ic">📋</span>
+            <span class="nav-label">Blocklist</span>
+            <span class="nav-count" id="nav-blocklist"></span>
+          </button>
+          <button class="page-tab" data-page="keywords">
+            <span class="nav-ic">🔤</span>
+            <span class="nav-label">Keywords &amp; length</span>
+            <span class="nav-count" id="nav-keywords"></span>
+          </button>
+          <button class="page-tab" data-page="allowlist">
+            <span class="nav-ic">🛡️</span>
+            <span class="nav-label">Never block</span>
+            <span class="nav-count" id="nav-allowlist"></span>
+          </button>
+          <button class="page-tab" data-page="settings">
+            <span class="nav-ic">🧹</span>
+            <span class="nav-label">What gets hidden</span>
+            <span class="nav-count" id="nav-settings"></span>
+          </button>
+          <button class="page-tab" data-page="sync">
+            <span class="nav-ic">🔄</span>
+            <span class="nav-label">Sync</span>
+            <span class="nav-count" id="nav-sync"></span>
+          </button>
+        </nav>
+        <div class="sidenav-foot">
+          Blocking always works. Everything under
+          <strong>What gets hidden</strong> is optional.
         </div>
-      </header>
+      </aside>
 
-      <div id="quota-warning" class="warning" hidden></div>
+      <!-- ============ MAIN ============ -->
+      <main class="main">
+        <div class="wrap">
+          <div id="quota-warning" class="warning" hidden></div>
 
-      <!-- ============ BLOCKLIST ============ -->
-      <div id="page-blocklist" class="page">
-        <div class="toolbar">
-          <input id="search" type="search" placeholder="Search channels or videos…" />
-          <div class="spacer"></div>
-          <button id="export-btn">Export JSON</button>
-          <label class="import-label">
-            Import JSON
-            <input id="import-input" type="file" accept="application/json" hidden />
-          </label>
+          <!-- ============ BLOCKLIST ============ -->
+          <div id="page-blocklist" class="page">
+            <!-- One row of chrome: what you searched, how it's sorted, and a
+                 menu for the things you touch once a month. Everything that
+                 used to sit out here permanently (export/import, the sub-count
+                 sweeps, the small-channel filter) is in the menu now. -->
+            <div class="bl-bar">
+              <input id="search" type="search" placeholder="Search…" />
+              <select id="filter-by" title="Show">
+                <option value="all" selected>All</option>
+                <option value="full">Full-blocked</option>
+                <option value="videoOnly">Video-only</option>
+                <option value="videos">Videos</option>
+                <option value="nosubs">No sub count</option>
+                <option value="hidden">Hidden</option>
+              </select>
+              <select id="sort-by" title="Sort">
+                <option value="subsDesc" selected>Biggest first</option>
+                <option value="subsAsc">Smallest first</option>
+                <option value="recent">Newest first</option>
+                <option value="name">A–Z</option>
+              </select>
+              <div class="spacer"></div>
+              <button id="select-mode-btn" class="btn" type="button">Select</button>
+              <div class="menu-wrap">
+                <button id="bl-menu-btn" class="btn icon-btn" type="button" aria-haspopup="true" aria-expanded="false" title="More">⋯</button>
+                <div id="bl-menu" class="menu" hidden>
+                  <button id="fetch-all-subs-btn" class="menu-item" type="button">Fetch all sub counts</button>
+                  <button id="load-subs-btn" class="menu-item" type="button">Load counts for shown</button>
+                  <label class="menu-item ctl">
+                    <input type="checkbox" id="hide-small" />
+                    Hide under
+                    <input type="number" id="small-threshold" value="10000" min="0" step="1000" />
+                    subs
+                  </label>
+                  <div class="menu-sep"></div>
+                  <button id="export-btn" class="menu-item" type="button">Export JSON</button>
+                  <label class="menu-item import-label">
+                    Import JSON
+                    <input id="import-input" type="file" accept="application/json" hidden />
+                  </label>
+                  <div class="menu-sep"></div>
+                  <button id="clear-videos-btn" class="menu-item danger" type="button">Clear all blocked videos</button>
+                </div>
+              </div>
+            </div>
+
+            <p id="channel-stats" class="stats-line"></p>
+            <p id="bulk-progress" class="more-note" hidden></p>
+            <p id="enrich-note" class="more-note" hidden></p>
+
+            <div id="bulk-bar" class="bulk-bar" hidden>
+              <span id="bulk-count">0 selected</span>
+              <button id="bulk-select-all" class="btn" type="button">All shown</button>
+              <button id="bulk-clear-sel" class="btn" type="button">Clear</button>
+              <span class="spacer"></span>
+              <button id="bulk-hide" class="btn" type="button">Hide</button>
+              <button id="bulk-videoonly" class="btn" type="button">Video-only</button>
+              <button id="bulk-allow" class="btn" type="button">Never block</button>
+              <button id="bulk-unblock" class="btn danger-btn" type="button">Unblock</button>
+            </div>
+
+            <section id="channel-section">
+              <h2 class="list-head">Channels <span id="channel-total" class="count"></span></h2>
+              <p id="small-note" class="more-note" hidden></p>
+              <ul id="channel-list" class="list"></ul>
+              <p id="channel-empty" class="empty" hidden>Nothing here.</p>
+              <p id="channel-more" class="more-note" hidden></p>
+            </section>
+
+            <section id="video-section">
+              <h2 class="list-head">Videos <span id="video-total" class="count"></span></h2>
+              <ul id="video-list" class="list"></ul>
+              <p id="video-empty" class="empty" hidden>Nothing here.</p>
+              <p id="video-more" class="more-note" hidden></p>
+            </section>
+
+            <details id="recent-unblocks" class="recent" hidden>
+              <summary>Recently unblocked (<span id="recent-count">0</span>)</summary>
+              <ul id="recent-list" class="list"></ul>
+              <button id="recent-clear" class="btn">Clear</button>
+            </details>
+          </div>
+
+          <!-- ============ KEYWORDS ============ -->
+          <div id="page-keywords" class="page" hidden>
+            <div class="page-head">
+              <div>
+                <h1>Keywords &amp; length</h1>
+                <p class="lede">Hide videos by what they're called or how long they run.</p>
+              </div>
+            </div>
+
+            <section class="card">
+              <h2>Block by title keyword</h2>
+              <p class="blurb">
+                A video whose title contains one of these is removed from feeds and
+                search, and you get bounced out if you open it. Tick <em>regex</em>
+                to treat a row as a regular expression. Matching is
+                case-insensitive and happens just after a tile appears.
+              </p>
+              <div class="kw-add">
+                <input id="kw-input" type="text" placeholder="e.g. tier list · reaction · \bLIVE\b" />
+                <label class="kw-regex"><input type="checkbox" id="kw-regex" /> regex</label>
+                <button id="kw-add-btn" class="btn primary">Add</button>
+              </div>
+              <ul id="kw-list" class="list"></ul>
+              <p id="kw-empty" class="empty" hidden>No title keywords yet.</p>
+            </section>
+
+            <section class="card">
+              <h2>Block by length</h2>
+              <p class="blurb">
+                Removes any video whose duration is outside this range — useful for
+                cutting Shorts-style clips or multi-hour streams. Leave a field
+                blank for “no limit”.
+              </p>
+              <div class="kw-add">
+                <label class="kw-regex">Shorter than
+                  <input id="dur-min" type="number" min="0" step="5" /> sec</label>
+                <label class="kw-regex">Longer than
+                  <input id="dur-max" type="number" min="0" step="5" /> min</label>
+                <button id="dur-save" class="btn primary">Apply</button>
+              </div>
+            </section>
+          </div>
+
+          <!-- ============ NEVER BLOCK ============ -->
+          <div id="page-allowlist" class="page" hidden>
+            <div class="page-head">
+              <div>
+                <h1>Never block</h1>
+                <p class="lede">Channels that stay visible no matter what else matches.</p>
+              </div>
+            </div>
+            <section class="card">
+              <p class="blurb">
+                A hard override. Anything from a channel on this list stays visible
+                even if a title keyword, a duration rule, an age rule, or a
+                collaborator block would otherwise hide it — and its channel page
+                stops being redirected. Add a channel by <code>@handle</code>, its
+                <code>UC…</code> ID, or a full channel URL. Syncs with your blocklist.
+              </p>
+              <div class="kw-add">
+                <input id="allow-input" type="text" placeholder="@handle · UC… · https://youtube.com/@handle" />
+                <button id="allow-add-btn" class="btn primary">Add</button>
+              </div>
+              <ul id="allow-list" class="list"></ul>
+              <p id="allow-empty" class="empty" hidden>Nothing here yet.</p>
+            </section>
+          </div>
+
+          <!-- ============ WHAT GETS HIDDEN ============ -->
+          <div id="page-settings" class="page" hidden>
+            <div class="page-head">
+              <div>
+                <h1>What gets hidden</h1>
+                <p class="lede">
+                  Every switch is one thing removed from YouTube. Use a group's
+                  switch to turn its whole row on or off at once.
+                </p>
+              </div>
+              <div class="head-actions">
+                <input id="settings-search" type="search" placeholder="Find a setting…" />
+                <button id="settings-reset" class="btn">Reset to defaults</button>
+              </div>
+            </div>
+            <p class="blurb standalone">
+              Blocking channels and videos always works — these only control the
+              extra site cleanup. Some changes need a page refresh to take effect.
+            </p>
+            <div id="settings-list"></div>
+            <p id="settings-empty" class="empty" hidden>No setting matches that.</p>
+          </div>
+
+          <!-- ============ SYNC ============ -->
+          <div id="page-sync" class="page" hidden>
+            <div class="page-head">
+              <div>
+                <h1>Sync</h1>
+                <p class="lede">Carry your blocklist between different browsers.</p>
+              </div>
+            </div>
+            <section class="card sync-card" id="sync-card">
+              <h2>Sync across any browser</h2>
+              <p class="blurb">
+                <code>chrome.storage.sync</code> only bridges browsers signed into the
+                same account (Chrome&#8596;Chrome, Firefox&#8596;Firefox). To carry your
+                blocklist between vendors &mdash; say Chrome on the desktop and Firefox
+                on Android &mdash; connect a private <strong>GitHub Gist</strong>. It's
+                free and runs no server.
+                <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener">
+                  Create a fine-grained token</a>
+                with only <em>Gists &rarr; Read and write</em> access, then paste it
+                below on each device.
+              </p>
+              <div class="sync-row">
+                <input id="sync-token" type="password" placeholder="github_pat_&hellip;" autocomplete="off" spellcheck="false" />
+                <button id="sync-save" class="btn primary">Connect</button>
+              </div>
+              <div class="sync-status" id="sync-status" hidden></div>
+              <div class="sync-actions" id="sync-actions" hidden>
+                <button id="sync-now" class="btn">Sync now</button>
+                <button id="sync-disconnect" class="btn sync-danger">Disconnect this device</button>
+              </div>
+            </section>
+          </div>
         </div>
-
-        <div class="filter-tabs">
-          <button class="filter-tab active" data-tab="all">All</button>
-          <button class="filter-tab" data-tab="full">Full-blocked channels</button>
-          <button class="filter-tab" data-tab="videoOnly">Video-only channels</button>
-          <button class="filter-tab" data-tab="videos">Blocked videos</button>
-          <button class="filter-tab" data-tab="hidden">Hidden (0)</button>
-        </div>
-
-        <p id="channel-stats" class="more-note" hidden></p>
-
-        <div class="channel-controls">
-          <button id="select-mode-btn" type="button">Select</button>
-          <label class="ctl">
-            Sort
-            <select id="sort-by">
-              <option value="recent">Recently blocked</option>
-              <option value="subsDesc">Subscribers: high → low</option>
-              <option value="subsAsc">Subscribers: low → high</option>
-              <option value="name">Name A–Z</option>
-            </select>
-          </label>
-          <label class="ctl">
-            <input type="checkbox" id="hide-small" />
-            Hide channels under
-            <input type="number" id="small-threshold" value="10000" min="0" step="1000" />
-            subs
-          </label>
-          <div class="spacer"></div>
-          <button id="load-subs-btn" hidden>Load sub counts</button>
-          <button id="fetch-all-subs-btn" hidden>Fetch all sub counts</button>
-        </div>
-        <p id="bulk-progress" class="more-note" hidden></p>
-        <p id="enrich-note" class="more-note" hidden></p>
-
-        <div id="bulk-bar" class="bulk-bar" hidden>
-          <span id="bulk-count">0 selected</span>
-          <button id="bulk-select-all" type="button">Select all shown</button>
-          <button id="bulk-clear-sel" type="button">Clear</button>
-          <span class="spacer"></span>
-          <button id="bulk-hide" type="button">Hide</button>
-          <button id="bulk-videoonly" type="button">Video-only mode</button>
-          <button id="bulk-allow" type="button">Never-block</button>
-          <button id="bulk-unblock" type="button" class="danger-btn">Unblock</button>
-        </div>
-
-        <section id="channel-section">
-          <h2>Blocked channels <span id="channel-total" class="count"></span></h2>
-          <p id="small-note" class="more-note" hidden></p>
-          <ul id="channel-list" class="list"></ul>
-          <p id="channel-empty" class="empty" hidden>Nothing here for this tab.</p>
-          <p id="channel-more" class="more-note" hidden></p>
-        </section>
-
-        <section id="video-section">
-          <div class="section-head">
-            <h2>Blocked videos <span id="video-total" class="count"></span></h2>
-            <button id="clear-videos-btn" class="danger-btn" hidden>Clear all blocked videos</button>
-          </div>
-          <ul id="video-list" class="list"></ul>
-          <p id="video-empty" class="empty" hidden>Nothing here for this tab.</p>
-          <p id="video-more" class="more-note" hidden></p>
-        </section>
-
-        <details id="recent-unblocks" hidden>
-          <summary>Recently unblocked (<span id="recent-count">0</span>) — restore something you removed by mistake</summary>
-          <ul id="recent-list" class="list"></ul>
-          <button id="recent-clear" class="settings-reset">Clear this list</button>
-        </details>
-      </div>
-
-      <!-- ============ KEYWORDS ============ -->
-      <div id="page-keywords" class="page" hidden>
-        <section class="settings-card">
-          <h2>Block videos by title keyword</h2>
-          <p class="settings-blurb">
-            A video whose title contains one of these is removed from feeds and
-            search (and bounces you out if you open it). Tick <em>regex</em> to
-            treat a row as a regular expression instead of plain text. Matching
-            is case-insensitive and happens just after a tile appears (no
-            pre-paint hide for this one).
-          </p>
-          <div class="kw-add">
-            <input id="kw-input" type="text" placeholder="e.g. tier list   ·   reaction   ·   \bLIVE\b" />
-            <label class="kw-regex"><input type="checkbox" id="kw-regex" /> regex</label>
-            <button id="kw-add-btn">Add</button>
-          </div>
-          <ul id="kw-list" class="list"></ul>
-          <p id="kw-empty" class="empty" hidden>No title keywords yet.</p>
-
-          <h2 style="margin-top:22px">Block videos by length</h2>
-          <p class="settings-blurb">
-            Also removes any video whose duration badge is outside this range —
-            handy for cutting Shorts-style clips or multi-hour streams. Leave a
-            field blank for “no limit”.
-          </p>
-          <div class="kw-add">
-            <label class="kw-regex">Shorter than
-              <input id="dur-min" type="number" min="0" step="5" style="width:64px" /> sec</label>
-            <label class="kw-regex">Longer than
-              <input id="dur-max" type="number" min="0" step="5" style="width:64px" /> min</label>
-            <button id="dur-save">Apply</button>
-          </div>
-        </section>
-      </div>
-
-      <!-- ============ NEVER-BLOCK (allow-list) ============ -->
-      <div id="page-allowlist" class="page" hidden>
-        <section class="settings-card">
-          <h2>Never block these channels</h2>
-          <p class="settings-blurb">
-            A hard override. Anything from a channel on this list stays visible
-            even if a title keyword, a duration rule, an age rule, or a
-            collaborator block would otherwise hide it — and its own page and
-            DNR redirect are dropped too. Add a channel by <code>@handle</code>,
-            its <code>UC…</code> ID, or a full channel URL. Syncs with your
-            blocklist.
-          </p>
-          <div class="kw-add">
-            <input id="allow-input" type="text" placeholder="@handle   ·   UC…   ·   https://youtube.com/@handle" />
-            <button id="allow-add-btn">Add</button>
-          </div>
-          <ul id="allow-list" class="list"></ul>
-          <p id="allow-empty" class="empty" hidden>Nothing here yet.</p>
-        </section>
-      </div>
-
-      <!-- ============ SETTINGS ============ -->
-      <div id="page-settings" class="page" hidden>
-        <section class="settings-card" id="settings-card">
-          <h2>What this extension changes</h2>
-          <p class="settings-blurb">
-            Blocking channels &amp; videos always works. These toggles control the
-            extra site cleanup — turn off anything you'd rather keep. Some changes
-            need a page refresh to fully take effect.
-          </p>
-          <div id="settings-list"></div>
-          <button id="settings-reset" class="settings-reset">Reset to defaults</button>
-        </section>
-      </div>
-
-      <!-- ============ SYNC ============ -->
-      <div id="page-sync" class="page" hidden>
-        <section class="sync-card" id="sync-card">
-          <h2>Sync across any browser</h2>
-          <p class="sync-blurb">
-            <code>chrome.storage.sync</code> only bridges browsers signed into the
-            same account (Chrome&#8596;Chrome, Firefox&#8596;Firefox). To carry your
-            blocklist between vendors &mdash; say Chrome on the desktop and Firefox
-            on Android &mdash; connect a private <strong>GitHub Gist</strong>. It's
-            free and runs no server.
-            <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener">
-              Create a fine-grained token</a>
-            with only <em>Gists &rarr; Read and write</em> access, then paste it
-            below on each device.
-          </p>
-          <div class="sync-row">
-            <input id="sync-token" type="password" placeholder="github_pat_&hellip;" autocomplete="off" spellcheck="false" />
-            <button id="sync-save">Connect</button>
-          </div>
-          <div class="sync-status" id="sync-status" hidden></div>
-          <div class="sync-actions" id="sync-actions" hidden>
-            <button id="sync-now">Sync now</button>
-            <button id="sync-disconnect" class="sync-danger">Disconnect this device</button>
-          </div>
-        </section>
-      </div>
+      </main>
     </div>
 
     <script src="../shared/constants.js"></script>

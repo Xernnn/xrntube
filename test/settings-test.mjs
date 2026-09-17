@@ -26,26 +26,25 @@ await opt.waitForTimeout(300);
 await opt.locator(".page-tab[data-page='settings']").click();
 await opt.waitForTimeout(150);
 
-// --- 1. 7 toggles render, all on by default ---
+// --- 1. every toggle renders, all on by default ---
 const nSwitches = await opt.locator("#settings-list .switch").count();
 const nChecked = await opt.locator("#settings-list .switch input:checked").count();
-nSwitches === 12 && nChecked === 12
-  ? ok("12 toggles render, all on by default")
-  : fail(`12 toggles: ${nSwitches} rendered, ${nChecked} checked`);
+nSwitches === 33 && nChecked === 32
+  ? ok("33 toggles render; 32 on by default (blockInEmbeds is opt-in)")
+  : fail(`33 toggles: ${nSwitches} rendered, ${nChecked} checked`);
 
-const KEYS = ["removeShorts", "redirectHomepage", "logoToSubscriptions", "cleanSidebar", "cleanMasthead", "removeRelated", "removeEndScreen", "hideVoiceSearch", "accountButtonOnHover", "hideVideoActions", "hideMemberships"];
 const setToggle = async (key, on) => {
-  const idx = KEYS.indexOf(key);
-  const cb = opt.locator("#settings-list .switch input").nth(idx);
-  if ((await cb.isChecked()) !== on) {
-    await opt.locator("#settings-list .switch .slider").nth(idx).click();
+  // A key may name one switch or several — the coarse toggles this suite used
+  // to flip are now groups of per-element switches (see SETTING_GROUPS).
+  for (const k of [].concat(key)) {
+    const cb = opt.locator(`#settings-list .switch[data-key="${k}"] input`);
+    if ((await cb.isChecked()) !== on) await opt.locator(`#settings-list .switch[data-key="${k}"] .slider`).click();
+    await opt.waitForFunction(
+      ([kk, v]) => chrome.storage.sync.get("bt_settings").then((r) => r.bt_settings && r.bt_settings[kk] === v),
+      [k, on],
+      { timeout: 3000 }
+    );
   }
-  // wait until the write is actually visible in storage
-  await opt.waitForFunction(
-    ([k, v]) => chrome.storage.sync.get("bt_settings").then((r) => r.bt_settings && r.bt_settings[k] === v),
-    [key, on],
-    { timeout: 3000 }
-  );
 };
 
 // --- 2. persistence to chrome.storage.sync ---
@@ -83,7 +82,7 @@ href === "/" ? ok('logo href left as "/" when toggle off') : fail("logo href = "
 await setToggle("logoToSubscriptions", true);
 
 // --- 5. removeShorts off -> Shorts shelves survive on a search page ---
-await setToggle("removeShorts", false);
+await setToggle(["shortsFeedTiles", "shortsPlayer", "shortsChannelTab"], false);
 const yt2 = await ctx.newPage();
 await yt2.goto("https://www.youtube.com/results?search_query=news+shorts", { waitUntil: "domcontentloaded" });
 await yt2.waitForTimeout(6000);
@@ -95,7 +94,7 @@ shortsWhenOff > 0
   ? ok(`removeShorts off: ${shortsWhenOff} Shorts element(s) left in place`)
   : console.log("   (no Shorts on that search page right now — can't prove the negative, skipping)");
 
-await setToggle("removeShorts", true);
+await setToggle(["shortsFeedTiles", "shortsPlayer", "shortsChannelTab"], true);
 const yt3 = await ctx.newPage();
 await yt3.goto("https://www.youtube.com/results?search_query=news+shorts", { waitUntil: "domcontentloaded" });
 await yt3.waitForTimeout(9000);
@@ -124,9 +123,13 @@ diag.count === 0
 await opt.locator("#settings-reset").click();
 await opt.waitForTimeout(200);
 const afterReset = await opt.evaluate(() => chrome.storage.sync.get("bt_settings"));
-Object.values(afterReset.bt_settings).every((v) => v === true)
-  ? ok("Reset to defaults -> all toggles true")
-  : fail("reset didn't restore all: " + JSON.stringify(afterReset.bt_settings));
+// Reset restores DEFAULTS, which is not the same as "everything on":
+// blockInEmbeds is opt-in and must come back off.
+const resetSettings = afterReset.bt_settings;
+const offAfterReset = Object.entries(resetSettings).filter(([, v]) => v !== true).map(([k]) => k);
+JSON.stringify(offAfterReset) === JSON.stringify(["blockInEmbeds"])
+  ? ok("Reset to defaults -> every toggle on except the opt-in blockInEmbeds")
+  : fail(`reset didn't restore defaults, off after reset: ${JSON.stringify(offAfterReset)}`);
 
 await opt.waitForTimeout(300);
 if (swErr.length) fail("SW console errors:\n" + swErr.join("\n"));

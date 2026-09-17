@@ -1,10 +1,53 @@
+/* Same token scheme as options.css: every colour goes through a var, so the
+   dark block below only redefines the palette and never a rule. Without this
+   the popup was hard-coded white and flashed bright on a dark desktop while
+   the options page beside it was themed. */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f7f8f9;
+  --ink: #0f0f0f;
+  --ink-2: #5b6270;
+  --ink-3: #868d99;
+  --line: #e2e5ea;
+  --accent: #c00;
+  --accent-ink: #fff;
+  --accent-hover: #a30000;
+  --neutral-btn: #555;
+  --neutral-btn-hover: #3a3a3a;
+  --focus: #2f6fed;
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1f24;
+    --panel: #21252b;
+    --panel-2: #262a30;
+    --ink: #e9ecf1;
+    --ink-2: #a3abb8;
+    --ink-3: #7c8492;
+    --line: #2c3138;
+    --accent: #ff4d4d;
+    --accent-ink: #1c1f24;
+    --accent-hover: #ff6b6b;
+    --neutral-btn: #39404a;
+    --neutral-btn-hover: #454d59;
+    --focus: #6ea0ff;
+  }
+}
+
+* { box-sizing: border-box; }
+
 body {
   width: 320px;
   margin: 0;
   padding: 12px;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  color: #0f0f0f;
-  background: #fff;
+  color: var(--ink);
+  background: var(--bg);
 }
 
 header {
@@ -16,22 +59,23 @@ header {
 
 header h1 {
   font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
   margin: 0;
 }
 
-.logo {
-  font-size: 18px;
-}
+.logo { font-size: 18px; }
 
 .card {
-  border: 1px solid #e5e5e5;
-  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
   padding: 10px;
   margin-bottom: 10px;
 }
 
 .card.muted {
-  color: #666;
+  color: var(--ink-2);
   font-size: 12.5px;
 }
 
@@ -42,15 +86,13 @@ header h1 {
   margin-bottom: 8px;
 }
 
-.row:last-child {
-  margin-bottom: 0;
-}
+.row:last-child { margin-bottom: 0; }
 
 .label {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: #888;
+  color: var(--ink-3);
 }
 
 .title {
@@ -70,8 +112,8 @@ header h1 {
 
 .block-btn {
   align-self: flex-start;
-  background: #cc0000;
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-ink);
   border: none;
   border-radius: 18px;
   padding: 6px 14px;
@@ -80,41 +122,40 @@ header h1 {
   cursor: pointer;
 }
 
-.block-btn:hover {
-  background: #a30000;
-}
+.block-btn:hover { background: var(--accent-hover); }
 
 .block-btn:disabled {
-  background: #999;
+  background: var(--ink-3);
+  color: var(--panel);
   cursor: default;
 }
 
-.block-btn.secondary {
-  background: #555;
-}
-
-.block-btn.secondary:hover {
-  background: #3a3a3a;
-}
+.block-btn.secondary { background: var(--neutral-btn); color: #fff; }
+.block-btn.secondary:hover { background: var(--neutral-btn-hover); }
 
 .stats {
   display: flex;
   justify-content: space-between;
   font-size: 12.5px;
-  color: #444;
+  color: var(--ink-2);
   margin-bottom: 10px;
 }
 
 .secondary-btn {
   width: 100%;
   padding: 8px;
-  border-radius: 6px;
-  border: 1px solid #ccc;
-  background: #f8f8f8;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--ink);
+  font: inherit;
   font-size: 13px;
   cursor: pointer;
 }
 
-.secondary-btn:hover {
-  background: #efefef;
+.secondary-btn:hover { background: var(--line); }
+
+button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }

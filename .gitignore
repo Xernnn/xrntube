@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 /blocktube_backup*.json
 /blocktube-import.json
 /test/.profile*/
