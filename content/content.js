@@ -1039,6 +1039,13 @@
     [["minutes?", "mins?", "minutos?", "minuten?", "minuti", "minuto", "menit", "phút", "dakika", "минут(?:ы|у)?", "분", "分"], 1 / 1440],
     [["seconds?", "secs?", "secondes?", "segundos?", "sekunden?", "secondi", "secondo", "seconden?", "detik", "giây", "saniye", "секунд(?:ы|у)?", "초", "秒"], 1 / 86400]
   ].map(([alts, days]) => [new RegExp(`(\\d+)\\s*(?:${alts.join("|")})`, "i"), days]);
+  // Nothing on YouTube predates 2005, and a future date means we misread
+  // something. A value outside this range is not an age, it is a parse bug.
+  const MAX_PLAUSIBLE_AGE_DAYS = 100 * 365.25;
+  function plausibleAgeDays(d) {
+    return typeof d === "number" && Number.isFinite(d) && d >= -1 && d <= MAX_PLAUSIBLE_AGE_DAYS;
+  }
+
   function parseAgeDays(text) {
     const t = text || "";
     for (const [re, days] of AGE_UNITS) {
@@ -1131,7 +1138,8 @@
     // Only bother reading the tile's publish text / duration when a blocked
     // channel has an age rule / a duration filter is active — parsing every
     // tile otherwise is wasted work.
-    const ageDays = anyAgeRule && videoId ? parseAgeDays(el.textContent || "") : null;
+    let ageDays = anyAgeRule && videoId ? parseAgeDays(el.textContent || "") : null;
+    if (!plausibleAgeDays(ageDays)) ageDays = null;
     const durationSec =
       videoId && (durMinSec > 0 || durMaxSec > 0) ? readDurationSec(el) : null;
     return { videoId, videoTitle, channels, ageDays, durationSec, isPlaylist };
@@ -1347,6 +1355,66 @@
     if (!blocklistLoaded || !root.querySelectorAll) return;
     if (root.matches && root.matches(POST_SELECTOR)) processPost(root);
     root.querySelectorAll(POST_SELECTOR).forEach(processPost);
+  }
+
+  // ---------- comments by a blocked channel ----------
+  // Blocking someone and then meeting their comments under every video you
+  // watch is the most visible way "blocked" stops meaning blocked. Comments
+  // are not tiles and not posts — they get their own path.
+  //
+  // Only the AUTHOR link decides. A comment that merely @mentions a blocked
+  // channel must survive: it is someone else talking, and removing it is the
+  // same class of false positive as matching `@mkbhd` against `@mkbhd508`.
+  //
+  // FULL blocks only, via `channelBlocks(entry, null)` — the same "does this
+  // mode block the channel itself" question the nav guard asks. Video-only
+  // mode means "keep the channel, drop its videos", so their comments stay.
+  const COMMENT_THREAD_SELECTOR = "ytd-comment-thread-renderer, ytm-comment-thread-renderer";
+  const COMMENT_SELECTOR = "ytd-comment-view-model, ytd-comment-renderer, ytm-comment-renderer";
+  const COMMENT_AUTHOR_SEL = "#author-text, a#author-text, #header-author a[href]";
+
+  function commentAuthorBlocked(comment) {
+    const a = comment.querySelector(COMMENT_AUTHOR_SEL);
+    if (!a) return null; // header hasn't hydrated — caller leaves it unmarked
+    const key = normalizeChannelKey(a.getAttribute("href") || "");
+    if (!key) return null;
+    const entry = blockedEntryFor(key); // allow-list short-circuits in here
+    return entry && channelBlocks(entry, null) ? key : false;
+  }
+
+  function scrubComments(root) {
+    if (!blocklistLoaded || !root.querySelectorAll) return;
+    if (!blockedChannels.size) return;
+
+    // A thread goes as a unit when its top-level comment's author is blocked.
+    // querySelector is document-order, so the first comment inside a thread is
+    // the top-level one; replies sit deeper, inside ytd-comment-replies-renderer.
+    root.querySelectorAll(COMMENT_THREAD_SELECTOR).forEach((thread) => {
+      if (thread.dataset.btComment === "1" || !thread.isConnected) return;
+      const top = thread.querySelector(COMMENT_SELECTOR);
+      if (!top) return; // not hydrated yet; a later pass will catch it
+      const verdict = commentAuthorBlocked(top);
+      if (verdict === null) return; // author not readable yet
+      if (verdict) {
+        dbg("removed comment thread —", verdict);
+        thread.remove();
+        return;
+      }
+      thread.dataset.btComment = "1";
+    });
+
+    // Replies are individually authored, so they are judged individually.
+    root.querySelectorAll("ytd-comment-replies-renderer " + COMMENT_SELECTOR).forEach((reply) => {
+      if (reply.dataset.btComment === "1" || !reply.isConnected) return;
+      const verdict = commentAuthorBlocked(reply);
+      if (verdict === null) return;
+      if (verdict) {
+        dbg("removed comment reply —", verdict);
+        reply.remove();
+        return;
+      }
+      reply.dataset.btComment = "1";
+    });
   }
 
   // Throttled backup for members-only content: catches tiles whose badge
@@ -1829,6 +1897,7 @@
     scrubChannelTabs(document.documentElement);
     scrubOwnChannelPage(document.documentElement);
     scrubPosts(document.documentElement);
+    scrubComments(document.documentElement);
     curbRunawayFeed();
     // A fresh (non-SPA) load renders its metadata long after the blocklist
     // arrives, and "yt-navigate-finish" is not guaranteed to fire for it — so
@@ -1925,7 +1994,9 @@
       updateInstantHideBlocklistCSS(lastAppliedChannels, lastAppliedVideos);
       queryTiles(document).forEach((el) => delete el.dataset.btChecked);
       document.querySelectorAll(POST_SELECTOR).forEach((el) => delete el.dataset.btPost);
+      document.querySelectorAll("[data-bt-comment]").forEach((el) => delete el.dataset.btComment);
       sweep(document.documentElement);
+      scrubComments(document.documentElement);
     }
   });
 
@@ -2267,16 +2338,55 @@
   // nav guard. Tries YouTube's relative text first, then an English absolute
   // date ("Jan 5, 2024" / "Premiered Jan 5, 2024"). null if neither is found —
   // callers treat that as "recent" (fail open), same as feed tiles.
+  // How old is the video on THIS page? Only consulted for a channel with an
+  // "block videos older than N days" rule, and a wrong answer here is a false
+  // bounce off a video the user is entitled to watch.
+  //
+  // Read the machine-readable date first. `<meta itemprop="datePublished">` is
+  // exact, ISO-8601 and locale-proof — the visible line says "16 Sept 2026" in
+  // en-GB and something else again in every other UI language, and the absolute
+  // -date fallback below only ever understood the US "Sep 16, 2026" spelling.
+  //
+  // **Never scan `document.body`.** That was the old fallback whenever the
+  // watch metadata had not mounted yet, and `document.body.textContent`
+  // *includes the contents of `<script>` tags*: on a watch page that is ~807KB
+  // of YouTube's inline JSON against ~36KB of real text. Something in that JSON
+  // always matches "<number> <unit> ago", so the page's age came back as
+  // **5.1e26 days** — greater than any threshold, so an age-ruled channel
+  // blocked *every* video including one published 18 hours ago. Confirmed live.
+  // An unknown age must read as unknown (null → channelBlocks does not block);
+  // the 2s heartbeat re-checks once the real metadata mounts.
+  const AGE_SCOPE_SELECTORS = [
+    "ytd-watch-info-text", // the "N views • <date>" line itself
+    "#info-container",
+    "ytd-watch-metadata",
+    "#above-the-fold"
+  ];
   function currentPageAgeDays() {
-    const scope =
-      document.querySelector("ytd-watch-metadata, #above-the-fold, #info-container, ytd-watch-info-text") || document.body;
-    const text = scope ? scope.textContent || "" : "";
-    const rel = parseAgeDays(text);
-    if (rel != null) return rel;
-    const abs = text.match(/([A-Z][a-z]{2,8}\s+\d{1,2},\s+\d{4})/);
-    if (abs) {
-      const t = Date.parse(abs[1]);
-      if (!Number.isNaN(t)) return (Date.now() - t) / 86400000;
+    const meta = document.querySelector(
+      'meta[itemprop="datePublished"], meta[itemprop="uploadDate"]'
+    );
+    if (meta && meta.content) {
+      const t = Date.parse(meta.content);
+      if (!Number.isNaN(t)) {
+        const days = (Date.now() - t) / 86400000;
+        if (plausibleAgeDays(days)) return days;
+      }
+    }
+    for (const sel of AGE_SCOPE_SELECTORS) {
+      const el = document.querySelector(sel);
+      const text = el ? el.textContent || "" : "";
+      if (!text.trim()) continue;
+      const rel = parseAgeDays(text);
+      if (plausibleAgeDays(rel)) return rel;
+      const abs = text.match(/([A-Z][a-z]{2,8}\s+\d{1,2},\s+\d{4})/);
+      if (abs) {
+        const t = Date.parse(abs[1]);
+        if (!Number.isNaN(t)) {
+          const days = (Date.now() - t) / 86400000;
+          if (plausibleAgeDays(days)) return days;
+        }
+      }
     }
     return null;
   }
@@ -2289,7 +2399,9 @@
         delete el.dataset.btChecked;
       });
       document.querySelectorAll(POST_SELECTOR).forEach((el) => delete el.dataset.btPost);
+      document.querySelectorAll("[data-bt-comment]").forEach((el) => delete el.dataset.btComment);
       sweep(document.documentElement);
+      scrubComments(document.documentElement);
       scrubOwnChannelPage(document.documentElement);
       // Blocking a channel while you're sitting on its video should take you
       // off that page, not just scrub the tiles around it.

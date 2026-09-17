@@ -50,90 +50,85 @@
 
           <!-- ============ BLOCKLIST ============ -->
           <div id="page-blocklist" class="page">
-            <div class="page-head">
-              <div>
-                <h1>Blocklist</h1>
-                <p class="lede" id="channel-stats"></p>
-              </div>
-              <div class="head-actions">
-                <button id="export-btn" class="btn">Export JSON</button>
-                <label class="btn import-label">
-                  Import JSON
-                  <input id="import-input" type="file" accept="application/json" hidden />
-                </label>
-              </div>
-            </div>
-
-            <div class="toolbar">
-              <input id="search" type="search" placeholder="Search channels or videos…" />
-              <label class="ctl">
-                Sort
-                <select id="sort-by">
-                  <option value="subsDesc" selected>Subscribers: high → low</option>
-                  <option value="subsAsc">Subscribers: low → high</option>
-                  <option value="recent">Recently blocked</option>
-                  <option value="name">Name A–Z</option>
-                </select>
-              </label>
+            <!-- One row of chrome: what you searched, how it's sorted, and a
+                 menu for the things you touch once a month. Everything that
+                 used to sit out here permanently (export/import, the sub-count
+                 sweeps, the small-channel filter) is in the menu now. -->
+            <div class="bl-bar">
+              <input id="search" type="search" placeholder="Search…" />
+              <select id="filter-by" title="Show">
+                <option value="all" selected>All</option>
+                <option value="full">Full-blocked</option>
+                <option value="videoOnly">Video-only</option>
+                <option value="videos">Videos</option>
+                <option value="nosubs">No sub count</option>
+                <option value="hidden">Hidden</option>
+              </select>
+              <select id="sort-by" title="Sort">
+                <option value="subsDesc" selected>Biggest first</option>
+                <option value="subsAsc">Smallest first</option>
+                <option value="recent">Newest first</option>
+                <option value="name">A–Z</option>
+              </select>
+              <div class="spacer"></div>
               <button id="select-mode-btn" class="btn" type="button">Select</button>
-            </div>
-
-            <div class="filter-tabs">
-              <button class="filter-tab active" data-tab="all">All</button>
-              <button class="filter-tab" data-tab="full">Full-blocked</button>
-              <button class="filter-tab" data-tab="videoOnly">Video-only</button>
-              <button class="filter-tab" data-tab="videos">Videos</button>
-              <button class="filter-tab" data-tab="nosubs">No sub count (0)</button>
-              <button class="filter-tab" data-tab="hidden">Hidden (0)</button>
-            </div>
-
-            <div id="bulk-bar" class="bulk-bar" hidden>
-              <span id="bulk-count">0 selected</span>
-              <button id="bulk-select-all" class="btn" type="button">Select all shown</button>
-              <button id="bulk-clear-sel" class="btn" type="button">Clear</button>
-              <span class="spacer"></span>
-              <button id="bulk-hide" class="btn" type="button">Hide</button>
-              <button id="bulk-videoonly" class="btn" type="button">Video-only mode</button>
-              <button id="bulk-allow" class="btn" type="button">Never block</button>
-              <button id="bulk-unblock" class="btn danger-btn" type="button">Unblock</button>
-            </div>
-
-            <section id="channel-section" class="card">
-              <div class="section-head">
-                <h2>Channels <span id="channel-total" class="count"></span></h2>
-                <div class="channel-controls">
-                  <label class="ctl subtle">
+              <div class="menu-wrap">
+                <button id="bl-menu-btn" class="btn icon-btn" type="button" aria-haspopup="true" aria-expanded="false" title="More">⋯</button>
+                <div id="bl-menu" class="menu" hidden>
+                  <button id="fetch-all-subs-btn" class="menu-item" type="button">Fetch all sub counts</button>
+                  <button id="load-subs-btn" class="menu-item" type="button">Load counts for shown</button>
+                  <label class="menu-item ctl">
                     <input type="checkbox" id="hide-small" />
                     Hide under
                     <input type="number" id="small-threshold" value="10000" min="0" step="1000" />
                     subs
                   </label>
-                  <button id="load-subs-btn" class="btn" hidden>Load sub counts</button>
-                  <button id="fetch-all-subs-btn" class="btn" hidden>Fetch all sub counts</button>
+                  <div class="menu-sep"></div>
+                  <button id="export-btn" class="menu-item" type="button">Export JSON</button>
+                  <label class="menu-item import-label">
+                    Import JSON
+                    <input id="import-input" type="file" accept="application/json" hidden />
+                  </label>
+                  <div class="menu-sep"></div>
+                  <button id="clear-videos-btn" class="menu-item danger" type="button">Clear all blocked videos</button>
                 </div>
               </div>
-              <p id="bulk-progress" class="more-note" hidden></p>
-              <p id="enrich-note" class="more-note" hidden></p>
+            </div>
+
+            <p id="channel-stats" class="stats-line"></p>
+            <p id="bulk-progress" class="more-note" hidden></p>
+            <p id="enrich-note" class="more-note" hidden></p>
+
+            <div id="bulk-bar" class="bulk-bar" hidden>
+              <span id="bulk-count">0 selected</span>
+              <button id="bulk-select-all" class="btn" type="button">All shown</button>
+              <button id="bulk-clear-sel" class="btn" type="button">Clear</button>
+              <span class="spacer"></span>
+              <button id="bulk-hide" class="btn" type="button">Hide</button>
+              <button id="bulk-videoonly" class="btn" type="button">Video-only</button>
+              <button id="bulk-allow" class="btn" type="button">Never block</button>
+              <button id="bulk-unblock" class="btn danger-btn" type="button">Unblock</button>
+            </div>
+
+            <section id="channel-section">
+              <h2 class="list-head">Channels <span id="channel-total" class="count"></span></h2>
               <p id="small-note" class="more-note" hidden></p>
               <ul id="channel-list" class="list"></ul>
-              <p id="channel-empty" class="empty" hidden>Nothing here for this tab.</p>
+              <p id="channel-empty" class="empty" hidden>Nothing here.</p>
               <p id="channel-more" class="more-note" hidden></p>
             </section>
 
-            <section id="video-section" class="card">
-              <div class="section-head">
-                <h2>Videos <span id="video-total" class="count"></span></h2>
-                <button id="clear-videos-btn" class="btn danger-btn" hidden>Clear all blocked videos</button>
-              </div>
+            <section id="video-section">
+              <h2 class="list-head">Videos <span id="video-total" class="count"></span></h2>
               <ul id="video-list" class="list"></ul>
-              <p id="video-empty" class="empty" hidden>Nothing here for this tab.</p>
+              <p id="video-empty" class="empty" hidden>Nothing here.</p>
               <p id="video-more" class="more-note" hidden></p>
             </section>
 
-            <details id="recent-unblocks" class="card recent" hidden>
-              <summary>Recently unblocked (<span id="recent-count">0</span>) — restore something removed by mistake</summary>
+            <details id="recent-unblocks" class="recent" hidden>
+              <summary>Recently unblocked (<span id="recent-count">0</span>)</summary>
               <ul id="recent-list" class="list"></ul>
-              <button id="recent-clear" class="btn">Clear this list</button>
+              <button id="recent-clear" class="btn">Clear</button>
             </details>
           </div>
 

@@ -108,6 +108,16 @@ self.BlockTube.STORAGE = {
 // existed. The options page edits these; content.js reads them (and
 // background.js reads redirectHomepage / removeShorts when building DNR rules).
 self.BlockTube.SETTINGS_KEY = "bt_settings";
+
+// Which generation of the channel scrape produced an entry's `subs`. Bumped
+// when the scrape starts reading a *different, better* place, so entries whose
+// number came from the old one are re-fetched exactly once and then left alone
+// forever (see subsAttempted() in options.js).
+//   1 — the first sub count in the document. It was often another channel's:
+//       a channel page embeds shelves of other people's videos and channel
+//       cards, and the page's own header sits past where the reader stopped.
+//   2 — the channel's own `pageHeaderRenderer`, off its search tab.
+self.BlockTube.SUBS_SCRAPE_VERSION = 2;
 // chrome.storage.sync. { list: [{ p: <pattern>, re: <bool: treat as regex> }],
 // ts: <ms> }. A video whose title matches any pattern is scrubbed (JS only —
 // CSS can't match text). ts drives last-write-wins in the gist merge.

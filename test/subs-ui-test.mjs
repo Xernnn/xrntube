@@ -31,6 +31,14 @@ const sw = ctx.serviceWorkers()[0] || (await ctx.waitForEvent("serviceworker", {
 const extId = sw.url().split("/")[2];
 const optionsUrl = `chrome-extension://${extId}/options/options.html`;
 
+// Which scrape generation counts as "already fetched". A count recorded by an
+// older scrape is deliberately NOT an attempt (see subsAttempted), so a seed
+// that omits this reads as a blocklist that has never been swept.
+const probe = await ctx.newPage();
+await probe.goto(optionsUrl);
+const SUBS_V = await probe.evaluate(() => self.BlockTube.SUBS_SCRAPE_VERSION);
+await probe.close();
+
 // Seed: synthetic channels that already carry a count (so the auto-fetch has
 // no reason to touch them), two whose count is genuinely unavailable, and the
 // real ones with nothing — those are what the auto-fetch should resolve.
@@ -40,11 +48,12 @@ for (let i = 0; i < SYNTH; i++) {
     name: "Synthetic " + i,
     ts: Date.now() - i * 1000,
     subs: `${((i * 9161) % SYNTH) + 1}K`,
-    subsAt: Date.now()
+    subsAt: Date.now(),
+    subsV: SUBS_V
   };
 }
 for (const [id, subs] of [["UChiddenAAAAAAAAAAAAAAA", "hidden"], ["UCnaBBBBBBBBBBBBBBBBBBB", "n/a"]]) {
-  seed.channels[id] = { name: "Unavailable", ts: Date.now(), subs, subsAt: Date.now() };
+  seed.channels[id] = { name: "Unavailable", ts: Date.now(), subs, subsAt: Date.now(), subsV: SUBS_V };
 }
 for (const h of REAL) seed.channels[h] = { name: h, ts: Date.now() };
 const TOTAL = SYNTH + 2 + REAL.length;
@@ -98,7 +107,7 @@ missing.length === 0
   ? ok(`opening the page auto-fetched the missing counts (${REAL.map((h) => after.channels[h].subs).join(", ")})`)
   : fail(`auto-fetch left ${missing.join(", ")} without a subscriber count`);
 
-await p.click('.filter-tab[data-tab="nosubs"]');
+await p.selectOption("#filter-by", "nosubs");
 await p.waitForTimeout(800);
 const noSubRows = await p.$$eval("#channel-list .channel-row", (els) => els.length);
 const allLackNumbers = await p.$$eval("#channel-list .channel-row", (els) =>

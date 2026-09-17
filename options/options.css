@@ -220,29 +220,56 @@ input:focus-visible, select:focus-visible, button:focus-visible {
 }
 input[type="number"] { width: 84px; }
 
-.toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
-.toolbar #search { flex: 1; min-width: 220px; padding: 9px 12px; }
+/* One compact row of chrome for the whole Blocklist page. */
+.bl-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.bl-bar #search { flex: 1; min-width: 200px; padding: 8px 12px; }
+.bl-bar select { padding: 8px 10px; }
+
+.stats-line { margin: 0 0 14px; color: var(--ink-3); font-size: 12.5px; }
+.stats-line:empty { display: none; }
+.list-head { margin: 18px 0 6px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.list-head .count { font-weight: 500; }
+
+.icon-btn { width: 34px; padding: 7px 0; text-align: center; font-size: 15px; line-height: 1; }
+
+/* Everything you touch once a month lives behind ⋯ rather than on the page. */
+.menu-wrap { position: relative; }
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  min-width: 232px;
+  padding: 5px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.menu-item:hover { background: var(--panel-2); }
+.menu-item.danger { color: var(--danger); }
+.menu-item input[type="number"] { width: 74px; padding: 4px 6px; }
+.menu-sep { height: 1px; margin: 5px 2px; background: var(--line); }
 
 .import-label { display: inline-flex; align-items: center; }
 
-.filter-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
-.filter-tab {
-  padding: 6px 11px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--panel);
-  color: var(--ink-2);
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-.filter-tab:hover { border-color: var(--ink-3); color: var(--ink); }
-.filter-tab.active { background: var(--ink); border-color: var(--ink); color: var(--panel); font-weight: 600; }
-
-.channel-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ctl { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 13px; }
-.ctl.subtle { color: var(--ink-3); font-size: 12.5px; }
-.section-head { flex-wrap: wrap; }
 .spacer { flex: 1; }
 
 .bulk-bar {
@@ -315,6 +342,7 @@ input[type="number"] { width: 84px; }
 .mode-tag { background: transparent; border-color: var(--line); color: var(--ink-3); }
 .mode-tag.soft { border-color: var(--on); color: var(--on); }
 .local-tag { background: var(--line-2); color: var(--ink-3); }
+.gone-tag { background: transparent; border-color: var(--danger); color: var(--danger); }
 
 .row-more-btn {
   width: 28px;

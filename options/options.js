@@ -1,4 +1,14 @@
-const { MSG, STORAGE, CHANNEL_MODE, SETTINGS_KEY, DEFAULT_SETTINGS, KEYWORDS_KEY, SETTING_GROUPS, resolveSettings } =
+const {
+  MSG,
+  STORAGE,
+  CHANNEL_MODE,
+  SETTINGS_KEY,
+  DEFAULT_SETTINGS,
+  KEYWORDS_KEY,
+  SETTING_GROUPS,
+  SUBS_SCRAPE_VERSION,
+  resolveSettings
+} =
   self.BlockTube;
 
 let state = { channels: {}, videos: {} };
@@ -110,16 +120,18 @@ function render() {
     .filter(([id, e]) => matches(id + " " + (e.title || "")) && passesHidden(e))
     .sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0));
 
-  // Tabs
-  document.querySelectorAll(".filter-tab").forEach((b) => {
-    b.classList.toggle("active", b.dataset.tab === tab);
-  });
-  const hiddenTab = document.querySelector('.filter-tab[data-tab="hidden"]');
-  if (hiddenTab) hiddenTab.textContent = `Hidden (${hiddenCount})`;
-  const noSubsTab = document.querySelector('.filter-tab[data-tab="nosubs"]');
-  if (noSubsTab) {
-    const n = allChannels.filter(([, e]) => subsToNumber(e.subs) == null && !e.hidden).length;
-    noSubsTab.textContent = `No sub count (${n})`;
+  // One filter control instead of a row of pills. Counts go in the option
+  // labels so they're still visible without six buttons competing for space.
+  const filterSel = document.getElementById("filter-by");
+  if (filterSel) {
+    const noSubs = allChannels.filter(([, e]) => subsToNumber(e.subs) == null && !e.hidden).length;
+    const setLabel = (v, text) => {
+      const o = filterSel.querySelector(`option[value="${v}"]`);
+      if (o) o.textContent = text;
+    };
+    setLabel("hidden", hiddenCount ? `Hidden (${hiddenCount})` : "Hidden");
+    setLabel("nosubs", noSubs ? `No sub count (${noSubs})` : "No sub count");
+    if (filterSel.value !== tab) filterSel.value = tab;
   }
 
   document.getElementById("channel-total").textContent = `(${allChannels.length})`;
@@ -129,8 +141,6 @@ function render() {
   const vidSection = document.getElementById("video-section");
   chSection.hidden = !wantChannels;
   vidSection.hidden = !wantVideos;
-  const chControls = document.querySelector(".channel-controls");
-  if (chControls) chControls.hidden = !wantChannels && !bulkRunning;
 
   renderList(
     document.getElementById("channel-list"),
@@ -152,13 +162,11 @@ function render() {
     "video"
   );
 
-  const subsBtn = document.getElementById("load-subs-btn");
-  if (subsBtn) subsBtn.hidden = !bulkRunning && !wantChannels;
   const fetchAllBtn = document.getElementById("fetch-all-subs-btn");
   if (fetchAllBtn && !bulkRunning) {
     const missing = allChannels.filter(([, e]) => !subsAttempted(e)).length;
-    fetchAllBtn.hidden = !wantChannels || missing === 0;
-    fetchAllBtn.textContent = `Fetch all sub counts (${missing})`;
+    fetchAllBtn.hidden = missing === 0;
+    fetchAllBtn.textContent = missing ? `Fetch ${missing} missing sub counts` : "Fetch all sub counts";
   }
 
   const smallNote = document.getElementById("small-note");
@@ -175,8 +183,8 @@ function render() {
   const clearVideosBtn = document.getElementById("clear-videos-btn");
   if (clearVideosBtn) {
     const total = allVideos.length;
-    clearVideosBtn.hidden = !wantVideos || total === 0;
-    clearVideosBtn.textContent = `Clear all ${total} blocked video${total === 1 ? "" : "s"}`;
+    clearVideosBtn.hidden = total === 0;
+    clearVideosBtn.textContent = `Clear ${total} blocked video${total === 1 ? "" : "s"}`;
   }
 
   const totalSynced =
@@ -202,38 +210,21 @@ function setNavCount(id, n) {
 function renderChannelStats(allChannels, allVideos) {
   const el = document.getElementById("channel-stats");
   if (!el) return;
-  if (!allChannels.length) {
+  if (!allChannels.length && !allVideos.length) {
     el.hidden = true;
     return;
   }
-  let full = 0;
-  let video = 0;
-  let hidden = 0;
+  // Counts only. The old line also spelled out full/video-only/hidden splits,
+  // how many sub counts were known, and the biggest channel — all of it either
+  // visible in the rows themselves or reachable from the filter.
   let subSum = 0;
-  let subKnown = 0;
-  let biggest = null;
   for (const [, e] of allChannels) {
-    if (e.mode === CHANNEL_MODE.EXCEPT_WHITELIST) video++;
-    else full++;
-    if (e.hidden) hidden++;
     const n = subsToNumber(e.subs);
-    if (n != null) {
-      subSum += n;
-      subKnown++;
-      if (!biggest || n > biggest.n) biggest = { n, name: e.name || e.handle };
-    }
+    if (n != null) subSum += n;
   }
-  const parts = [
-    `${allChannels.length.toLocaleString()} channels`,
-    `${full.toLocaleString()} full`,
-    `${video.toLocaleString()} video-only`
-  ];
-  if (hidden) parts.push(`${hidden.toLocaleString()} hidden`);
-  parts.push(`${allVideos.length.toLocaleString()} videos`);
-  if (subKnown) {
-    parts.push(`~${fmtCount(subSum)} subs blocked (of ${subKnown.toLocaleString()} known)`);
-    if (biggest) parts.push(`biggest: ${biggest.name} (${fmtCount(biggest.n)})`);
-  }
+  const parts = [`${allChannels.length.toLocaleString()} channels`];
+  if (allVideos.length) parts.push(`${allVideos.length.toLocaleString()} videos`);
+  if (subSum) parts.push(`~${fmtCount(subSum)} subs`);
   el.textContent = parts.join("  ·  ");
   el.hidden = false;
 }
@@ -254,12 +245,27 @@ function renderEnrichNote(allChannels) {
     el.hidden = true;
     return;
   }
-  // UC…-keyed, still no @handle, and not scraped in the last week (a fresh
-  // scrape that still found no handle means the channel genuinely has none —
-  // deleted/terminated — so stop nagging about it).
-  const RECENTLY = 7 * 24 * 60 * 60 * 1000;
+  // A channel has two identities and a tile links only ONE of them. Measured on
+  // live search results: 20 of 20 tiles linked `/@handle` and none linked
+  // `/channel/UC…`; other surfaces are the other way round. So an entry that
+  // knows only the identity it was stored under blocks nothing on the surfaces
+  // that use the other one — which is what "I blocked them and their videos are
+  // still in my search results" actually is.
+  //
+  // Both directions count. The old version listed only UC-keyed entries missing
+  // a handle, so a channel blocked from the popup by `@handle` and never given
+  // its `ucid` was silently in the same state and never mentioned.
+  //
+  // The gate is `subsAttempted` — an entry the *current* scrape has already
+  // looked at and still couldn't pair up is a dead end, and nagging about it
+  // forever is noise. (A 7-day "scraped recently" window used to do this job,
+  // which meant a sweep that resolved nothing left the page claiming there was
+  // nothing to resolve.)
   const unresolved = allChannels
-    .filter(([id, e]) => id.startsWith("UC") && !e.handle && !(e.subsAt && Date.now() - e.subsAt < RECENTLY))
+    .filter(([id, e]) => {
+      if (e.gone || subsAttempted(e)) return false;
+      return id.startsWith("UC") ? !e.handle : !e.ucid;
+    })
     .map(([id]) => id);
   if (!unresolved.length) {
     el.hidden = true;
@@ -267,11 +273,9 @@ function renderEnrichNote(allChannels) {
   }
   el.hidden = false;
   el.replaceChildren();
-  el.append(
-    `${unresolved.length.toLocaleString()} channel${unresolved.length === 1 ? "" : "s"} have no @handle yet — feed tiles link by @handle, so these may not be fully blocked until resolved. `
-  );
+  el.append(`${unresolved.length.toLocaleString()} may not block everywhere yet. `);
   const b = document.createElement("button");
-  b.textContent = "Resolve now";
+  b.textContent = "Resolve";
   b.className = "linklike";
   b.addEventListener("click", () => {
     bulkFetchSubs(unresolved, document.getElementById("fetch-all-subs-btn"), "Resolved");
@@ -279,8 +283,6 @@ function renderEnrichNote(allChannels) {
   el.appendChild(b);
 }
 
-// Keep the bulk-select bar and per-row checkboxes in sync with `selectMode` /
-// `selected`. Called at the end of every render().
 function syncBulkBar() {
   const bar = document.getElementById("bulk-bar");
   const modeBtn = document.getElementById("select-mode-btn");
@@ -443,7 +445,9 @@ function buildChannelRow(id, entry) {
     meta.appendChild(idSpan);
   }
 
-  meta.appendChild(buildSubsChip(id, entry));
+  // A gone channel gets no sub-count chip: the "gone" tag below already says
+  // why there is no number, and "n/a subs" next to it is the same fact twice.
+  if (!entry.gone) meta.appendChild(buildSubsChip(id, entry));
 
   const isSoft = entry.mode === CHANNEL_MODE.EXCEPT_WHITELIST;
   const modeTag = document.createElement("span");
@@ -454,6 +458,13 @@ function buildChannelRow(id, entry) {
     : "The channel and everything from it is gone.";
   meta.appendChild(modeTag);
 
+  if (entry.gone) {
+    const tag = document.createElement("span");
+    tag.className = "local-tag gone-tag";
+    tag.textContent = "gone";
+    tag.title = "This channel 404s — deleted, terminated, or renamed. It will not be re-fetched.";
+    meta.appendChild(tag);
+  }
   if (entry.localOnly) {
     const tag = document.createElement("span");
     tag.className = "local-tag";
@@ -521,7 +532,12 @@ function buildChannelRow(id, entry) {
 }
 
 function subsAttempted(entry) {
-  return !!(entry && entry.subsAt);
+  // An attempt only counts if it was made by the *current* scrape. Version 1
+  // read the first sub count in the channel's HTML, which was frequently some
+  // other channel's — so those numbers are wrong, not merely old, and the one
+  // sweep that replaces them has to be allowed to happen. After it, `subsV` is
+  // current and the entry is never fetched again.
+  return !!(entry && entry.subsAt && (entry.subsV || 0) >= SUBS_SCRAPE_VERSION);
 }
 function buildSubsChip(id, entry) {
   const chip = document.createElement("span");
@@ -788,13 +804,38 @@ document.getElementById("search").addEventListener("input", (e) => {
   render();
 });
 
-document.querySelectorAll(".filter-tab").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    tab = btn.dataset.tab;
+const filterEl = document.getElementById("filter-by");
+if (filterEl) {
+  filterEl.addEventListener("change", (e) => {
+    tab = e.target.value;
     resetShown();
     render();
   });
-});
+}
+
+// The ⋯ menu. Closes on outside click and on Escape, so it never strands.
+const menuBtn = document.getElementById("bl-menu-btn");
+const menuEl = document.getElementById("bl-menu");
+if (menuBtn && menuEl) {
+  const setMenu = (open) => {
+    menuEl.hidden = !open;
+    menuBtn.setAttribute("aria-expanded", String(open));
+  };
+  menuBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setMenu(menuEl.hidden);
+  });
+  menuEl.addEventListener("click", (e) => {
+    // Leave the small-channel filter open — it's a control, not a command.
+    if (!e.target.closest("label")) setMenu(false);
+  });
+  document.addEventListener("click", (e) => {
+    if (!menuEl.hidden && !menuEl.contains(e.target) && e.target !== menuBtn) setMenu(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") setMenu(false);
+  });
+}
 
 document.getElementById("clear-videos-btn").addEventListener("click", async (e) => {
   const btn = e.currentTarget; // capture before any await (currentTarget nulls out after)

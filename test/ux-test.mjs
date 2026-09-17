@@ -60,7 +60,7 @@ wrapW > 900 ? ok(`content column widened to ${Math.round(wrapW)}px`) : fail(`sti
 // --- video-only channel row: whitelist panel collapsed by default ---
 await send({ type: "BLOCK_CHANNEL", id: "@somesoftchan", name: "Soft", mode: "exceptWhitelist" });
 await opt.waitForTimeout(200);
-await opt.locator('.filter-tab[data-tab="videoOnly"]').click();
+await opt.selectOption("#filter-by", "videoOnly");
 await opt.waitForTimeout(200);
 const det = opt.locator("#channel-list details.whitelist-details").first();
 (await det.count()) === 1 && !(await det.evaluate((d) => d.open))
@@ -73,11 +73,13 @@ await send({ type: "UNBLOCK_CHANNEL", id: "@somesoftchan" });
 // --- mass-delete blocked videos ---
 for (const v of ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"]) await send({ type: "BLOCK_VIDEO", id: v, title: "v " + v });
 await opt.waitForTimeout(200);
-await opt.locator('.filter-tab[data-tab="videos"]').click();
+await opt.selectOption("#filter-by", "videos");
 await opt.waitForTimeout(200);
+await opt.click("#bl-menu-btn"); // the destructive bulk action lives in the ⋯ menu
+await opt.waitForTimeout(150);
 const clearBtn = opt.locator("#clear-videos-btn");
 const clearTxt = await clearBtn.textContent();
-(!(await clearBtn.isHidden()) && /Clear all 3 blocked videos/.test(clearTxt))
+(!(await clearBtn.isHidden()) && /\b3 blocked videos\b/.test(clearTxt))
   ? ok(`clear button shown: "${clearTxt.trim()}"`)
   : fail(`clear button wrong: hidden=${await clearBtn.isHidden()} text="${clearTxt}"`);
 

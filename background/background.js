@@ -6,7 +6,8 @@ if (typeof importScripts === "function") {
   importScripts("../shared/constants.js", "./gist-sync.js");
 }
 
-const { MSG, STORAGE, CHANNEL_MODE, SYNC, SETTINGS_KEY, DEFAULT_SETTINGS, ALLOWLIST_KEY } = self.BlockTube;
+const { MSG, STORAGE, CHANNEL_MODE, SYNC, SETTINGS_KEY, DEFAULT_SETTINGS, ALLOWLIST_KEY, SUBS_SCRAPE_VERSION } =
+  self.BlockTube;
 
 // A cross-device clock: gist-sync.js feeds GitHub's response Date header back
 // through syncHost.setClockOffset so last-write-wins merges aren't corrupted by
@@ -568,41 +569,97 @@ async function rebuildDnrRules(state) {
 }
 
 // ---------- scrape a channel's public page (subs + @handle + name) ----------
-// No API key: fetch the channel's own page (host permission covers youtube.com)
-// and regex the pieces out of the embedded JSON / meta tags. Best-effort —
-// YouTube can change this markup, some regions serve a consent wall, and
-// channels can hide the sub count. Streamed and stopped early: the bits we
-// want are near the top of `ytInitialData`, so we don't download the whole
-// ~1MB page. Returns { subs, handle, name } (any may be null), { rateLimited:
-// true } on a 429, or null on any other failure.
-async function scrapeChannelInfo(key) {
-  const path = key.startsWith("@") ? "/" + key : "/channel/" + key;
+// No API key: fetch a page belonging to the channel (host permission covers
+// youtube.com) and read its own header out of the embedded JSON. Returns
+// { subs, handle, name, ucid } (any may be null), { rateLimited: true } on a
+// 429, { gone: true } on a 404/410, or null on any other failure.
+//
+// WHICH page matters, and so does WHERE in it we read.
+//
+// The channel's own `pageHeaderRenderer` — the only block on the page that
+// describes *this* channel — sits at the very END of the document (~2.5MB in
+// on a big channel). Everything before it is feed content: shelves of other
+// people's videos and channel cards, each carrying its own
+// "subscriberCountText". Reading the first sub count in the document therefore
+// reported a STRANGER's number, and the streaming reader stopped at 1.5MB, so
+// on a large channel it reported nothing at all. Measured across 27 real
+// channels: 10 came back with no count and several of the rest were wrong —
+// @mkbhd read as "1.15M" (a shelf card's), @NASA as "62.9K". This is the same
+// trap as the ucid parse below, and it is why the sub counts have to come from
+// the page header or not at all.
+//
+// The channel's **search tab with a query that matches nothing** is the
+// cheapest page that still carries that header: no feed content, so it is a
+// consistent ~800KB with the header at ~765KB, against 2.5MB for the channel
+// home or /about. Gzipped that is ~235KB on the wire — the same as the old
+// (wrong) 1.5MB read of the home page, so being right here cost no bandwidth —
+// and the authoritative `externalId` now lands inside the window too.
+const CHANNEL_PROBE_QUERY = "/search?query=zzqqxx9182";
+const CHANNEL_HEAD_KEY = '"pageHeaderRenderer":{';
+const CHANNEL_HEAD_TAIL = 12000; // enough to cover metadataRows after the key
+const CHANNEL_MAX_BYTES = 3000000;
+
+async function fetchChannelPage(path) {
   let html = "";
   try {
     const res = await fetch("https://www.youtube.com" + path, {
       headers: { "Accept-Language": "en-US,en;q=0.9" }
     });
     if (res.status === 429) return { rateLimited: true };
-    if (!res.ok || !res.body) return res.ok ? { subs: null, handle: null, name: null } : null;
+    // A channel that is deleted, terminated, or renamed (its old handle now
+    // 404s) is *permanently* unfetchable. Returning null for it — as every
+    // non-OK response used to — records nothing, so the auto-fetch retried it
+    // on every options-page open forever and it sat in "No sub count"
+    // indefinitely. Say so instead, so the attempt gets recorded once.
+    // 5xx and network errors stay unrecorded on purpose: those are worth
+    // retrying.
+    if (res.status === 404 || res.status === 410) return { gone: true };
+    if (!res.ok || !res.body) return res.ok ? { html: "" } : null;
     const reader = res.body.getReader();
     const dec = new TextDecoder();
-    for (let i = 0; i < 500; i++) {
+    for (let i = 0; i < 900; i++) {
       const { done, value } = await reader.read();
       if (done) break;
       html += dec.decode(value, { stream: true });
-      // stop once the page has both the sub count and channel identity in view
-      if (
-        html.length > 1500000 ||
-        (/"subscriberCountText"/.test(html) && /(vanityChannelUrl|canonicalBaseUrl|og:title)/.test(html))
-      ) {
-        break;
-      }
+      if (html.length > CHANNEL_MAX_BYTES) break;
+      const at = html.indexOf(CHANNEL_HEAD_KEY);
+      if (at >= 0 && html.length > at + CHANNEL_HEAD_TAIL) break;
     }
     reader.cancel().catch(() => {});
   } catch {
-    return html ? verifyChannelInfo(key, parseChannelHtml(html)) : null;
+    return html ? { html } : null;
   }
-  return verifyChannelInfo(key, parseChannelHtml(html));
+  return { html };
+}
+
+async function scrapeChannelInfo(key) {
+  const base = key.startsWith("@") ? "/" + key : "/channel/" + key;
+  const page = await fetchChannelPage(base + CHANNEL_PROBE_QUERY);
+  if (!page || page.rateLimited || page.gone) return page;
+  let info = parseChannelHtml(page.html);
+  let html = page.html;
+  // No header in the cheap page (search disabled for this channel, a consent
+  // wall, a truncated response): pay for the full channel page rather than
+  // record a blank.
+  if (!info.headed) {
+    const full = await fetchChannelPage(base);
+    if (full && (full.rateLimited || full.gone)) return full;
+    if (full && full.html) {
+      html = full.html;
+      const alt = parseChannelHtml(full.html);
+      if (alt.headed || alt.subs || alt.ucid) info = alt;
+    }
+  }
+  // Gone, but disguised as a 200. A `/channel/UC…` that names no real channel
+  // does NOT 404 — it serves a full page carrying
+  // `"alerts":[{"alertRenderer":{"type":"ERROR","text":…"This channel does not
+  // exist."}}]` and no channel header at all. Without this it looked like a
+  // transient failure and went back in the fetch queue on every options-page
+  // open, which is the loop `gone` exists to end. The alert text is localised,
+  // so the match is on the structure; requiring *no header* is what keeps it
+  // off a live channel page that happens to carry an error alert somewhere.
+  if (!info.headed && /"alertRenderer":\{"type":"ERROR"/.test(html)) return { gone: true };
+  return verifyChannelInfo(key, info);
 }
 
 // Last line of defence for the identity fields. We asked for ONE specific
@@ -627,29 +684,55 @@ function verifyChannelInfo(key, info) {
 }
 
 function parseChannelHtml(html) {
-  const subsScoped = html.match(
-    /"subscriberCountText":\{[^{}]*?"(?:simpleText|content)":"([^"]+?) subscribers?"/i
-  );
-  const subsLoose = subsScoped ? null : html.match(/([\d.,]+\s?[KMB]?)\s+subscribers?/i);
-  let subs = (subsScoped && subsScoped[1]) || (subsLoose && subsLoose[1]) || null;
-  if (subs) subs = subs.replace(/\s+/g, "").trim();
-  else if (/"subscriberCountText"/.test(html)) subs = "hidden";
+  // The channel's own header. Everything read from inside it describes THIS
+  // channel; everything outside it may describe anyone whose video or channel
+  // card the page happens to embed.
+  const headAt = html.indexOf(CHANNEL_HEAD_KEY);
+  const head = headAt >= 0 ? html.slice(headAt, headAt + CHANNEL_HEAD_TAIL) : "";
 
-  // Ordered most- to least-authoritative. "canonicalBaseUrl" is LAST because
-  // it is not unique to this page: every video/shelf item in the response
-  // carries its own, so on a page whose first shelf item is someone else's
-  // video it names the WRONG channel.
+  // metadataRows is [ [@handle], [ "21.3M subscribers", "1.8K videos" ] ].
+  // A channel that hides its count simply has no subscribers part — that is a
+  // real answer ("hidden"), not a failure, and must not be retried forever.
+  const rowsM = head.match(/"metadataRows":\[(.*?)\],"delimiter"/s);
+  const rows = rowsM ? rowsM[1] : "";
+  const parts = [...rows.matchAll(/"content":"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]);
+  let subs = null;
+  const subsPart = parts.find((t) => /\d/.test(t) && /subscriber/i.test(t));
+  if (subsPart) {
+    subs = subsPart.replace(/\s*subscribers?\s*$/i, "").replace(/\s+/g, "");
+  } else if (rows) {
+    // Not English (Accept-Language is only a request, not a promise). The row
+    // is [<subscribers>, <videos>] in every language, so take its first part —
+    // but ONLY when it really has two, because a channel that hides its count
+    // renders the same row with the video count alone, and reading that as a
+    // sub count writes "12 videos" into the number field.
+    const second = rows.split('"metadataParts"')[2] || "";
+    const cells = [...second.matchAll(/"content":"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]);
+    const t = cells.length >= 2 ? cells[0] : null;
+    if (t && /\d/.test(t) && !/^@/.test(t)) subs = t.replace(/\s+/g, " ").trim();
+  }
+  if (!subs && rows) subs = "hidden";
+
+  // Ordered most- to least-authoritative, and page-identity sources only.
+  // "canonicalBaseUrl" is LAST because it is not unique to this page: every
+  // video/shelf item in the response carries its own, so on a page whose first
+  // shelf item is someone else's video it names the WRONG channel.
+  const headHandle = head.match(/"content":"(@[A-Za-z0-9._-]+)"/);
   const handleM =
+    headHandle ||
     html.match(/"vanityChannelUrl":"https?:\/\/[^"]*\/(@[A-Za-z0-9._-]+)"/i) ||
     html.match(/<link[^>]+rel="canonical"[^>]+href="https:\/\/www\.youtube\.com\/(@[A-Za-z0-9._-]+)"/i) ||
     html.match(/"canonicalBaseUrl":"\/(@[A-Za-z0-9._-]+)"/i);
   const handle = handleM ? handleM[1] : null;
 
   const nameM =
+    head.match(/"pageTitle":"((?:[^"\\]|\\.)*)"/) ||
     html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/i) ||
     html.match(/<meta[^>]+name="title"[^>]+content="([^"]+)"/i);
   const name = nameM
     ? nameM[1]
+        .replace(/\\u0026/g, "&")
+        .replace(/\\"/g, '"')
         .replace(/&amp;/g, "&")
         .replace(/&quot;/g, '"')
         .replace(/&#39;/g, "'")
@@ -662,21 +745,17 @@ function parseChannelHtml(html) {
   // ORDER MATTERS, and only page-identity sources are safe here. The bare
   // `"channelId"` and `/channel/UC…` matches that used to lead this list are
   // NOT unique to the page: a channel page embeds shelves of other people's
-  // videos, each carrying its own channelId. Worse, `"externalId"` (which is
-  // authoritative) sits near the very END of the ~2.4MB document, past the
-  // point the streaming reader above deliberately stops — so on a real
-  // /@handle page the old order fell through to the first `"channelId"` in a
-  // shelf and recorded a STRANGER's UC id. That id then went into
-  // blockedByUcid and into a DNR redirect rule, silently blocking an innocent
-  // channel. <link rel="canonical"> and <meta itemprop> both appear early and
-  // describe only this page.
+  // videos, each carrying its own channelId, so the old order recorded a
+  // STRANGER's UC id. That id then went into blockedByUcid and into a DNR
+  // redirect rule, silently blocking an innocent channel.
+  // <link rel="canonical"> and <meta itemprop> both describe only this page.
   const ucM =
     html.match(/<link[^>]+rel="canonical"[^>]+href="https?:\/\/[^"]*\/channel\/(UC[A-Za-z0-9_-]{22})"/i) ||
     html.match(/<meta[^>]+itemprop="(?:identifier|channelId)"[^>]+content="(UC[A-Za-z0-9_-]{22})"/i) ||
     html.match(/"externalId":"(UC[A-Za-z0-9_-]{22})"/);
   const ucid = ucM ? ucM[1] : null;
 
-  return { subs, handle, name, ucid };
+  return { subs, handle, name, ucid, headed: !!head };
 }
 
 // Which channel does this video belong to? /embed/<id> renders a working
@@ -745,7 +824,15 @@ async function applyChannelInfo(map) {
 
   const patch = (id, e) => {
     const info = map[id];
-    const n = { ...e, subsAt: now, updated_at: now };
+    const n = { ...e, subsAt: now, updated_at: now, subsV: SUBS_SCRAPE_VERSION };
+    // Permanently unfetchable: stamp it so the auto-fetch stops asking and the
+    // row can say "gone" rather than looking like it just hasn't loaded.
+    if (info.gone) {
+      n.gone = true;
+      n.subs = "n/a";
+      return n;
+    }
+    if (e.gone) delete n.gone; // it came back
     if (info.subs != null) n.subs = info.subs;
     if (info.handle && !e.handle) n.handle = info.handle;
     // Store the UC id on @handle-keyed entries (for a UC-keyed entry the key
@@ -968,9 +1055,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (entry.subs) {
             channels[id].subs = String(entry.subs);
             channels[id].subsAt = Number(entry.subsAt) || now;
+            // Which scrape produced that number — without it a re-imported
+            // export looks like it predates the current scrape and the whole
+            // list gets swept again for counts it already has.
+            if (Number(entry.subsV) > 0) channels[id].subsV = Number(entry.subsV);
           }
           if (entry.handle) channels[id].handle = String(entry.handle);
           if (entry.ucid) channels[id].ucid = String(entry.ucid);
+          // A channel the export already knew was gone stays gone — otherwise
+          // re-importing a backup puts every dead channel back in the
+          // auto-fetch queue, which is the loop the flag exists to end. A
+          // later successful scrape clears it (see applyChannelInfo).
+          if (entry.gone) channels[id].gone = true;
           clearedTombs.push("channel:" + id);
         }
         for (const [id, entry] of Object.entries(msg.videos || {})) {
