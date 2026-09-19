@@ -5,9 +5,10 @@ your feed, search results and recommendations. Not a greyed-out "this channel
 is blocked" placeholder — the tile is removed from the page, so a blocked
 channel simply stops existing for you.
 
-Works on Chrome, Edge, Brave and Firefox, including Firefox for Android. No
-account, no server, no telemetry; your blocklist stays in your browser (and,
-if you want it on another vendor's browser, in a private GitHub Gist you own).
+Works on Chrome, Edge, Brave and Firefox 128+, including Firefox for Android.
+No account, no server, no telemetry; your blocklist stays in your browser
+(and, if you want it on another vendor's browser, in a private GitHub Gist
+you own).
 
 **What you can block**
 

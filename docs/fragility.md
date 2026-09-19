@@ -91,6 +91,19 @@ it names.
   periodically — when tiles stop being removed or the popup stops finding a
   channel/video, these are the first places to check. The `ytm-*` mobile
   selectors are unverified against a live device (see README).
+- **`content/page-hook.js`'s `RULES` table hard-codes YouTube's JSON field
+  paths**, which churn at least as fast as the tag names — upstream
+  BlockTube's equivalent carries the scars (two candidate paths for
+  `lockupViewModel`'s channel id, a `metadataRows[1]` index). When layer 0
+  stops removing things, `?bt-debug` prints `window.__btDataLayer`: a healthy
+  search page shows `responses` and `candidates` both climbing. `candidates`
+  at 0 means the rule table matched no renderers — YouTube renamed something.
+  `candidates` climbing with `removed` at 0 means the renderers matched but
+  their byline paths didn't.
+- **Layer 0 failing is invisible from the outside.** The DOM scrub catches
+  whatever it misses, so the only symptom is that tiles flash before
+  disappearing again. `datalayer-live-test` exists precisely because every
+  other test in the suite would still pass with layer 0 completely dead.
 - **The tag list is not the whole surface, and the gaps cluster on search and
   channel pages.** Nine renderer families reached `RENDERER_SELECTOR` late
   precisely because they appear nowhere else: `ytd-universal-watch-card-renderer`

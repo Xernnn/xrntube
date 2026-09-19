@@ -95,10 +95,81 @@ never touches blocklist storage directly — only through the `host` object
 poll or the next debounced push. Timestamps come from GitHub's response
 `Date` header, not the device clock, so skew can't decide a merge.
 
+## `content/page-hook.js`
+
+The **MAIN-world** content script, injected at `document_start`. It is the
+only code that runs in the page's own JavaScript world, which is the only
+place `window.fetch` and `window.ytInitialData` can be intercepted — an
+ordinary content script sees a different `window`.
+
+It is layer 0: it filters YouTube's own JSON **before Polymer renders it**,
+for `/youtubei/v1/search` and `/youtubei/v1/browse` (search results, every
+channel tab, and the continuations both page in with) plus the first paint's
+`ytInitialData`. Everything below reacts to a tile YouTube has already
+decided to render; this one deletes the tile from the data. Measured live on
+a search page: 4 responses inspected, 203 renderers described, 40 removed
+before render.
+
+**It decides nothing.** It knows only *where* the fields are — the `RULES`
+table maps a renderer key (`videoRenderer`, `lockupViewModel`,
+`universalWatchCardRenderer`, …) to the paths holding its video id, title,
+duration badge and publish text. It reads those raw, posts them to
+content.js, and applies the list of indices that comes back. Channel URLs go
+across unnormalised and durations un-parsed; every question of *meaning* is
+answered by `shared/block-logic.js` in the isolated world.
+
+That split is forced, not stylistic. **Chrome injects a given script path
+only once per document, even across `content_scripts` entries in different
+worlds.** Listing `shared/block-logic.js` in both entries means only one of
+them gets it — and when the isolated entry is the loser, content.js dies on
+startup with *"Cannot destructure property 'MSG' of 'self.BlockTube'"*.
+Confirmed live in both entry orders, and with dynamic
+`chrome.scripting.registerContentScripts` too. So the MAIN entry lists this
+file **and nothing else**, and the only way to keep one copy of the decision
+is to keep the decision out of that world. Adding a shared file to the MAIN
+entry will break the extension in a way that looks nothing like its cause.
+
+Two further consequences worth keeping:
+
+- **A miss here is a latency regression, never a blocking failure.** An
+  unhooked endpoint, a renderer with no rule, a shape that changed this
+  morning, a verdict that doesn't arrive inside `JUDGE_TIMEOUT_MS` — each
+  hands back the original response untouched and lets the DOM scrub do what
+  it always did. That is what lets `RULES` be precise (named byline fields,
+  no guessing) rather than defensive.
+- **Nothing is deferred.** Upstream BlockTube queues YouTube's own bootstrap
+  until its blocklist arrives, which filters the first paint reliably but
+  means a blocklist that never arrives wedges the page. Here `ytInitialData`
+  is filtered opportunistically: the write starts the round-trip, and the
+  edit lands in place if Polymer hasn't read it yet. We win the first paint
+  often, never at the cost of a hung page.
+
+One interaction to keep in mind when touching either side:
+`curbRunawayFeed()` decides a feed is short *because of us* by counting
+`suppressedOnPage`, which the DOM scrub increments as it removes tiles. A
+tile layer 0 deleted never reaches the DOM to be counted, so `content.js`
+adds the verdict count when it answers a `judge`. Without that the curb waits
+for YouTube to deliver 12 tiles layer 0 failed to catch, and a fully-blocked
+feed fires extra continuation fetches before the loop breaks (measured: 2
+instead of 0). Anything else that starts removing content earlier in the
+pipeline has to feed that counter too.
+
+It also beats the DOM at channel identity: a `browseEndpoint` usually carries
+`browseId` (`UC…`) **and** `canonicalBaseUrl` (`/@handle`) together, so a
+`UC…`-keyed blocklist matches a tile that renders only the handle — without
+waiting for the enrich sweep to pair them up.
+
+Privacy note: the MAIN world *is* the page, so its `postMessage` traffic is
+readable by YouTube's scripts. Keeping the blocklist in the isolated world
+means what crosses is only a description of what YouTube itself just sent,
+plus a list of indices — never the blocklist, and no `BlockTube` global.
+
 ## `content/content.js`
 
 Injected into `youtube.com`/`m.youtube.com` at
-`document_start`. Does four jobs:
+`document_start`. Answers layer 0's questions (`judgeHookItem()` translates a
+renderer description into the same `blockReasonFor()` call a DOM tile gets),
+and does four jobs of its own:
 0. **Instant, pre-paint hiding via CSS**: the very first thing this script
    does is create a `<style id="bt-instant-hide">` tag. It holds two
    parts: static rules (Shorts, sidebar Home/Shorts/Report-history,
@@ -124,9 +195,9 @@ Injected into `youtube.com`/`m.youtube.com` at
    loading). It only *hides* (`display: none`); the scrub below is what
    actually deletes the node, and is the only thing that works at all in
    a browser without `:has()` support. `manifest.json` sets Firefox
-   `strict_min_version` to `115.0`, roughly the `:has()` baseline in
-   Gecko — older Firefox falls back to the JS scrub (job 1) only, with a
-   one-frame flash the CSS layer would otherwise prevent.
+   `strict_min_version` to `128.0` — that floor is now set by
+   `world: "MAIN"` (layer 0), not by `:has()`, which Gecko has had since
+   115.
 1. **DOM scrubbing**: a `MutationObserver` on `document.documentElement`
    catches every inserted node, matches it against `RENDERER_SELECTOR`
    (the list of YouTube's custom element tag names for video/playlist/
@@ -457,6 +528,29 @@ all `true` bar the opt-in `blockInEmbeds`), `LEGACY_SETTING_MAP` and
 everywhere (`importScripts` in the service worker, `<script src>` in HTML
 pages, first entry in the manifest's `content_scripts.js` array) and
 attaches to `self`.
+
+## `shared/block-logic.js`
+
+The verdict. Pure functions only — no DOM, no `chrome.*` — because the same
+answer has to be reachable from the DOM scrub and from layer 0's questions:
+`buildBlockIndex()` (the channel map plus the `@handle` / `UC…` side
+indexes, blocked video ids, allow-list, and whether any entry has an age
+rule), `lookupEntry()` / `isAllowedKey()`, `channelBlocks()` (the block-mode
+semantics), `compileFilters()`, the locale-independent `parseAgeDays()` /
+`AGE_UNITS`, `parseDurationSec()`, `normalizeChannelKey()`, and
+`blockReasonFor()` which ties them together into one reason string.
+
+It exists because the decision was about to be written twice. The DOM scrub
+and the JSON filter look at completely different inputs — an element versus a
+renderer object — but must reach the same verdict for the same video, or a
+tile is hidden on one path and not the other and the two layers disagree
+about what "blocked" means. **Layers may differ in what they can SEE; never
+in what they DECIDE.** `content.js` holds exactly one `blockIndex` built here
+and reads through it rather than caching pieces of it.
+
+Loaded after `shared/constants.js` (it needs `CHANNEL_MODE`) and, like it,
+only in the isolated world — see `content/page-hook.js` for why it must not
+also be listed in the MAIN entry.
 
 ## Sync: two layers
 

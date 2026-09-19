@@ -34,6 +34,12 @@ Three files don't follow that shape, and all three **run offline**:
   browser** — they slice `AGE_UNITS` + `parseAgeDays()` out of
   `content/content.js` and `ctxTargetFrom()` out of `background/background.js`
   respectively, and exercise them directly.
+- `datalayer-test.mjs` needs a browser but **not YouTube and not the
+  extension**: it loads `shared/constants.js`, `shared/block-logic.js` and
+  `content/page-hook.js` into a page served by a Playwright route, plays the
+  part of content.js using content.js's own lifted `judgeHookItem()`, and
+  drives the hook through its real `ytInitialData` interception with
+  synthetic response fixtures.
 - `tilescope-test.mjs` needs a browser (it wants a real selector engine) but
   **not YouTube**: it lifts `tileChannels()` out of `content/content.js` and
   runs it against synthetic trees on `about:blank`, with no extension loaded.
@@ -83,6 +89,8 @@ Uses **synthetic data only** — never the real `blocktube_backup*.json` /
 | `age-test`, `locale-age-test` | `age=3d` removes week/month/year-old MKBHD tiles; on the watch page a recent video still plays under a 365-day rule **and** an older one is still bounced under a 30-day rule (read off the live grid, not hard-coded); `parseAgeDays()` (pure Node, extracted from content.js) parses "…ago" in 13 languages and rejects non-dates |
 | `allowlist-test` | "Never-block" beats a full block + the pre-paint CSS + the DNR redirect; removing it re-blocks |
 | `ownpage-test` | a video-only channel's own `/videos` grid 30→0; whitelisted video survives; the same grid reached by a legacy `/c/<name>` URL (which names neither identity format) still resolves to the channel via its canonical metadata |
+| `datalayer-test` | layer 0's **filter**, offline: a blocked channel's renderer removed and its wrapper spliced out, a description `@mention` left alone, `UC…`-keyed and `@handle`-keyed entries both matching one `browseEndpoint`, both block modes, the allow-list, blocked video ids, keyword + duration bounds, a shelf taken by its header's owner (FULL only), a rich grid's wrapper pruned, and an empty blocklist leaving the response byte-identical |
+| `datalayer-live-test` | layer 0's **wiring**, live: the `world: "MAIN"` script actually loads, installs both hooks, leaks no `BlockTube` global, neither world throws on startup, and a real `/youtubei/v1/search` continuation gets renderers described and removed. Exists because the DOM scrub covers for a dead layer 0 — every other test passes without it |
 | `tilescope-test` | which channels a tile *belongs* to: `tileChannels()` lifted out of content.js and run against synthetic trees on `about:blank` — a search result's description `@mention` is not its uploader, byline collaborators all count, an unhydrated or unknown tile shape falls back to the whole tile, and search's watch card is attributed to its header channel rather than to its first video row |
 | `posts-playlists-test` | a blocked channel's playlists gone from its own Playlists tab + playlist search (both modes); its community posts gone from the Posts tab |
 | `members-test` | Join button, members-only tiles, Membership tab all gone; toggle off restores |

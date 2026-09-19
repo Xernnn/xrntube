@@ -13,9 +13,11 @@ import { chromium } from "playwright";
 // it through the DOM by scoping to the byline, with a fall back to the whole
 // tile so an unknown or unhydrated tile shape behaves exactly as before.
 //
-// tileChannels() + collectChannelsIn() + normalizeChannelKey() are lifted
-// straight out of content.js (the trick contextmenu-test and locale-age-test
-// use) so this can't drift from the shipped code without failing.
+// tileChannels() and collectChannelsIn() are lifted straight out of
+// content.js, and normalizeChannelKey() out of shared/block-logic.js where
+// the MAIN-world page hook reads it from too (the trick contextmenu-test and
+// locale-age-test use), so this can't drift from the shipped code without
+// failing.
 //
 // The trees are synthetic but use YouTube's real tag names — safe *only*
 // because the page is about:blank. On a real YouTube page those tags get
@@ -23,28 +25,30 @@ import { chromium } from "playwright";
 // why the rest of the suite uses bt-test-* instead.
 
 const src = readFileSync(new URL("../content/content.js", import.meta.url), "utf8");
+// normalizeChannelKey lives in shared/ now — both the DOM scrub and the
+// MAIN-world page hook resolve a channel key through the same function.
+const shared = readFileSync(new URL("../shared/block-logic.js", import.meta.url), "utf8");
 const fail = (m) => {
   console.error("FAIL:", m);
   process.exitCode = 1;
 };
 const ok = (m) => console.log("ok:", m);
 
-const grabConst = (name) => {
-  const m = src.match(new RegExp(`\\n  const ${name} = [\\s\\S]*?;\\n`));
-  if (!m) throw new Error(`could not find const ${name} in content.js`);
+const grabFrom = (text, where, re, what) => {
+  const m = text.match(re);
+  if (!m) throw new Error(`could not find ${what} in ${where}`);
   return m[0];
 };
-const grabFn = (name) => {
-  const m = src.match(new RegExp(`\\n  function ${name}\\([\\s\\S]*?\\n  \\}\\n`));
-  if (!m) throw new Error(`could not find function ${name} in content.js`);
-  return m[0];
-};
+const grabConst = (name, text = src, where = "content.js") =>
+  grabFrom(text, where, new RegExp(`\\n  const ${name} = [\\s\\S]*?;\\n`), `const ${name}`);
+const grabFn = (name, text = src, where = "content.js") =>
+  grabFrom(text, where, new RegExp(`\\n  function ${name}\\([\\s\\S]*?\\n  \\}\\n`), `function ${name}`);
 
 const lifted = [
-  grabConst("CHANNEL_HREF_RE"),
+  grabConst("CHANNEL_HREF_RE", shared, "shared/block-logic.js"),
   grabConst("CHANNEL_CARD_TAGS"),
   grabConst("BYLINE_SEL"),
-  grabFn("normalizeChannelKey"),
+  grabFn("normalizeChannelKey", shared, "shared/block-logic.js"),
   grabFn("collectChannelsIn"),
   grabFn("collectChannels"),
   grabFn("tileChannels")

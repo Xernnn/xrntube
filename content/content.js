@@ -1,5 +1,23 @@
 (() => {
   const { MSG, CHANNEL_MODE, DEFAULT_SETTINGS, SETTINGS_KEY, KEYWORDS_KEY, ALLOWLIST_KEY, resolveSettings } = self.BlockTube;
+  // The verdict itself lives in shared/block-logic.js, because the MAIN-world
+  // page hook has to reach the same one. Nothing below may re-implement any of
+  // these — see that file's header.
+  const {
+    plausibleAgeDays,
+    parseAgeDays,
+    parseDurationSec,
+    normalizeChannelKey,
+    channelBlocks,
+    buildBlockIndex,
+    EMPTY_INDEX,
+    isAllowedKey,
+    lookupEntry,
+    compileFilters,
+    EMPTY_FILTERS,
+    anyFilterActive,
+    blockReasonFor
+  } = self.BlockTube;
 
   // ---------- embedded players (manifest all_frames) ----------
   // The manifest injects into frames so a youtube.com/embed/<id> player on
@@ -754,7 +772,7 @@
   const SHELF_HEADER_SEL =
     "#title-container, #rich-shelf-header, #header, .shelf-header, ytd-watch-card-rich-header-renderer";
   function scrubShelfOwners(root) {
-    if (!blocklistLoaded || !blockedChannels.size || !root.querySelectorAll) return;
+    if (!blocklistLoaded || !blockIndex.channels.size || !root.querySelectorAll) return;
     root.querySelectorAll(SHELF_SELECTOR).forEach((shelf) => {
       if (shelf.dataset.btShelf === "1") return;
       // Only the shelf's OWN header. `#header` is a common id and this walks
@@ -1079,7 +1097,6 @@
   // doesn't trigger a childList mutation our observer catches.
   setInterval(scheduleExtrasScrub, 2000);
 
-  const CHANNEL_HREF_RE = /^\/(channel\/UC[\w-]{22}|@[\w.-]+)/;
   // A channel page whose URL names NEITHER identity format. CHANNEL_HREF_RE
   // returns null for these, so anything that keys off the path alone silently
   // decides "no channel here" — see scrubOwnChannelPage().
@@ -1091,104 +1108,116 @@
   // nav guard reads "no video on this page" and lets a blocked video play.
   const VIDEO_ID_FROM_PATH_RE = /^\/(?:live|embed|v)\/([\w-]{11})/;
 
-  let blockedVideoIds = new Set();
-  // key -> channel entry ({ name, ts, mode, whitelist, localOnly, handle }),
-  // not just a Set of keys, since a FULL vs. EXCEPT_WHITELIST channel behaves
-  // differently per-video (see channelBlocks() below).
-  let blockedChannels = new Map();
-  // lowercased "@handle" -> entry. An imported list is keyed by UC… ids but
-  // modern YouTube tiles link the channel via /@handle, so we also index by
-  // each entry's scraped `handle` (and by its own key when that's a @handle).
-  let blockedByHandle = new Map();
-  // "UC…" -> entry. The reverse: an @handle-keyed entry still needs to match
-  // surfaces / navigation that use /channel/UC… (its `ucid` is scraped by the
-  // enrich sweep).
-  let blockedByUcid = new Map();
+  // The one blocklist index, built by shared/block-logic.js and shared —
+  // identically — with the MAIN-world page hook. It carries the channel map,
+  // the two identity side-indexes (@handle / UC…), the blocked video ids, the
+  // allow-list, and whether any entry has an age rule. Read through it rather
+  // than caching pieces of it: separate copies of this state drifting apart
+  // is how a channel ended up blocked on one code path and not another.
+  let blockIndex = EMPTY_INDEX;
   let blocklistLoaded = false;
+
+  // The compiled title-keyword + duration filters, likewise shared.
+  let filterRec = EMPTY_FILTERS;
+  // ---------- answering the MAIN-world page hook ----------
+  // content/page-hook.js filters YouTube's JSON before Polymer renders it. It
+  // runs in the page's own world and deliberately contains no decision logic
+  // at all: it describes each renderer it finds (raw channel URLs, raw
+  // duration text, raw "3 days ago" text) and asks us. We answer with the
+  // indices to drop, using the same blockReasonFor() the DOM scrub uses, so
+  // the two layers cannot disagree about what "blocked" means.
+  //
+  // The reason it works this way rather than loading shared/block-logic.js
+  // itself: Chrome injects a given script PATH once per document, even across
+  // content_scripts entries in different worlds, so a shared file listed in
+  // both entries reaches only one of them — and the isolated one losing it
+  // means this file dies on startup. See page-hook.js's header.
+  //
+  // Entirely best-effort. If the hook never loads (an older Firefox without
+  // `world: "MAIN"`, or the file failing for any reason) no messages arrive,
+  // nothing here runs, and every layer below — instant-hide CSS, DOM scrub,
+  // nav guards — works exactly as it did before.
+  function postHookConfig() {
+    try {
+      window.postMessage(
+        // Deliberately not gated on `blocklistLoaded`: applyBlocklist() runs
+        // before that flag is set, so gating on it sent `active: false` on the
+        // one call that mattered and left layer 0 switched off for the tab.
+        { __blocktube: "config", active: blockIndex.channels.size > 0 || blockIndex.videos.size > 0 || anyFilter() },
+        location.origin
+      );
+    } catch {}
+  }
+
+  // One renderer the hook found, judged exactly as a DOM tile would be.
+  function judgeHookItem(it) {
+    const keys = [];
+    for (const ref of it.channelRefs || []) {
+      const key = normalizeChannelKey(ref);
+      if (key) keys.push(key);
+    }
+    let ageDays = null;
+    if (blockIndex.anyAgeRule && it.publishedText) {
+      const d = parseAgeDays(it.publishedText);
+      if (plausibleAgeDays(d)) ageDays = d;
+    }
+    return blockReasonFor(
+      {
+        videoId: it.videoId || null,
+        videoTitle: it.videoTitle || "",
+        durationSec: it.lengthText ? parseDurationSec(it.lengthText) : null,
+        ageDays,
+        isPlaylist: !!it.isPlaylist,
+        channelKeys: keys
+      },
+      blockIndex,
+      filterRec
+    );
+  }
+
+  window.addEventListener("message", (e) => {
+    if (e.source !== window) return;
+    const d = e.data;
+    if (!d) return;
+    if (d.__blocktube === "hello") {
+      postHookConfig();
+      return;
+    }
+    if (d.__blocktube !== "judge" || !Array.isArray(d.items)) return;
+    const blocked = [];
+    for (let i = 0; i < d.items.length; i += 1) {
+      let reason = null;
+      try {
+        reason = judgeHookItem(d.items[i]);
+      } catch {
+        reason = null; // never let one odd renderer stall the response
+      }
+      if (reason) {
+        blocked.push(i);
+        dbg("data layer removed —", reason);
+      }
+    }
+    // These count as suppressed-on-this-page just like a DOM removal does.
+    // curbRunawayFeed() weighs `suppressedOnPage` to decide whether a short
+    // feed is short *because of us* — and a tile layer 0 deleted never
+    // reaches the DOM to be counted there. Without this the curb waits for
+    // YouTube to deliver 12 tiles the data layer didn't catch, which on a
+    // fully-blocked feed means extra continuation fetches before the loop is
+    // broken (measured: 2 instead of 0).
+    if (blocked.length) notePageSuppressed(blocked.length);
+    try {
+      window.postMessage({ __blocktube: "verdict", id: d.id, blocked }, location.origin);
+    } catch {}
+  });
 
   // Resolve a channel key seen in the DOM ("UC…" or "@handle") to a blocked
   // entry, matching the storage key, a scraped @handle, or a scraped UC id.
+  // Returns undefined for an allow-listed channel.
   function blockedEntryFor(key) {
-    if (!key) return undefined;
-    if (isAllowlisted(key)) return undefined; // allow-list wins over any block
-    if (blockedChannels.has(key)) return blockedChannels.get(key);
-    if (key.charAt(0) === "@") return blockedByHandle.get(key.toLowerCase());
-    if (key.startsWith("UC")) return blockedByUcid.get(key);
-    return undefined;
+    return lookupEntry(blockIndex, key);
   }
-  // True when at least one blocked channel carries `blockOlderThanDays` — gates
-  // the per-tile publish-date parsing in extractInfo() so the common case pays
-  // nothing for it.
-  let anyAgeRule = false;
-
-  // Parses YouTube's relative "published" text ("3 days ago", "2 weeks ago",
-  // "Streamed 5 months ago", "1 year ago") into an approximate age in days.
-  // Language-independent: each entry matches "<number> <unit>" (in that order,
-  // which holds for every locale YouTube ships — "vor 3 Wochen", "hace 3
-  // semanas", "il y a 3 semaines", "3週間前", "3주 전", …) for one unit,
-  // across ~15 languages' spellings. Ordered largest-unit-first so "month"
-  // never loses to a partial "min" match. Returns null if nothing matches.
-  // [unit spellings across ~15 languages, days-per-unit]. Anchored by the
-  // preceding "<number><optional space>", which is enough on its own to stop
-  // a short token (Turkish "ay" = month) matching inside a longer word
-  // ("day"): after the digits the cursor sits on the first unit letter, so
-  // "1 day" can only match the "day…" alternative, never "ay". Ordered
-  // largest-unit-first. No \b — word boundaries don't work after the
-  // diacritics / Cyrillic / CJK many of these end in.
-  const AGE_UNITS = [
-    [["years?", "yrs?", "années?", "ans?", "años?", "anos?", "jahren?", "anni", "anno", "jaar", "jaren", "tahun", "năm", "yıl", "годо?в?", "года?", "лет", "년", "年"], 365],
-    [["months?", "mos?", "mois", "mes(?:es)?", "monaten?", "mesi", "mese", "maand(?:en)?", "bulan", "tháng", "ay", "месяц(?:ев|а)?", "개월", "ヶ月", "か月", "カ月", "ヵ月"], 30],
-    [["weeks?", "wks?", "semaines?", "semanas?", "wochen?", "settiman[ae]", "weken?", "minggu", "tuần", "hafta", "недел(?:ь|и|ю)?", "주", "週間", "週"], 7],
-    [["days?", "jours?", "d[ií]as?", "tag(?:en?)?", "giorni?", "dagen?", "hari", "ngày", "gün", "дн(?:ей|я)?", "день", "일", "日"], 1],
-    [["hours?", "hrs?", "heures?", "horas?", "stunden?", "ore", "ora", "uur", "uren", "jam", "giờ", "saat", "час(?:ов|а)?", "시간", "時間"], 1 / 24],
-    [["minutes?", "mins?", "minutos?", "minuten?", "minuti", "minuto", "menit", "phút", "dakika", "минут(?:ы|у)?", "분", "分"], 1 / 1440],
-    [["seconds?", "secs?", "secondes?", "segundos?", "sekunden?", "secondi", "secondo", "seconden?", "detik", "giây", "saniye", "секунд(?:ы|у)?", "초", "秒"], 1 / 86400]
-  ].map(([alts, days]) => [new RegExp(`(\\d+)\\s*(?:${alts.join("|")})`, "i"), days]);
-  // Nothing on YouTube predates 2005, and a future date means we misread
-  // something. A value outside this range is not an age, it is a parse bug.
-  const MAX_PLAUSIBLE_AGE_DAYS = 100 * 365.25;
-  function plausibleAgeDays(d) {
-    return typeof d === "number" && Number.isFinite(d) && d >= -1 && d <= MAX_PLAUSIBLE_AGE_DAYS;
-  }
-
-  function parseAgeDays(text) {
-    const t = text || "";
-    for (const [re, days] of AGE_UNITS) {
-      const m = t.match(re);
-      if (m) return parseInt(m[1], 10) * days;
-    }
-    return null;
-  }
-
-  // Whether a given blocked channel entry blocks a specific video. Pass
-  // `null` for videoId for "the channel page itself / a non-video tile".
-  // `ageDays` is the video's approximate age (parseAgeDays), or null/undefined
-  // if unknown.
-  //  - FULL: blocks everything unconditionally.
-  //  - EXCEPT_WHITELIST: the channel's own page and non-video tiles stay;
-  //    whitelisted video IDs stay; then either every other video is blocked
-  //    (no age rule) or only videos older than `blockOlderThanDays` are
-  //    (recent uploads pass; unknown age is treated as "recent" so a
-  //    parse failure never over-blocks a channel the user wants to keep
-  //    partly visible).
-  function channelBlocks(entry, videoId, ageDays) {
-    if (!entry) return false;
-    if (entry.mode === CHANNEL_MODE.EXCEPT_WHITELIST) {
-      if (!videoId) return false;
-      if (entry.whitelist && entry.whitelist[videoId]) return false;
-      if (entry.blockOlderThanDays > 0) {
-        return ageDays != null && ageDays >= entry.blockOlderThanDays;
-      }
-      return true;
-    }
-    return true;
-  }
-
-  function normalizeChannelKey(href) {
-    const m = href.match(CHANNEL_HREF_RE);
-    if (!m) return null;
-    const path = m[1];
-    return path.startsWith("channel/") ? path.slice("channel/".length) : path; // "UC..." or "@handle"
+  function isAllowlisted(key) {
+    return isAllowedKey(blockIndex, key);
   }
 
   // A tile can list more than one channel — YouTube's "channel collaborations"
@@ -1299,46 +1328,50 @@
     // Only bother reading the tile's publish text / duration when a blocked
     // channel has an age rule / a duration filter is active — parsing every
     // tile otherwise is wasted work.
-    let ageDays = anyAgeRule && videoId ? parseAgeDays(el.textContent || "") : null;
+    let ageDays = blockIndex.anyAgeRule && videoId ? parseAgeDays(el.textContent || "") : null;
     if (!plausibleAgeDays(ageDays)) ageDays = null;
     const durationSec =
-      videoId && (durMinSec > 0 || durMaxSec > 0) ? readDurationSec(el) : null;
+      videoId && (filterRec.durMinSec > 0 || filterRec.durMaxSec > 0) ? readDurationSec(el) : null;
     return { videoId, videoTitle, channels, ageDays, durationSec, isPlaylist };
   }
 
   // Why a tile is blocked, as a short string — null if it isn't. isBlocked()
   // is just "reason != null"; keeping them one function means the debug log
   // and the real decision can never disagree.
+  //
+  // The decision itself is blockReasonFor() in shared/block-logic.js, which
+  // the MAIN-world page hook calls with the same arguments read out of
+  // YouTube's JSON instead of out of the DOM. This function's whole job is
+  // the translation: an `info` from extractInfo() into the shape that takes.
+  // Do not re-implement any of the rules here — a tile the JSON filter kept
+  // and the DOM scrub removed (or the reverse) is the bug that costs the most
+  // to find.
   function blockReason(info) {
     if (!info) return null;
-    // Allow-list: a hard override. If any channel on this tile is allow-listed,
-    // nothing hides it — not a keyword/duration filter, not a collaborator
-    // block, not an age rule.
-    if (allowSet.size) {
-      for (const key of info.channels.keys()) if (isAllowlisted(key)) return null;
-    }
-    if (info.videoId && blockedVideoIds.has(info.videoId)) return "blocked video id";
-    if (info.videoId && info.videoTitle && keywordMatchers.some((r) => r.test(info.videoTitle))) {
-      return `keyword match: "${info.videoTitle.slice(0, 60)}"`;
-    }
-    const d = info.durationSec;
-    if (d != null && d > 0) {
-      if (durMinSec > 0 && d < durMinSec) return `duration ${d}s < ${durMinSec}s`;
-      if (durMaxSec > 0 && d > durMaxSec) return `duration ${d}s > ${durMaxSec}s`;
-    }
-    for (const key of info.channels.keys()) {
-      const e = blockedEntryFor(key);
-      if (!e) continue;
-      const via = blockedChannels.has(key) ? "key" : key.charAt(0) === "@" ? "@handle index" : "ucid index";
-      // A playlist made by a blocked channel goes regardless of block mode /
-      // age rule — a playlist has no single publish date, and "block their
-      // videos" naturally covers "block their playlists of those videos".
-      if (info.isPlaylist) return `playlist by blocked channel ${key} (via ${via})`;
-      if (channelBlocks(e, info.videoId, info.ageDays)) {
-        return `channel ${key} (${e.mode || "full"}${e.blockOlderThanDays ? `, >${e.blockOlderThanDays}d` : ""}, via ${via})`;
+    const reason = blockReasonFor(
+      {
+        videoId: info.videoId,
+        videoTitle: info.videoTitle,
+        durationSec: info.durationSec,
+        ageDays: info.ageDays,
+        isPlaylist: info.isPlaylist,
+        channelKeys: info.channels.keys()
+      },
+      blockIndex,
+      filterRec
+    );
+    // Which index the channel matched through is only ever wanted while
+    // debugging a "why isn't this blocking?" report, so it's appended here
+    // rather than threaded through the shared decision. `?bt-debug`'s
+    // window.__blockTube.explain() reports it independently too.
+    if (reason && DEBUG && reason.startsWith("channel ")) {
+      for (const key of info.channels.keys()) {
+        if (!blockedEntryFor(key)) continue;
+        const via = blockIndex.channels.has(key) ? "key" : key.charAt(0) === "@" ? "@handle index" : "ucid index";
+        return `${reason} via ${via}`;
       }
     }
-    return null;
+    return reason;
   }
   function isBlocked(info) {
     return blockReason(info) !== null;
@@ -1476,8 +1509,8 @@
       // mounts a beat after the tile, and duration was missing from this test
       // entirely, which silently switched the whole length filter off on a
       // normal page load.
-      const titlePending = keywordMatchers.length && info && info.videoId && !info.videoTitle;
-      const durPending = (durMinSec > 0 || durMaxSec > 0) && info && info.videoId && info.durationSec == null;
+      const titlePending = filterRec.matchers.length && info && info.videoId && !info.videoTitle;
+      const durPending = (filterRec.durMinSec > 0 || filterRec.durMaxSec > 0) && info && info.videoId && info.durationSec == null;
       // A live stream has no duration and never will, so bound the retries
       // rather than re-processing it on every pass forever.
       const tries = Number(el.dataset.btPending || 0);
@@ -1545,7 +1578,7 @@
 
   function scrubComments(root) {
     if (!blocklistLoaded || !root.querySelectorAll) return;
-    if (!blockedChannels.size) return;
+    if (!blockIndex.channels.size) return;
 
     // A thread goes as a unit when its top-level comment's author is blocked.
     // querySelector is document-order, so the first comment inside a thread is
@@ -2110,35 +2143,12 @@
   // ---------- title-keyword filters (chrome.storage.sync: bt_keywords) ----------
   // A video whose title matches any pattern is scrubbed. JS-scrub only — CSS
   // can't match text — so there's a one-frame window vs. the :has() layer.
-  let keywordMatchers = [];
-  let durMinSec = 0; // block videos shorter than this (0 = off) — catches Shorts-in-disguise / clip spam
-  let durMaxSec = 0; // block videos longer than this  (0 = off) — catches streams
   function applyKeywords(rec) {
-    const list = (rec && Array.isArray(rec.list) ? rec.list : []).slice(0, 200);
-    keywordMatchers = list
-      .map(({ p, re }) => {
-        const src = String(p || "").trim();
-        if (!src) return null;
-        try {
-          return re
-            ? new RegExp(src, "i")
-            : new RegExp(src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
-    durMinSec = Math.max(0, Math.floor(Number(rec && rec.durMinSec) || 0));
-    durMaxSec = Math.max(0, Math.floor(Number(rec && rec.durMaxSec) || 0));
+    filterRec = compileFilters(rec);
+    postHookConfig();
   }
   function anyFilter() {
-    return keywordMatchers.length > 0 || durMinSec > 0 || durMaxSec > 0;
-  }
-  // "M:SS" / "H:MM:SS" → seconds; null if not parseable.
-  function parseDurationSec(text) {
-    const m = (text || "").match(/\b(\d{1,2}):([0-5]\d)(?::([0-5]\d))?\b/);
-    if (!m) return null;
-    return m[3] ? +m[1] * 3600 + +m[2] * 60 + +m[3] : +m[1] * 60 + +m[2];
+    return anyFilterActive(filterRec);
   }
   // Pull a video's length off its tile. Scans the duration/time-status badges
   // specifically (a tile can carry other badges like "4K"/"New", and a title
@@ -2155,11 +2165,11 @@
   }
   function matchesFilter(info) {
     if (!info || !info.videoId) return false;
-    if (info.videoTitle && keywordMatchers.some((r) => r.test(info.videoTitle))) return true;
+    if (info.videoTitle && filterRec.matchers.some((r) => r.test(info.videoTitle))) return true;
     const d = info.durationSec;
     if (d != null && d > 0) {
-      if (durMinSec > 0 && d < durMinSec) return true;
-      if (durMaxSec > 0 && d > durMaxSec) return true;
+      if (filterRec.durMinSec > 0 && d < filterRec.durMinSec) return true;
+      if (filterRec.durMaxSec > 0 && d > filterRec.durMaxSec) return true;
     }
     return false;
   }
@@ -2181,8 +2191,10 @@
     }
     if (changes[ALLOWLIST_KEY]) {
       const v = changes[ALLOWLIST_KEY].newValue;
-      allowSet = new Set(Object.keys((v && v.list) || {}).map((k) => (k[0] === "@" ? k.toLowerCase() : k)));
-      updateInstantHideBlocklistCSS(lastAppliedChannels, lastAppliedVideos);
+      // Rebuild the whole index. Patching just the allow-list half used to be
+      // the shortcut here, and a second copy of this state is exactly what
+      // shared/block-logic.js exists to prevent.
+      applyBlocklist(lastAppliedChannels, lastAppliedVideos, (v && v.list) || {});
       queryTiles(document).forEach((el) => delete el.dataset.btChecked);
       document.querySelectorAll(POST_SELECTOR).forEach((el) => delete el.dataset.btPost);
       document.querySelectorAll("[data-bt-comment]").forEach((el) => delete el.dataset.btComment);
@@ -2192,41 +2204,36 @@
   });
 
   // ---------- load blocklist from background, stay live-updated ----------
-  // Channels the user has put on the allow-list: a hard "never hide anything
-  // from this channel", overriding every block path (direct, collaborator,
-  // title keyword, duration, age rule). @handle keys are lowercased.
-  let allowSet = new Set();
-  function isAllowlisted(key) {
-    if (!key || !allowSet.size) return false;
-    return allowSet.has(key) || allowSet.has(String(key).toLowerCase());
-  }
+  // Channels the user has put on the allow-list are a hard "never hide
+  // anything from this channel", overriding every block path (direct,
+  // collaborator, title keyword, duration, age rule). The matching lives in
+  // shared/block-logic.js; this is just the raw record as last received, kept
+  // so a blocklist push that doesn't carry one can rebuild the index without
+  // silently dropping it.
+  let lastAllowlist = {};
+
   function applyBlocklist(channels, videos, allowlist) {
-    if (allowlist && typeof allowlist === "object") {
-      allowSet = new Set(Object.keys(allowlist).map((k) => (k[0] === "@" ? k.toLowerCase() : k)));
-    }
-    blockedChannels = new Map(Object.entries(channels || {}));
-    blockedByHandle = new Map();
-    blockedByUcid = new Map();
-    for (const [key, entry] of blockedChannels) {
-      if (key.charAt(0) === "@") blockedByHandle.set(key.toLowerCase(), entry);
-      else if (key.startsWith("UC")) blockedByUcid.set(key, entry);
-      if (entry && entry.handle) blockedByHandle.set(String(entry.handle).toLowerCase(), entry);
-      if (entry && entry.ucid) blockedByUcid.set(String(entry.ucid), entry);
-    }
-    blockedVideoIds = new Set(Object.keys(videos || {}));
-    anyAgeRule = Array.from(blockedChannels.values()).some((e) => e && e.blockOlderThanDays > 0);
+    blockIndex = buildBlockIndex({
+      channels,
+      videos,
+      // A blocklist push may omit the allow-list; keep whatever we had rather
+      // than silently un-allow-listing everything.
+      allowlist: allowlist && typeof allowlist === "object" ? allowlist : lastAllowlist
+    });
+    lastAllowlist = allowlist && typeof allowlist === "object" ? allowlist : lastAllowlist;
     updateInstantHideBlocklistCSS(channels, videos);
+    postHookConfig();
     dbg(
-      "blocklist applied —",
-      blockedChannels.size,
+      "blocklist applied \u2014",
+      blockIndex.channels.size,
       "channels,",
-      blockedByHandle.size,
+      blockIndex.byHandle.size,
       "handle-indexed,",
-      blockedByUcid.size,
+      blockIndex.byUcid.size,
       "ucid-indexed,",
-      blockedVideoIds.size,
+      blockIndex.videos.size,
       "videos,",
-      keywordMatchers.length,
+      filterRec.matchers.length,
       "keywords"
     );
   }
@@ -2437,9 +2444,9 @@
     if (!blocklistLoaded) return;
     const target = getCurrentPageTarget(true);
     if (target.channels.some((c) => isAllowlisted(c.key))) return; // allow-list wins
-    const ageDays = anyAgeRule && target.videoId ? currentPageAgeDays() : null;
+    const ageDays = blockIndex.anyAgeRule && target.videoId ? currentPageAgeDays() : null;
     const blocked =
-      (target.videoId && blockedVideoIds.has(target.videoId)) ||
+      (target.videoId && blockIndex.videos.has(target.videoId)) ||
       matchesFilter(target) ||
       target.channels.some((c) => channelBlocks(blockedEntryFor(c.key), target.videoId, ageDays));
     if (blocked) {
@@ -2451,7 +2458,7 @@
     // matters, since nothing on that page names the uploader. Ask the
     // background to resolve it (cached, one request per unseen video) rather
     // than letting a blocked channel through on a URL shape we can't parse.
-    if (target.videoId && !target.channels.length && blockedChannels.size) {
+    if (target.videoId && !target.channels.length && blockIndex.channels.size) {
       resolveChannelForVideo(target.videoId);
     }
   }
@@ -2647,7 +2654,7 @@
     // EXCEPT_WHITELIST channel deliberately allows this, so channelBlocks()
     // is passed `null` for "no video", not `videoId`.
     const blocked =
-      (videoId && blockedVideoIds.has(videoId)) ||
+      (videoId && blockIndex.videos.has(videoId)) ||
       (browseId && channelBlocks(blockedEntryFor(browseId), null)) ||
       (handleKey && channelBlocks(blockedEntryFor(handleKey), null));
 
@@ -2697,14 +2704,14 @@
     );
     window.__blockTube = {
       state: () => ({
-        channels: blockedChannels.size,
-        byHandle: blockedByHandle.size,
-        byUcid: blockedByUcid.size,
-        videos: blockedVideoIds.size,
-        keywords: keywordMatchers.length,
-        durMinSec,
-        durMaxSec,
-        anyAgeRule,
+        channels: blockIndex.channels.size,
+        byHandle: blockIndex.byHandle.size,
+        byUcid: blockIndex.byUcid.size,
+        videos: blockIndex.videos.size,
+        keywords: filterRec.matchers.length,
+        durMinSec: filterRec.durMinSec,
+        durMaxSec: filterRec.durMaxSec,
+        anyAgeRule: blockIndex.anyAgeRule,
         settings,
         blocklistLoaded
       }),
@@ -2717,7 +2724,7 @@
         const channels = [...info.channels.keys()].map((k) => ({
           key: k,
           blockedEntry: !!blockedEntryFor(k),
-          via: blockedChannels.has(k) ? "key" : blockedByHandle.has(k.toLowerCase()) ? "@handle" : blockedByUcid.has(k) ? "ucid" : "—"
+          via: blockIndex.channels.has(k) ? "key" : blockIndex.byHandle.has(k.toLowerCase()) ? "@handle" : blockIndex.byUcid.has(k) ? "ucid" : "—"
         }));
         return {
           videoId: info.videoId,

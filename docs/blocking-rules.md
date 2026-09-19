@@ -282,6 +282,31 @@ innocent channel. `verifyChannelInfo()` is the backstop: if a fetch of
 `/@foo` comes back claiming a different handle, the handle and ucid are
 dropped (subs/name, being cosmetic, are kept).
 
+### The same question, asked of JSON
+
+Layer 0 (`content/page-hook.js`) asks all of the above about a renderer
+object instead of an element, and gets its answers from the same place:
+`judgeHookItem()` in content.js turns the hook's raw description into the
+same `blockReasonFor()` call `blockReason()` makes for a tile. The hook
+itself normalises nothing — it ships raw `canonicalBaseUrl` strings and raw
+"12:34" / "3 weeks ago" text across, and content.js runs the shared parsers.
+
+Two things follow that the DOM layer can't match:
+
+- **Both identity formats arrive together.** A `browseEndpoint` usually
+  carries `browseId` (`UC…`) *and* `canonicalBaseUrl` (`/@handle`), so a
+  `UC…`-keyed entry matches a tile that renders only the handle — no enrich
+  sweep required. The "an imported `UC…` list must be enriched to actually
+  block" caveat above still holds for everything below layer 0.
+- **Nothing is half-rendered.** Title, duration badge and publish text are
+  all present at once, so none of the rehydration retries apply.
+
+The byline scoping is the same discipline, expressed as `BYLINE_FIELDS`
+rather than CSS selectors: the hook reads `shortBylineText`, `ownerText`,
+`authorEndpoint` and friends, and deliberately not `detailedMetadataSnippets`
+— the search snippet whose runs link every channel the description
+`@mentions`. `datalayer-test` pins that case alongside the DOM one.
+
 ### Where on a tile the identity is read
 
 Knowing *which* identity a tile carries is only half of it; the other half is

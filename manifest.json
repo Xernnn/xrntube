@@ -47,7 +47,20 @@
         "*://m.youtube.com/*"
       ],
       "js": [
+        "content/page-hook.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "*://www.youtube.com/*",
+        "*://m.youtube.com/*"
+      ],
+      "js": [
         "shared/constants.js",
+        "shared/block-logic.js",
         "content/content.js"
       ],
       "css": [
@@ -60,7 +73,7 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "blocktube@local.extension",
-      "strict_min_version": "115.0"
+      "strict_min_version": "128.0"
     }
   }
 }

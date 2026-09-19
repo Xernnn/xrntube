@@ -1,16 +1,20 @@
 // Pure-Node (no browser): pull the AGE_UNITS table + parseAgeDays() straight
-// out of content/content.js and check the relative-date parser against real
-// YouTube "…ago" strings in ~13 languages. Guards the locale work in
-// content.js from a careless edit to one of those regexes.
+// out of shared/block-logic.js and check the relative-date parser against real
+// YouTube "…ago" strings in ~13 languages. Guards that locale work from a
+// careless edit to one of those regexes.
+//
+// It lived in content.js until the MAIN-world page hook needed the same
+// parser for `publishedTimeText`; both layers now read it from shared/, so a
+// date means the same thing whether it was read off a tile or out of the JSON.
 
 import { readFileSync } from "node:fs";
 
-const src = readFileSync(new URL("../content/content.js", import.meta.url), "utf8");
+const src = readFileSync(new URL("../shared/block-logic.js", import.meta.url), "utf8");
 const start = src.indexOf("const AGE_UNITS = [");
 const endMark = "\n  }\n"; // end of parseAgeDays
 const pEnd = src.indexOf(endMark, src.indexOf("function parseAgeDays", start));
 if (start < 0 || pEnd < 0) {
-  console.error("FAIL: couldn't locate AGE_UNITS / parseAgeDays in content.js");
+  console.error("FAIL: couldn't locate AGE_UNITS / parseAgeDays in shared/block-logic.js");
   process.exit(1);
 }
 const snippet = src.slice(start, pEnd + endMark.length);
