@@ -137,7 +137,18 @@ Injected into `youtube.com`/`m.youtube.com` at
    a removal, `scheduleShelfPrune()` checks the tile's shelf ancestor
    (`SHELF_SELECTOR` — "Latest from [channel]", a Shorts shelf, etc.) and
    removes the whole shelf ~1s later if it's now empty, so blocking
-   doesn't leave a headless shelf frame behind. The same observer also
+   doesn't leave a headless shelf frame behind. Running dry is not the
+   only way a shelf goes, though: `scrubShelfOwners()` (in `runExtras()`,
+   so throttled) reads the owner off the shelf's own **header** and
+   removes a FULL-blocked channel's shelf up front. Waiting for it to
+   empty left the channel's name, avatar and "View full channel" button on
+   screen for a beat — and permanently whenever one tile survived, which
+   an `EXCEPT_WHITELIST` channel with a whitelisted video in the shelf
+   always does. This is upstream BlockTube's `shelfRenderer` rule
+   (`endpoint.browseEndpoint.browseId`) done through the DOM. It is FULL
+   blocks only: a video-only channel may legitimately show whitelisted or
+   recent videos in a shelf, so those shelves stay and their tiles are
+   judged one at a time as before. The same observer also
    watches for the `is-active` attribute flipping on
    `ytd-reel-video-renderer` — YouTube's vertical Shorts feed keeps
    several mounted at once and just re-flags which is current, so a plain
@@ -257,8 +268,9 @@ stops the page ever scrolling sideways — without that, at some widths a
 scrollbar appears and arrow keys pan the page instead of seeking.
 `[theater]` is left alone.
 
-All of the above `scrub*` / `retargetLogo` / `scrubOwnChannelPage`
-functions (there are ~10) plus `checkCurrentPageAndRedirect()` live in
+All of the above `scrub*` / `retargetLogo` / `scrubOwnChannelPage` /
+`scrubShelfOwners` functions (there are ~11) plus
+`checkCurrentPageAndRedirect()` live in
 **`runExtras()`**, and `recheckHydratingTiles()` (playlist tiles with
 late-hydrating bylines, and keyword tiles with late titles) alongside it,
 run through the `scheduleExtrasScrub()` throttle — at most every ~400ms

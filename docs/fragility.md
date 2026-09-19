@@ -84,12 +84,33 @@ it names.
   be resolving each tile's videoId through the cached `RESOLVE_VIDEO_CHANNEL`
   oEmbed lookup, which is ~20 requests per watch page; not worth it unless
   someone actually runs with related videos showing.
-- `RENDERER_SELECTOR`, `SHELF_SELECTOR`, and `findScopeForCurrentPage()` in
-  `content/content.js` hard-code YouTube's current custom-element tag names
-  (`ytd-*` desktop, `ytm-*` mobile). YouTube changes these periodically —
-  when tiles stop being removed or the popup stops finding a
+- `RENDERER_SELECTOR`, `CHANNEL_CARD_TAGS`, `BYLINE_SEL`, `SHELF_SELECTOR`,
+  `SHELF_HEADER_SEL` and `findScopeForCurrentPage()` in `content/content.js`
+  hard-code YouTube's current custom-element tag names (`ytd-*` desktop,
+  `ytm-*` mobile) and a handful of ids/classes. YouTube changes these
+  periodically — when tiles stop being removed or the popup stops finding a
   channel/video, these are the first places to check. The `ytm-*` mobile
   selectors are unverified against a live device (see README).
+- **The tag list is not the whole surface, and the gaps cluster on search and
+  channel pages.** Nine renderer families reached `RENDERER_SELECTOR` late
+  precisely because they appear nowhere else: `ytd-universal-watch-card-renderer`
+  and its `ytd-watch-card-compact-video-renderer` rows (search's big
+  channel card), `ytd-video-card-renderer`, `ytd-movie-renderer` /
+  `ytd-compact-movie-renderer`, `ytd-channel-featured-video-renderer` and
+  `ytd-channel-video-player-renderer` (a channel's trailer), and the
+  related-channel rails `ytd-mini-channel-renderer` /
+  `ytd-compact-channel-recommendation-card-renderer`. Upstream BlockTube's
+  `filterRules` map (`src/scripts/inject.js`) is the best available
+  cross-check for what else exists — it names every renderer it filters, on
+  every surface, in one place. Diff against it before assuming a surface is
+  covered.
+- **`BYLINE_SEL` failing open is deliberate.** `tileChannels()` falls back to
+  scanning the whole tile when the byline scopes name no channel, so a tag
+  rename degrades to the old over-broad behaviour rather than to *no
+  blocking*. The cost is that the false positive it exists to prevent (a
+  description `@mention` read as the uploader) comes back silently. If tiles
+  start disappearing for no reason, check whether YouTube renamed a byline
+  container before looking anywhere else.
 - `scrubGuide()` matches Home/Shorts by `href` (very stable — confirmed live
   that both mini-guide and drawer link to exactly `/` and `/shorts/`, note
   the trailing slash on the latter) but everything else — `HIDDEN_NAV_LABELS`

@@ -74,6 +74,32 @@ console.log("   surviving tile ids:", JSON.stringify(survivors));
   ? ok(`whitelist honoured on the channel page — only ${wlId} left`)
   : fail(`whitelist not honoured: survivors ${JSON.stringify(survivors)}`);
 
+// ---- the same page reached by a legacy /c/<name> URL ----
+// /c/… and /user/… name NEITHER identity format, so the page's own path
+// yields no channel key at all. This function used to key off the path alone
+// and so did nothing here: a FULL block was still saved by the nav guard's
+// bounce, but a video-only block (this one) left the entire grid on display.
+// The page's canonical metadata is what resolves it — the same
+// pageIdentityKeys() the nav guard already uses. Confirmed live that
+// /c/mkbhd/videos serves 200 directly rather than server-redirecting to
+// /@MKBHD, so this really does exercise the legacy path.
+const pLegacy = await ctx.newPage();
+await pLegacy.goto("https://www.youtube.com/c/mkbhd/videos", { waitUntil: "domcontentloaded" });
+await pLegacy.waitForTimeout(8000);
+const legacySurvivors = await pLegacy.evaluate(() =>
+  [...document.querySelectorAll("ytd-rich-item-renderer, ytd-grid-video-renderer")]
+    .filter((t) => t.isConnected && t.querySelector('a[href*="watch?v="]') && getComputedStyle(t).display !== "none")
+    .map((t) => {
+      const m = t.querySelector('a[href*="watch?v="]').getAttribute("href").match(/[?&]v=([\w-]{11})/);
+      return m ? m[1] : "?";
+    })
+);
+await pLegacy.close();
+console.log("   surviving tile ids on /c/mkbhd/videos:", JSON.stringify(legacySurvivors));
+legacySurvivors.every((id) => id === wlId)
+  ? ok(`legacy /c/<name> URL resolves to the blocked channel (${legacySurvivors.length} tile(s) left, whitelist only)`)
+  : fail(`legacy /c/<name> URL left ${legacySurvivors.length} tiles: ${JSON.stringify(legacySurvivors)}`);
+
 // ---- navigating away clears the channel-page CSS ----
 const p3 = await ctx.newPage();
 await p3.goto("https://www.youtube.com/feed/subscriptions", { waitUntil: "domcontentloaded" });

@@ -4,3 +4,4 @@ node_modules
 /test/.profile*/
 *.log
 .DS_Store
+package-lock.json

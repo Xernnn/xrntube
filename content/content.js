@@ -467,6 +467,26 @@
     "ytd-channel-renderer",
     "ytd-compact-channel-renderer",
     "ytd-grid-channel-renderer",
+    // Surfaces that only ever appear on a search page or a channel page, and
+    // so were never reachable from the home-feed tags above. Each is a tile
+    // upstream BlockTube filters at the data layer and we had no handle on:
+    //   - the "watch card" search shows when a query names a channel — one
+    //     big card carrying that channel's avatar, links and a video list.
+    //     The card and its rows are separate tags, so both are needed;
+    //   - movie/show results, which use their own renderer entirely;
+    //   - a channel page's featured video (the "trailer"), in both its card
+    //     and inline-player forms;
+    //   - the related-channel rails ("mini" tiles and the watch page's
+    //     "recommended channel" card).
+    "ytd-universal-watch-card-renderer",
+    "ytd-watch-card-compact-video-renderer",
+    "ytd-video-card-renderer",
+    "ytd-movie-renderer",
+    "ytd-compact-movie-renderer",
+    "ytd-channel-featured-video-renderer",
+    "ytd-channel-video-player-renderer",
+    "ytd-mini-channel-renderer",
+    "ytd-compact-channel-recommendation-card-renderer",
     "ytm-rich-item-renderer",
     "ytm-compact-video-renderer",
     "ytm-video-with-context-renderer",
@@ -503,6 +523,26 @@
   ].join(",");
   const PLAYLIST_LINK_SEL =
     'a[href*="/playlist?list="], a[href*="&list=PL"], a[href*="?list=PL"], a[href*="&list=UU"], a[href*="?list=UU"], a[href*="&list=OL"], a[href*="&list=FL"]';
+
+  // Tiles that are *about a channel* rather than about a video that has an
+  // uploader. Two things key off this:
+  //   - their whole subtree is the byline (see tileChannels());
+  //   - CHANNEL_MODE.EXCEPT_WHITELIST ("block their videos, keep the
+  //     channel") must never hide one. The instant-hide rules used to tell a
+  //     channel card apart by "has no video link", which held for
+  //     ytd-channel-renderer but NOT for search's watch card — that card
+  //     lists the channel's videos inside itself, so it looked like a video
+  //     tile and a video-only block would have hidden the channel outright.
+  const CHANNEL_CARD_TAGS = [
+    "ytd-channel-renderer",
+    "ytd-compact-channel-renderer",
+    "ytd-grid-channel-renderer",
+    "ytd-mini-channel-renderer",
+    "ytd-compact-channel-recommendation-card-renderer",
+    "ytd-universal-watch-card-renderer",
+    "ytm-channel-renderer",
+    "ytm-compact-channel-renderer"
+  ].join(",");
 
   // Community / "Posts" tab entries (and reshares). Handled on their own
   // path, not via RENDERER_SELECTOR — a post isn't a video tile.
@@ -621,7 +661,7 @@
         // this for free from the shared `inner` rule below.
         exceptRules.push(
           `:is(${PLAYLIST_TILE_TAGS}):has(${channelLink})`,
-          `:is(${RENDERER_SELECTOR},${LOCKUP_SELECTOR}):has(${channelLink}):has(${PLAYLIST_LINK_SEL})`,
+          `:is(${RENDERER_SELECTOR},${LOCKUP_SELECTOR}):not(${CHANNEL_CARD_TAGS}):has(${channelLink}):has(${PLAYLIST_LINK_SEL})`,
           `:is(${POST_SELECTOR}):has(${channelLink})`
         );
         // An age-ruled channel keeps its recent uploads visible, and CSS
@@ -636,7 +676,7 @@
               .join(",")})`
           : "";
         exceptRules.push(
-          `:is(${RENDERER_SELECTOR},${LOCKUP_SELECTOR}):has(${channelLink}):has(a[href*="v="],a[href*="/shorts/"])${notClause}`
+          `:is(${RENDERER_SELECTOR},${LOCKUP_SELECTOR}):not(${CHANNEL_CARD_TAGS}):has(${channelLink}):has(a[href*="v="],a[href*="/shorts/"])${notClause}`
         );
       } else {
         inner.push(channelLink);
@@ -694,6 +734,67 @@
         shelf.remove();
       }
     }, 1000);
+  }
+
+  // A shelf's header names its owner ("Latest from X", "From your search").
+  // Until now a shelf only ever went away by running dry — every tile inside
+  // it removed, then scheduleShelfPrune() a second later. That leaves the
+  // blocked channel's name, avatar and "View full channel" button on screen
+  // for a beat, and leaves them there *permanently* whenever even one tile
+  // survives: an EXCEPT_WHITELIST channel with a whitelisted video in the
+  // shelf keeps a full header advertising the channel you blocked.
+  //
+  // Reading the owner off the header is upstream BlockTube's `shelfRenderer`
+  // rule (`endpoint.browseEndpoint.browseId`) done through the DOM.
+  //
+  // FULL blocks only — `channelBlocks(entry, null, null)` is the same "is the
+  // channel itself blocked" question the nav guard asks. A video-only channel
+  // legitimately may show whitelisted or recent videos in a shelf, so those
+  // shelves stay and their tiles are judged one by one as before.
+  const SHELF_HEADER_SEL =
+    "#title-container, #rich-shelf-header, #header, .shelf-header, ytd-watch-card-rich-header-renderer";
+  function scrubShelfOwners(root) {
+    if (!blocklistLoaded || !blockedChannels.size || !root.querySelectorAll) return;
+    root.querySelectorAll(SHELF_SELECTOR).forEach((shelf) => {
+      if (shelf.dataset.btShelf === "1") return;
+      // Only the shelf's OWN header. `#header` is a common id and this walks
+      // the whole subtree, so anything sitting inside one of the shelf's
+      // tiles is a tile's header, not the shelf's — and attributing a tile's
+      // channel to the shelf would take the whole row out for one video.
+      const headers = Array.from(shelf.querySelectorAll(SHELF_HEADER_SEL)).filter(
+        (h) => !h.closest(`${RENDERER_SELECTOR},${LOCKUP_SELECTOR}`)
+      );
+      if (!headers.length) return; // header not hydrated yet — come back next pass
+      const channels = collectChannelsIn(headers);
+      if (!channels.size) {
+        // Plenty of shelves genuinely name no channel ("Shorts", "For you"),
+        // and those must stop being rescanned — but a header can also mount
+        // before the byline inside it. Give it a few passes before locking in,
+        // same bargain as REHYDRATE_MAX_TRIES makes for tiles.
+        const tries = Number(shelf.dataset.btShelfTry || 0) + 1;
+        if (tries >= 3) shelf.dataset.btShelf = "1";
+        else shelf.dataset.btShelfTry = String(tries);
+        return;
+      }
+      for (const key of channels.keys()) {
+        if (isAllowlisted(key)) {
+          shelf.dataset.btShelf = "1"; // allow-list wins, and won't change under us
+          return;
+        }
+      }
+      for (const key of channels.keys()) {
+        if (channelBlocks(blockedEntryFor(key), null, null)) {
+          dbg("removed shelf —", shelf.tagName.toLowerCase(), "owned by", key);
+          // Count the tiles, not the shelf: curbRunawayFeed() weighs
+          // CURB_MIN_SUPPRESSED against how much of the page we took away,
+          // and a shelf is worth however much it was holding.
+          notePageSuppressed(Math.max(1, queryTiles(shelf).length));
+          shelf.remove();
+          return;
+        }
+      }
+      shelf.dataset.btShelf = "1";
+    });
   }
 
   // ---------- Shorts: removed unconditionally, not just from blocked channels ----------
@@ -979,6 +1080,10 @@
   setInterval(scheduleExtrasScrub, 2000);
 
   const CHANNEL_HREF_RE = /^\/(channel\/UC[\w-]{22}|@[\w.-]+)/;
+  // A channel page whose URL names NEITHER identity format. CHANNEL_HREF_RE
+  // returns null for these, so anything that keys off the path alone silently
+  // decides "no channel here" — see scrubOwnChannelPage().
+  const LEGACY_CHANNEL_PATH_RE = /^\/(?:c|user)\//;
   const VIDEO_ID_FROM_QUERY_RE = /[?&]v=([\w-]{11})/;
   const VIDEO_ID_FROM_SHORTS_RE = /\/shorts\/([\w-]{11})/;
   // YouTube serves the same video under several path shapes. /live/<id> and
@@ -1090,22 +1195,78 @@
   // feature shows co-authors alongside the primary uploader. Collect every
   // distinct channel link found in scope so blocking a collaborator works
   // exactly like blocking the primary channel.
-  function collectChannels(root) {
+  function collectChannelsIn(roots) {
     const found = new Map(); // key -> display name
-    for (const a of root.querySelectorAll("a[href]")) {
+    const take = (a) => {
       const key = normalizeChannelKey(a.getAttribute("href") || "");
-      if (key && !found.has(key)) {
-        found.set(key, (a.textContent || "").trim());
-      }
+      if (key && !found.has(key)) found.set(key, (a.textContent || "").trim());
+    };
+    for (const root of roots) {
+      if (!root || !root.querySelectorAll) continue;
+      // A scope can itself be the anchor (#avatar-link is an <a>), and
+      // querySelectorAll never returns its own root.
+      if (root.matches && root.matches("a[href]")) take(root);
+      for (const a of root.querySelectorAll("a[href]")) take(a);
     }
     return found;
+  }
+  function collectChannels(root) {
+    return collectChannelsIn([root]);
+  }
+
+  // Where a video/playlist tile names its uploader. This matters because the
+  // rest of a tile names channels that are NOT the uploader: a search result
+  // carries a description snippet, and YouTube linkifies the @mentions in it.
+  // Scanning the whole tile therefore deleted a video for *talking about* a
+  // blocked channel, and offered that channel in the hover block menu as
+  // though it were the uploader — the false-positive class that "never guess
+  // a channel" exists to prevent. Upstream BlockTube can't hit this at all,
+  // because its rules name one exact field per renderer
+  // (`shortBylineText.runs.navigationEndpoint.browseEndpoint.browseId`)
+  // rather than searching a region.
+  const BYLINE_SEL = [
+    "ytd-channel-name",
+    "#channel-name",
+    "#channel-info",
+    "#byline-container",
+    "#avatar-link",
+    "#channel-thumbnail",
+    "ytm-badge-and-byline-renderer",
+    // "view model" tiles (search results, a channel's Playlists tab)
+    "yt-content-metadata-view-model",
+    ".yt-lockup-metadata-view-model-wiz__metadata",
+    ".yt-decorated-avatar-view-model-wiz"
+  ].join(",");
+
+  // The scopes to read a tile's channels from, widest-correct first. Falls
+  // back to the whole tile whenever the narrow scopes name no channel at all,
+  // so this can only ever *remove* false positives: a tile shape we don't
+  // have a byline selector for, or one whose byline hasn't hydrated, behaves
+  // exactly as it did before.
+  function tileChannels(el) {
+    if (el.matches && el.matches(CHANNEL_CARD_TAGS)) return collectChannels(el);
+    const scopes = el.querySelectorAll ? el.querySelectorAll(BYLINE_SEL) : [];
+    if (scopes.length) {
+      const found = collectChannelsIn(scopes);
+      if (found.size) return found;
+    }
+    return collectChannels(el);
   }
 
   function extractInfo(el) {
     let videoId = null;
     let videoTitle = "";
 
-    for (const a of el.querySelectorAll("a[href]")) {
+    // A channel card is judged as a channel, never as a video. The search
+    // "watch card" is the one that matters: it *contains* a list of that
+    // channel's videos, so reading a videoId off it would attribute the
+    // first row's id and title to the whole card — one individually-blocked
+    // video, or one keyword hit, and the entire card goes. Its rows are
+    // tiles in their own right (ytd-watch-card-compact-video-renderer) and
+    // get judged separately.
+    const isChannelCard = !!(el.matches && el.matches(CHANNEL_CARD_TAGS));
+
+    for (const a of isChannelCard ? [] : el.querySelectorAll("a[href]")) {
       const href = a.getAttribute("href") || "";
       if (videoId) break;
       const qm = href.match(VIDEO_ID_FROM_QUERY_RE);
@@ -1131,7 +1292,7 @@
       else if (/^[\d:]+(\s|$)|now playing/i.test(videoTitle) || videoTitle.length < 4) videoTitle = "";
     }
 
-    const channels = collectChannels(el);
+    const channels = tileChannels(el);
     const isPlaylist =
       (el.matches && el.matches(PLAYLIST_TILE_TAGS)) || !!el.querySelector(PLAYLIST_LINK_SEL);
     if (!videoId && channels.size === 0 && !isPlaylist) return null;
@@ -1753,10 +1914,39 @@
     channelPageHideStyle.textContent = parts.join(",\n") + " { display: none !important; }";
   }
 
+  // Which blocked channel, if any, this page BELONGS to. The path is the
+  // cheap answer and usually the right one, but `/c/Name` and `/user/Name`
+  // name neither identity format, so keying off the path alone made this
+  // whole function (and its pre-paint CSS) a no-op on those URLs: a FULL
+  // block was still saved by the nav guard's bounce, but an EXCEPT_WHITELIST
+  // or age-ruled channel reached by a legacy URL showed its entire grid.
+  // pageIdentityKeys() is what the nav guard already uses to resolve exactly
+  // this, off the page's own canonical metadata.
+  //
+  // Only ever called for a real channel page. On a watch page
+  // `meta[itemprop="channelId"]` names the *video's* uploader, and treating
+  // that as "whose page is this" would clear the watch page's every tile.
+  function ownChannelPageEntry() {
+    const path = location.pathname;
+    const pathKey = normalizeChannelKey(path);
+    if (!pathKey && !LEGACY_CHANNEL_PATH_RE.test(path)) return null;
+    if (pathKey) {
+      if (isAllowlisted(pathKey)) return null;
+      const e = blockedEntryFor(pathKey);
+      if (e) return e;
+    }
+    const keys = pageIdentityKeys();
+    for (const key of keys) if (isAllowlisted(key)) return null; // allow-list wins
+    for (const key of keys) {
+      const e = blockedEntryFor(key);
+      if (e) return e;
+    }
+    return null;
+  }
+
   function scrubOwnChannelPage(root) {
     if (!blocklistLoaded || !root.querySelectorAll) return;
-    const pathKey = normalizeChannelKey(location.pathname);
-    const entry = pathKey ? blockedEntryFor(pathKey) : null;
+    const entry = ownChannelPageEntry();
     updateChannelPageHideCSS(entry);
     if (!entry) return; // any blocked channel blocks its videos in some form
     queryTiles(root).forEach((el) => {
@@ -1895,6 +2085,7 @@
     scrubVideoActions(document.documentElement);
     scrubMembersOnly(document.documentElement);
     scrubChannelTabs(document.documentElement);
+    scrubShelfOwners(document.documentElement);
     scrubOwnChannelPage(document.documentElement);
     scrubPosts(document.documentElement);
     scrubComments(document.documentElement);
@@ -2161,7 +2352,7 @@
   // returned channel, and the aliases are the same channel twice.
   function getCurrentPageTarget(withAliases) {
     const pathKey = normalizeChannelKey(location.pathname);
-    const legacyChannelPage = /^\/(?:c|user)\//.test(location.pathname);
+    const legacyChannelPage = LEGACY_CHANNEL_PATH_RE.test(location.pathname);
     if (pathKey || legacyChannelPage) {
       const name = document.title.replace(/ - YouTube$/, "").trim();
       const keys = new Map();

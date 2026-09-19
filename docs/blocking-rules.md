@@ -281,3 +281,56 @@ then cross-indexed the blocklist and generated a DNR redirect against an
 innocent channel. `verifyChannelInfo()` is the backstop: if a fetch of
 `/@foo` comes back claiming a different handle, the handle and ucid are
 dropped (subs/name, being cosmetic, are kept).
+
+### Where on a tile the identity is read
+
+Knowing *which* identity a tile carries is only half of it; the other half is
+**which part of the tile you are allowed to read it from**. `tileChannels()`
+scopes the scan to the byline (`BYLINE_SEL`: `ytd-channel-name`,
+`#channel-info`, `#avatar-link`, `yt-content-metadata-view-model`, the lockup
+metadata row, …) and falls back to the whole tile only when those scopes name
+no channel at all — so an unknown tile shape, or one whose byline hasn't
+hydrated, behaves exactly as an unscoped scan would.
+
+The scoping exists because the rest of a tile names channels that are **not**
+the uploader. A search result carries a description snippet and YouTube
+linkifies the `@mentions` in it, so an unscoped scan deleted a video for
+*talking about* a blocked channel and offered that channel in the hover block
+menu as though it had uploaded it. That is the same false positive
+`comments-test` guards against for comments ("a comment that only *mentions*
+them survives"), and the same class the "never guess a channel" invariant
+exists to prevent. Upstream BlockTube cannot hit it at all, because it filters
+YouTube's JSON and its rules name one exact field per renderer
+(`shortBylineText.runs.navigationEndpoint.browseEndpoint.browseId`) rather
+than searching a region of DOM — see `docs/architecture.md`.
+
+`CHANNEL_CARD_TAGS` is the exception: a tile that is *about* a channel rather
+than about a video that has an uploader (`ytd-channel-renderer`,
+`ytd-mini-channel-renderer`, search's `ytd-universal-watch-card-renderer`, …)
+is all byline, and no videoId is read off it. The watch card is why that
+branch is load-bearing rather than tidy — it lists the channel's videos inside
+itself, so byline scoping alone attributes the card to its first *row's*
+channel, and the channel the card actually advertises goes unseen. For the
+same reason those tags are excluded from the `EXCEPT_WHITELIST` instant-hide
+rules, which tell a channel card apart by "has no video link": true of
+`ytd-channel-renderer`, false of the watch card, and video-only mode must
+never hide a channel card. `tilescope-test` pins all of this.
+
+### Whose page is this?
+
+`ownChannelPageEntry()` answers it for a channel's own page, and must not use
+the path alone: `/c/<name>` and `/user/<name>` name **neither** identity
+format, so `normalizeChannelKey(location.pathname)` returns `null` and every
+decision keyed off it silently becomes "no channel here". That made
+`scrubOwnChannelPage()` and its pre-paint CSS no-ops on those URLs — a FULL
+block was still caught by the nav guard's bounce, but an `EXCEPT_WHITELIST`
+or age-ruled channel reached by a legacy URL showed its entire grid. It falls
+through to `pageIdentityKeys()` (canonical / `og:url` / `meta[itemprop]` /
+the header's own links), which is what the nav guard already used for exactly
+this. Confirmed live: `/c/mkbhd/videos` serves 200 directly rather than
+server-redirecting, so the legacy path is reachable in practice, and
+`ownpage-test` covers it.
+
+It is deliberately gated on the path *looking* like a channel page. On a
+watch page `meta[itemprop="channelId"]` names the **video's** uploader, and
+treating that as "whose page is this" would clear every tile on the page.

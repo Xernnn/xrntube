@@ -28,10 +28,23 @@ Each `*-test.mjs` is standalone: it launches its own persistent context
 `FAIL: …` lines, and sets `process.exitCode` non-zero on any failure.
 `EXT_PATH` is derived from the file's location, so the folder can move.
 
-`locale-age-test.mjs` is the one exception — it's **pure Node, no browser**:
-it slices `AGE_UNITS` + `parseAgeDays()` straight out of `content/content.js`
-and checks the relative-date parser against real "…ago" strings in 13
-languages. Fast, and the only test that runs offline.
+Three files don't follow that shape, and all three **run offline**:
+
+- `locale-age-test.mjs` and `contextmenu-test.mjs` are **pure Node, no
+  browser** — they slice `AGE_UNITS` + `parseAgeDays()` out of
+  `content/content.js` and `ctxTargetFrom()` out of `background/background.js`
+  respectively, and exercise them directly.
+- `tilescope-test.mjs` needs a browser (it wants a real selector engine) but
+  **not YouTube**: it lifts `tileChannels()` out of `content/content.js` and
+  runs it against synthetic trees on `about:blank`, with no extension loaded.
+  Those trees use YouTube's real tag names, which is safe *only* because the
+  page isn't YouTube. On a YouTube page, YouTube's own components upgrade an
+  element like `ytd-video-renderer` and wipe its children, so fixtures there
+  use an unregistered name (`bt-test-tile`) or a plain `div`.
+
+Lifting the function out of the shipped file, rather than copying it, is what
+stops these drifting: rename or reshape the original and the test throws
+instead of quietly passing.
 
 ## Slow by design
 
@@ -69,7 +82,8 @@ Uses **synthetic data only** — never the real `blocktube_backup*.json` /
 | `enrich-test` | 8 channels (subs+@handle+name) in ~1.5s, 8-wide, one write; a UC id naming no channel is recorded as `gone` and never handed a number |
 | `age-test`, `locale-age-test` | `age=3d` removes week/month/year-old MKBHD tiles; on the watch page a recent video still plays under a 365-day rule **and** an older one is still bounced under a 30-day rule (read off the live grid, not hard-coded); `parseAgeDays()` (pure Node, extracted from content.js) parses "…ago" in 13 languages and rejects non-dates |
 | `allowlist-test` | "Never-block" beats a full block + the pre-paint CSS + the DNR redirect; removing it re-blocks |
-| `ownpage-test` | a video-only channel's own `/videos` grid 30→0; whitelisted video survives |
+| `ownpage-test` | a video-only channel's own `/videos` grid 30→0; whitelisted video survives; the same grid reached by a legacy `/c/<name>` URL (which names neither identity format) still resolves to the channel via its canonical metadata |
+| `tilescope-test` | which channels a tile *belongs* to: `tileChannels()` lifted out of content.js and run against synthetic trees on `about:blank` — a search result's description `@mention` is not its uploader, byline collaborators all count, an unhydrated or unknown tile shape falls back to the whole tile, and search's watch card is attributed to its header channel rather than to its first video row |
 | `posts-playlists-test` | a blocked channel's playlists gone from its own Playlists tab + playlist search (both modes); its community posts gone from the Posts tab |
 | `members-test` | Join button, members-only tiles, Membership tab all gone; toggle off restores |
 | `channeltabs-test` | `cleanChannelTabs`: Shorts/Shows/Store/Posts/Podcasts tabs gone from a channel page, Home/Videos/Playlists kept, toggle off restores, Shorts tab still follows `removeShorts`; the modern header's Join button removed while Subscribe survives; membership price offers removed (span-split) while price-shaped video titles survive |
