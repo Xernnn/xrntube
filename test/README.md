@@ -81,7 +81,7 @@ Uses **synthetic data only** — never the real `blocktube_backup*.json` /
 
 | file | what it checks |
 |---|---|
-| `settings-test`, `features-test`, `ui-hide-test` | 33 per-element toggles render/persist (32 on by default — `blockInEmbeds` is opt-in) to `bt_settings`; DNR home rule tracks `redirectHomepage`; Shorts on/off live; masthead / video-actions / voice / account / search-suggestions each remove+restore |
+| `settings-test`, `features-test`, `ui-hide-test` | 35 per-element toggles render/persist (34 on by default — `blockInEmbeds` is opt-in) to `bt_settings`; DNR home rule tracks `redirectHomepage`; Shorts on/off live; masthead / video-actions / voice / account / search-suggestions each remove+restore; the “Ask YouTube” AI button matched against the real markup YouTube ships for it (signed-in only, so the rule is applied to a synthetic copy rather than waited for on the page) |
 | `import-test`, `improve-test` | 4.7k-channel synthetic import in <0.5s, one bulk write, sync-chunk/overflow split, idempotent re-import |
 | `oldformat-debug-test` | `convertOldBlockTube()` parses the original BlockTube export shape; `?bt-debug` logs the banner + every removal's reason to the page console |
 | `uc-handle-test` | UC-keyed block → 0 tiles (repro), enrich → `@handle` cached → 18→0 on a fresh page **and** a live open tab via `REBROADCAST_BLOCKLIST` |

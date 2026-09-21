@@ -13,8 +13,19 @@ from `LABELS_BY_LANG[UI_LANG]` (detected from `<html lang>` then
 the fallback for an unlisted language. Six languages ship (en, vi, es, pt,
 fr, de); adding one is a data edit. `ariaSel()` interpolates the label lists
 into the static CSS (`cleanMasthead` / `hideVoiceSearch` / `hideVideoActions`
-selectors); the JS scrubs (`scrubVideoActions`, `scrubGuide`,
-`scrubMasthead`, `scrubMembersOnly`) build `Set`s / regexes from them.
+/ `hideAskYouTube` selectors); the JS scrubs (`scrubVideoActions`,
+`scrubGuide`, `scrubMasthead`, `scrubMembersOnly`) build `Set`s / regexes
+from them.
+
+`askAi` is the one label list that is deliberately **English-only**. It backs
+`hideAskYouTube` (the AI chat button beside the search box, which ships as
+both "Ask YouTube" and a bare "Ask"), but that rule's real hook is
+`.you-chat-entrypoint-button` — YouTube's own semantic class for the control,
+which needs no translation. The labels exist only as a fallback for that
+class being renamed, so guessing translations for them would add risk without
+adding coverage. Note also that the button's *other* classes are the generic
+`ytSpecButtonShapeNext*` set every button on the site carries: matching those
+would hide half the chrome.
 `parseAgeDays()` is **separate and fully language-independent**: `AGE_UNITS`
 is a `[unit-spellings-across-~15-languages, days]` table, anchored by the
 preceding `<number>` so a short token can't match inside a word

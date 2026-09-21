@@ -149,6 +149,12 @@
       report: ["report"],
       create: ["create"],
       voice: ["search with your voice", "voice search"],
+      // The AI chat entry point beside the search box. Ships as two variants
+      // ("Ask YouTube" and a bare "Ask"), so both are listed. This is only
+      // the fallback — `.you-chat-entrypoint-button` below is the real hook
+      // and needs no translation, which is why no other language table
+      // carries this key.
+      askAi: ["ask youtube", "ask", "ask questions"],
       join: ["join"],
       membersOnly: ["members only", "member only"],
       membership: ["membership", "memberships", "members-only content", "members only content"],
@@ -338,6 +344,37 @@
       #voice-search-button,
       ${ariaSel("ytd-masthead ", L.voice)},
       .mobile-topbar-header [aria-label*="voice" i]
+        { display: none !important; }`,
+    hideAskYouTube: `
+      /* YouTube's AI chat entry point, beside the search box once it has
+         focus. \`you-chat-entrypoint-button\` is YouTube's own semantic class
+         for it and is the hook that matters: the button's other classes are
+         the generic \`ytSpecButtonShapeNext*\` set that every button on the
+         site carries, so matching those would hide half the chrome. The
+         wrapper goes too, not just the <button>, so no empty slot is left
+         holding space next to the search field. */
+      .you-chat-entrypoint-button,
+      button-view-model:has(> .you-chat-entrypoint-button),
+      /* The same feature's second surface: an "Ask" block inside a video's
+         description, with its own heading and blurb above the button. The
+         button alone is already covered above, but removing only that would
+         leave the heading and "Get answers, explore topics, and more"
+         sitting there, so the whole section goes by its own element name. */
+      yt-video-description-youchat-section-view-model,
+      .ytVideoDescriptionYouchatSectionViewModelHost,
+      /* Label fallback, in case that class gets renamed. Scoped to the top
+         bar because "Ask" on its own is too generic to match page-wide. */
+      ytd-masthead button-view-model:has(${ariaSel("", L.askAi)}),
+      ${ariaSel("ytd-masthead ", L.askAi)}
+        { display: none !important; }`,
+    descriptionInfocards: `
+      /* The creator's channel card under a video's description \u2014 avatar,
+         subscriber count, Videos/About buttons, and their outbound social
+         links. Its own element name, so no label matching is needed. If
+         YouTube migrates it to a view model (as it did the "Ask" block just
+         above), the successor tag has to be added here; nothing else in the
+         rule would keep working on its own. */
+      ytd-video-description-infocards-section-renderer
         { display: none !important; }`,
     accountButtonOnHover: `
       ytd-masthead ytd-topbar-menu-button-renderer:has(#avatar-btn),

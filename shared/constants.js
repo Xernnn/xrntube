@@ -180,6 +180,7 @@ self.BlockTube.SETTING_GROUPS = [
       { key: "mastheadNotifications", label: "Notifications bell", desc: "" },
       { key: "hideVoiceSearch", label: "Voice search microphone", desc: "" },
       { key: "hideSearchSuggestions", label: "Search autocomplete", desc: "The suggestions dropdown under the search box." },
+      { key: "hideAskYouTube", label: "\u201cAsk YouTube\u201d button", desc: "The AI chat button that appears beside the search box once you click into it." },
       { key: "accountButtonOnHover", label: "Account avatar until hovered", desc: "Fades the avatar in only when you move to the top-right." }
     ]
   },
@@ -190,6 +191,7 @@ self.BlockTube.SETTING_GROUPS = [
     items: [
       { key: "removeRelated", label: "Related videos column", desc: "Removes the \u201cup next\u201d column and widens the video into the space." },
       { key: "removeEndScreen", label: "End-screen suggestions", desc: "The grid of videos over the player at the end, plus in-player cards." },
+      { key: "descriptionInfocards", label: "Channel card in the description", desc: "The creator's avatar, subscriber count, Videos/About buttons and outbound social links, shown under a video's description." },
       { key: "actionShare", label: "Share button", desc: "" },
       { key: "actionSave", label: "Save button", desc: "" },
       { key: "actionDownload", label: "Download button", desc: "" },

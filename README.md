@@ -21,7 +21,7 @@ you own).
 - Anything **shorter or longer** than a duration you set.
 
 Plus an optional site cleanup — Shorts, the home feed, the related-videos
-column, end-screen suggestions, sidebar clutter and more — as 33 individual
+column, end-screen suggestions, sidebar clutter and more — as 35 individual
 switches you can turn off one by one.
 
 ---
@@ -234,7 +234,7 @@ any entry is still unpaired.
 ## What gets hidden (site cleanup)
 
 Separate from blocking, the **What gets hidden** tab turns off parts of
-YouTube itself — 33 switches in 7 groups, each one a single thing removed. All
+YouTube itself — 35 switches in 7 groups, each one a single thing removed. All
 are on by default except *Block embedded videos too*. A group's master switch
 flips its whole row.
 
@@ -243,8 +243,8 @@ flips its whole row.
 | **Shorts** | shelves and tiles · the full-screen player · the Shorts tab on channels |
 | **Home page and navigation** | skip the home feed (goes to Subscriptions) · point the logo at Subscriptions |
 | **Left sidebar** | Home · Shorts · Explore · More from YouTube · Report history · the small-print footer |
-| **Top bar** | Create (+) · Notifications bell · voice search · search autocomplete · account avatar until hovered |
-| **Watch page** | related-videos column · end-screen suggestions · Share · Save · Download · Clip · Thanks · More (…) |
+| **Top bar** | Create (+) · Notifications bell · voice search · search autocomplete · “Ask YouTube” AI button · account avatar until hovered |
+| **Watch page** | related-videos column · end-screen suggestions · channel card in the description · Share · Save · Download · Clip · Thanks · More (…) |
 | **Channel page** | Join button · membership price offers · members-only videos · Membership tab · Posts · Shows · Podcasts · Store tabs |
 | **Embeds on other sites** | block embedded YouTube players on third-party sites (**off by default** — the only switch that affects sites other than YouTube) |
 
