@@ -25,7 +25,11 @@ which needs no translation. The labels exist only as a fallback for that
 class being renamed, so guessing translations for them would add risk without
 adding coverage. Note also that the button's *other* classes are the generic
 `ytSpecButtonShapeNext*` set every button on the site carries: matching those
-would hide half the chrome.
+would hide half the chrome. Its neighbour `hideVideoSummaries` (the AI
+summary card in a search result) needs no labels at all: the card's
+`has-video-summary` attribute and its `video-summary-content-view-model`
+child are both structural, and the visible "Summary" heading is localised, so
+matching it would be the worse hook.
 `parseAgeDays()` is **separate and fully language-independent**: `AGE_UNITS`
 is a `[unit-spellings-across-~15-languages, days]` table, anchored by the
 preceding `<number>` so a short token can't match inside a word
@@ -65,23 +69,46 @@ thing you right-clicked is often not visibly affected.
 opened from Playwright, but the part that can actually be wrong is working
 out *what* was clicked.
 
+## Hover-menu Undo
+
+A block from a tile's 🚫 menu (`injectBlockButton()` → `blockAndRemove()`)
+removes the tile at once and then calls `showToast(label, { label: "Undo",
+run })` — the same `<bt-toast>` banner the right-click block uses, which
+stays click-through except for its one button. Undo **awaits the block's own
+message first**: the background handles messages concurrently, so an unblock
+sent before the block's write lands finds nothing to remove and the block
+then completes on its own. The tile itself does not come back until YouTube
+renders that list again; the second toast says so.
+
 ## Debug mode
 
 `?bt-debug` in the URL or `localStorage.bt_debug === "1"` turns on `DEBUG` in
 `content.js`. `dbg()` then logs every removal with its `blockReason()` string
 to the page console (visible under the content script's context), and
-`window.__blockTube` (isolated world — reach it via the console's JS-context
+`window.__xrnTube` (isolated world — reach it via the console's JS-context
 dropdown) exposes `state()`, `why('<selector>' | element)` (runs
 `extractInfo` + reports each channel key's index resolution + the
 `blockReason` verdict), and `enable()` / `disable()`.
 
-## Recently-unblocked undo log
+## Recently-removed undo log
 
 `chrome.storage.local` key `bt_recent_unblocks` (not synced) — newest-first,
-capped at `RECENT_UNBLOCK_MAX` (40). `removeEntry()` pushes a
-`{ t: "one", kind, id, entry }` record (full entry, so a restore keeps
-mode/whitelist/handle/age rule); `CLEAR_BLOCKED_VIDEOS` pushes one
-`{ t: "bulk", kind: "video", entries, count }`. `RESTORE_UNBLOCK { index }`
-re-adds via `addEntry` and drops the record; `GET_RECENT_UNBLOCKS` /
-`CLEAR_RECENT_UNBLOCKS` round it out. Shown as a `<details>` under the video
-section in the options Blocklist tab.
+capped at `RECENT_UNBLOCK_MAX` (40) records **and** `RECENT_UNBLOCK_MAX_ENTRIES`
+(20,000) entries across them, always keeping the newest record whole however
+big — that's the one an Undo toast points at. Three record shapes:
+
+- `{ t: "one", kind, id, entry }` — `removeEntry()` (a row's Delete, the
+  popup's Unblock). The full entry, so a restore keeps
+  mode/whitelist/handle/age rule.
+- `{ t: "bulk", kind: "mixed", channels, videos, keywords?, allowlist?, count }`
+  — `DELETE_DATA` (bulk Delete, every delete-all, the danger zone).
+- `{ t: "bulk", kind, entries, count }` — written by older versions'
+  "clear all videos"; still restorable.
+
+Every record's `ts` is its id: strictly increasing, returned to the caller as
+`undoTs`. `RESTORE_UNBLOCK { ts }` (or the older `{ index }`) merges the
+record back in **one** write, skipping anything blocked again since, unions
+keywords and the never-block list back in, and drops the record.
+`GET_RECENT_UNBLOCKS` / `CLEAR_RECENT_UNBLOCKS` round it out. Shown as the
+**Recently removed** `<details>` at the bottom of the options Blocklist tab;
+the same restore is what a removal toast's **Undo** does.

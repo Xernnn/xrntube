@@ -29,9 +29,9 @@ await opt.waitForTimeout(150);
 // --- 1. every toggle renders, all on by default ---
 const nSwitches = await opt.locator("#settings-list .switch").count();
 const nChecked = await opt.locator("#settings-list .switch input:checked").count();
-nSwitches === 35 && nChecked === 34
-  ? ok("35 toggles render; 34 on by default (blockInEmbeds is opt-in)")
-  : fail(`35 toggles: ${nSwitches} rendered, ${nChecked} checked`);
+nSwitches === 39 && nChecked === 38
+  ? ok("39 toggles render; 38 on by default (blockInEmbeds is opt-in)")
+  : fail(`39 toggles: ${nSwitches} rendered, ${nChecked} checked`);
 
 const setToggle = async (key, on) => {
   // A key may name one switch or several — the coarse toggles this suite used

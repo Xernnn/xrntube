@@ -39,7 +39,7 @@ rec.log.length === 0 ? ok("restored record removed from the log") : fail("log st
 await send({ type: "UNBLOCK_CHANNEL", id: "@undome" });
 
 for (const v of ["vid00000001", "vid00000002", "vid00000003"]) await send({ type: "BLOCK_VIDEO", id: v, title: "T" + v });
-await send({ type: "CLEAR_BLOCKED_VIDEOS" });
+await send({ type: "DELETE_DATA", videos: "all" });
 rec = await send({ type: "GET_RECENT_UNBLOCKS" });
 const bulk = rec.log.find((r) => r.t === "bulk");
 (bulk && bulk.count === 3)
@@ -48,7 +48,7 @@ const bulk = rec.log.find((r) => r.t === "bulk");
 await send({ type: "RESTORE_UNBLOCK", index: rec.log.indexOf(bulk) });
 bl = await send({ type: "GET_BLOCKLIST" });
 Object.keys(bl.videos).length === 3 ? ok("restore brought back all 3 videos") : fail(`${Object.keys(bl.videos).length} videos after bulk restore`);
-await send({ type: "CLEAR_BLOCKED_VIDEOS" });
+await send({ type: "DELETE_DATA", videos: "all" });
 await send({ type: "CLEAR_RECENT_UNBLOCKS" });
 
 // ================= 2. keyword title blocking =================
@@ -93,20 +93,19 @@ await send({ type: "UNBLOCK_CHANNEL", id: "@veritasium" });
 
 // ================= 4. sync status shape =================
 const st = await send({ type: "GET_SYNC_STATUS" });
-("gistUrl" in st && "remoteChannels" in st && "remoteVideos" in st)
-  ? ok("sync status exposes gistUrl + remote counts")
+("url" in st && "remoteChannels" in st && "remoteVideos" in st)
+  ? ok("sync status exposes the server address + remote counts")
   : fail("sync status missing new fields: " + JSON.stringify(st));
 
 // ================= 5. :has() selector cap (big import, done last) =================
 
-// synthetic large blocklist (was the user's personal export) — only the
-// shape and size matter for these tests.
+// synthetic large blocklist — only the shape and size matter for these tests.
 const rndId = (n) => Array.from({ length: n }, () => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[Math.floor(Math.random()*64)]).join("");
 const data = { channels: {}, videos: {} };
 for (let i = 0; i < 4691; i++) data.channels["UC" + rndId(22)] = { name: "Chan " + i, ts: Date.now() - i * 1000, mode: "full", whitelist: {} };
 for (let i = 0; i < 762; i++) data.videos[rndId(11)] = { title: "Vid " + i, ts: Date.now() - i * 1000 };
 const _spotId = Object.keys(data.channels)[0];
-data.channels[_spotId].name = "Hay Phết";
+data.channels[_spotId].name = "Kênh Thử Nghiệm";
 
 await send({ type: "IMPORT_BLOCKLIST", channels: data.channels, videos: data.videos });
 await ext.waitForTimeout(600);

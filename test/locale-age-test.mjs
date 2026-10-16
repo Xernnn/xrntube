@@ -53,11 +53,19 @@ const cases = [
   ["3 週間前", 21, 0], // ja
   ["3주 전", 21, 0], // ko
   ["1 day ago", 1, 0], // "ay" (Turkish month) must NOT win here
+  // YouTube's compact form (2026), read off live tiles — with the view count
+  // in front, as the metadata line carries it.
+  ["6.7M 3d ago", 3, 0],
+  ["11M 3w ago", 21, 0],
+  ["11M 7y ago", 7 * 365, 0],
+  ["Streamed 5h ago", 5 / 24, 0.01],
+  ["2.1K 4mo ago", 120, 0],
+  ["30m ago", 30 / 1440, 0.01],
 ];
 for (const [t, want, tol] of cases) near(parseAgeDays(t), want, tol, JSON.stringify(t));
 
 // Things that must NOT parse as an age.
-for (const t of ["Some video title", "4K", "1.2M views", ""]) {
+for (const t of ["Some video title", "4K", "1.2M views", "6.7M", "Top 10 in 2d gaming", ""]) {
   const r = parseAgeDays(t);
   console.log(`${r == null ? "ok:  " : "FAIL:"} ${JSON.stringify(t)} -> ${r == null ? "null (not an age)" : r}`);
   if (r != null) bad++;

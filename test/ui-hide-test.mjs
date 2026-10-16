@@ -20,7 +20,7 @@ await opt.waitForTimeout(150);
 
 // Every leaf except blockInEmbeds ships on (it is opt-in).
 const n = await opt.locator("#settings-list .switch input:checked").count();
-n === 34 ? ok("34 of 35 toggles on by default (blockInEmbeds is opt-in)") : fail(`checked toggles: ${n}`);
+n === 38 ? ok("38 of 39 toggles on by default (blockInEmbeds is opt-in)") : fail(`checked toggles: ${n}`);
 
 const setToggle = async (key, on) => {
   // A key may name one switch or several — the coarse toggles this suite used
@@ -203,7 +203,129 @@ secOff.cards !== "none" && secOff.ai === "none"
   ? ok("channel-card toggle off -> card back, Ask section still hidden")
   : fail(`toggles are not independent: ${JSON.stringify(secOff)}`);
 await setToggle("descriptionInfocards", true);
+
+// The AI video summary folded into a search result. The host element is the
+// same one a watch page uses for chapters, so what marks a summary — the
+// `has-video-summary` attribute, or the summary view model inside — is what
+// the rule has to key off. That part is checked as a *selector*, in an inert
+// document, because `ytd-expandable-metadata-renderer` is a real registered
+// element: appending one to youtube.com upgrades it, and the upgrade drops
+// the attribute and wipes the children before any computed style can be read
+// (confirmed: both probes came back `flex` with the rule live and matching).
+// The selector is read back out of the injected sheet, so this tests the rule
+// that actually ships rather than a copy of it.
+const sumSel = await askPage.evaluate(() => {
+  const sheet = [...document.styleSheets].find((s) => s.ownerNode && s.ownerNode.id === "bt-instant-hide");
+  const rule = sheet && [...sheet.cssRules].find((r) => r.selectorText && r.selectorText.includes("has-video-summary"));
+  if (!rule) return null;
+  const doc = document.implementation.createHTMLDocument("");
+  const mk = (tag, attrs) => {
+    const e = doc.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+    doc.body.appendChild(e);
+    return e;
+  };
+  const byAttr = mk("ytd-expandable-metadata-renderer", { "has-video-summary": "" });
+  const byChild = mk("ytd-expandable-metadata-renderer");
+  byChild.appendChild(doc.createElement("video-summary-content-view-model"));
+  const chapters = mk("ytd-expandable-metadata-renderer");
+  const m = (e) => e.matches(rule.selectorText);
+  return { byAttr: m(byAttr), byChild: m(byChild), chapters: m(chapters) };
+});
+sumSel && sumSel.byAttr && sumSel.byChild
+  ? ok("AI summary rule matches both shapes (attribute + inner view model)")
+  : fail(`summary rule does not match: ${JSON.stringify(sumSel)}`);
+sumSel && !sumSel.chapters
+  ? ok("...and not a chapters card in the same element")
+  : fail("the summary rule also matches chapters");
+
+// The view model itself is not a registered element, so it survives being
+// appended and can be checked the ordinary way, on and off.
+const sumDisplay = () =>
+  askPage.evaluate(() => {
+    document.getElementById("bt-sum-probe")?.remove();
+    const host = document.createElement("div");
+    host.id = "bt-sum-probe";
+    host.appendChild(document.createElement("video-summary-content-view-model"));
+    document.body.appendChild(host);
+    return getComputedStyle(host.firstChild).display;
+  });
+(await sumDisplay()) === "none"
+  ? ok("summary view model hidden")
+  : fail("summary view model still showing");
+
+await setToggle("hideVideoSummaries", false);
+await askPage.reload({ waitUntil: "domcontentloaded" });
+await askPage.waitForTimeout(5000);
+(await sumDisplay()) !== "none"
+  ? ok("toggle off -> AI summary visible again")
+  : fail("summary still hidden after toggle off");
+await setToggle("hideVideoSummaries", true);
+
 await askPage.close();
+
+// ---- auto-generated chapters ----
+// Creator and AI chapters render as the same elements, so this reads what the
+// page was given: the AUTO_CHAPTERS markers and the auto panel must be gone,
+// a creator's DESCRIPTION_CHAPTERS must stay. The lecture has carried
+// machine-made chapters (and no creator ones) for years; if the control
+// below fails, YouTube changed that video — pick another whose Chapters panel
+// says "These chapters are auto-generated".
+const AUTO_VID = "kBdfcR-8hEY";
+const CREATOR_VID = "adQyLViK_ZU";
+const chapPage = await ctx.newPage();
+const chapterState = async (id) => {
+  await chapPage.goto(`https://www.youtube.com/watch?v=${id}`, { waitUntil: "domcontentloaded" });
+  await chapPage.waitForTimeout(7000);
+  return chapPage.evaluate(() => {
+    const s = JSON.stringify(window.ytInitialData || {});
+    return {
+      auto: s.includes("AUTO_CHAPTERS") || s.includes("engagement-panel-macro-markers-auto-chapters"),
+      creator: s.includes("DESCRIPTION_CHAPTERS"),
+      panel: !!document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-macro-markers-auto-chapters"]')
+    };
+  });
+};
+await setToggle("hideAutoChapters", false);
+let chap = await chapterState(AUTO_VID);
+chap.auto
+  ? ok("control: with the switch off, the lecture carries auto chapters")
+  : fail(`${AUTO_VID} no longer has auto chapters — pick another fixture video`);
+await setToggle("hideAutoChapters", true);
+chap = await chapterState(AUTO_VID);
+!chap.auto && !chap.panel
+  ? ok("switch on: auto chapters gone from the page data and the DOM")
+  : fail("auto chapters survived: " + JSON.stringify(chap));
+chap = await chapterState(CREATOR_VID);
+chap.creator
+  ? ok("switch on: a creator's own chapters are kept")
+  : fail("creator chapters were removed: " + JSON.stringify(chap));
+
+// ---- picture-in-picture button ----
+// YouTube's own button, shipped hidden in every player. The switch shows it;
+// clicking it must actually pop the video out, and again must bring it back.
+const pipShown = () =>
+  chapPage.evaluate(() => {
+    const b = document.querySelector("ytd-watch-flexy #movie_player .ytp-pip-button");
+    return !!b && getComputedStyle(b).display !== "none";
+  });
+await chapPage.goto(`https://www.youtube.com/watch?v=${CREATOR_VID}`, { waitUntil: "domcontentloaded" });
+await chapPage.waitForTimeout(7000);
+(await pipShown()) ? ok("picture-in-picture button shown in the player") : fail("no visible .ytp-pip-button");
+await chapPage.click("ytd-watch-flexy #movie_player .ytp-pip-button", { force: true });
+await chapPage.waitForTimeout(1200);
+const inPip = await chapPage.evaluate(() => document.pictureInPictureElement && document.pictureInPictureElement.tagName);
+await chapPage.click("ytd-watch-flexy #movie_player .ytp-pip-button", { force: true });
+await chapPage.waitForTimeout(800);
+const outPip = await chapPage.evaluate(() => !document.pictureInPictureElement);
+inPip === "VIDEO" && outPip
+  ? ok("clicking it pops the video out, and clicking again brings it back")
+  : fail(`picture-in-picture didn't toggle: in=${inPip} out=${outPip}`);
+await setToggle("pipButton", false);
+await chapPage.waitForTimeout(500);
+!(await pipShown()) ? ok("switch off: the button is hidden again, as YouTube ships it") : fail("button still shown with the switch off");
+await setToggle("pipButton", true);
+await chapPage.close();
 
 await ctx.close();
 console.log("\nDONE");

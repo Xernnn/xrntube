@@ -59,7 +59,7 @@ await send({ type: "REBROADCAST_BLOCKLIST" });
 const p2 = await ctx.newPage();
 await p2.goto(VIDEOS_URL, { waitUntil: "domcontentloaded" });
 await p2.waitForTimeout(8000);
-const survivors = await p2.evaluate((wl) => {
+const survivors = await p2.evaluate(() => {
   const tiles = [...document.querySelectorAll("ytd-rich-item-renderer")].filter(
     (t) => t.isConnected && t.querySelector('a[href*="watch?v="]') && getComputedStyle(t).display !== "none"
   );
@@ -67,7 +67,7 @@ const survivors = await p2.evaluate((wl) => {
     const m = t.querySelector('a[href*="watch?v="]').getAttribute("href").match(/[?&]v=([\w-]{11})/);
     return m ? m[1] : "?";
   });
-}, wlId);
+});
 await p2.close();
 console.log("   surviving tile ids:", JSON.stringify(survivors));
 (survivors.length >= 1 && survivors.every((id) => id === wlId))
@@ -111,5 +111,58 @@ const styleCleared = await p3.evaluate(() => {
 await p3.close();
 styleCleared ? ok("channel-page CSS is empty when not on a blocked channel page") : fail("stale channel-page CSS on the feed");
 
+// ---- an age rule has to reach the channel's Shorts tab ----
+// A Shorts tile carries no publish date anywhere — the DOM shows a title and
+// a view count, and `shortsLockupViewModel` in the JSON has no date field at
+// all. Read as "unknown age means recent", that exempted every short the
+// channel has: measured live on an age-ruled channel, the Videos tab went to
+// 2 tiles while the Shorts tab kept all 50.
+//
+// The Shorts toggle is turned OFF for this, or its blanket removal would
+// empty the tab whatever the age rule did and the assertion would pass
+// without testing anything.
+await ext.evaluate(() => chrome.storage.sync.set({ bt_settings: { shortsFeedTiles: false } }));
+await send({ type: "UNBLOCK_CHANNEL", id: CH });
+await ext.waitForTimeout(2500);
+
+const countShorts = (p) =>
+  p.evaluate(() =>
+    [...document.querySelectorAll("ytm-shorts-lockup-view-model-v2, ytm-shorts-lockup-view-model")].filter(
+      (t) => t.isConnected && getComputedStyle(t).display !== "none"
+    ).length
+  );
+
+const pShortsBase = await ctx.newPage();
+await pShortsBase.goto(`https://www.youtube.com/${CH}/shorts`, { waitUntil: "domcontentloaded" });
+await pShortsBase.waitForTimeout(8000);
+const shortsBase = await countShorts(pShortsBase);
+await pShortsBase.close();
+shortsBase > 5
+  ? ok(`baseline: ${shortsBase} Shorts on ${CH}/shorts with the Shorts toggle off`)
+  : fail(`baseline too low to test against: ${shortsBase} Shorts tiles`);
+
+await send({ type: "BLOCK_CHANNEL", id: CH, name: "MKBHD", mode: "exceptWhitelist" });
+await ext.waitForTimeout(4000);
+await send({ type: "SET_CHANNEL_AGE_RULE", id: CH, days: 2 });
+await send({ type: "REBROADCAST_BLOCKLIST" });
+await ext.waitForTimeout(1000);
+
+const pShorts = await ctx.newPage();
+await pShorts.goto(`https://www.youtube.com/${CH}/shorts`, { waitUntil: "domcontentloaded" });
+await pShorts.waitForTimeout(9000);
+const shortsLeft = await countShorts(pShorts);
+const emptyWrappers = await pShorts.evaluate(
+  () =>
+    [...document.querySelectorAll("ytd-rich-item-renderer")].filter((w) => w.isConnected && !w.firstElementChild).length
+);
+await pShorts.close();
+shortsLeft === 0
+  ? ok(`age rule reaches Shorts: ${shortsBase} → 0 on the channel's Shorts tab`)
+  : fail(`${shortsLeft} Shorts still on an age-ruled channel's own tab`);
+emptyWrappers === 0
+  ? ok("…and no empty grid wrappers are left standing where they were")
+  : fail(`${emptyWrappers} empty ytd-rich-item-renderer wrappers left behind`);
+
+await send({ type: "UNBLOCK_CHANNEL", id: CH });
 await ctx.close();
 console.log("\nDONE");

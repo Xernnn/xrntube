@@ -35,7 +35,7 @@ async function run(days) {
     const tiles = [...document.querySelectorAll("ytd-video-renderer, yt-lockup-view-model")];
     const mine = tiles.filter((t) => t.querySelector('a[href="/@MKBHD"], a[href="/@mkbhd"], a[href*="/channel/UCBJycsmduvYEL83R_U4JriQ"]'));
     const ages = mine
-      .map((t) => (t.textContent.match(/\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago/i) || [null])[0])
+      .map((t) => (t.textContent.match(/\d+\s*(?:second|minute|hour|day|week|month|year|[smhdwy]|mo)s?\s+ago/i) || [null])[0])
       .filter(Boolean);
     return { total: tiles.length, mine: mine.length, ages };
   });
@@ -54,7 +54,8 @@ else fail(`baseline too low (${keep.mine}) — search may not have MKBHD video t
 if (block.mine < keep.mine) ok(`age=3d removes older MKBHD videos: ${block.mine} < ${keep.mine}`);
 else fail(`age rule had no effect in search: ${block.mine} vs ${keep.mine}`);
 
-const survivorsOld = block.ages.filter((s) => /week|month|year/i.test(s));
+// Full words or YouTube's compact form ("3w ago", "4mo ago", "7y ago").
+const survivorsOld = block.ages.filter((s) => /week|month|year|\d\s*(?:w|mo|y)\s+ago/i.test(s));
 survivorsOld.length === 0
   ? ok("under age=3d, no week/month/year-old MKBHD tile survives")
   : fail("age leak: " + JSON.stringify(survivorsOld));
@@ -91,8 +92,14 @@ const grid = await probe.evaluate(() =>
   [...document.querySelectorAll("ytd-rich-item-renderer")]
     .map((t) => {
       const a = t.querySelector('a[href*="/watch?v="]');
-      const m = (t.textContent || "").match(/(\d+)\s+(hour|day|week|month|year)s?\s+ago/i);
-      return a && m ? { id: new URL(a.href).searchParams.get("v"), n: +m[1], unit: m[2].toLowerCase() } : null;
+      // The channel grid abbreviates past the first few tiles ("4.9M views ·
+      // 4 wk ago", "3 mo ago", "1 yr ago"); the full words alone matched only
+      // the newest handful, so no 60-day-old video was ever found.
+      // Full words, the "4 wk ago" short form, and the compact "3d ago" one.
+      const m = (t.textContent || "").match(/(\d+)\s*(hour|hr|h|day|d|week|wk|w|month|mo|year|yr|y)s?\s+ago/i);
+      const UNIT = { h: "hour", hr: "hour", d: "day", w: "week", wk: "week", mo: "month", y: "year", yr: "year" };
+      const unit = m && m[2].toLowerCase();
+      return a && m ? { id: new URL(a.href).searchParams.get("v"), n: +m[1], unit: UNIT[unit] || unit } : null;
     })
     .filter(Boolean)
 );

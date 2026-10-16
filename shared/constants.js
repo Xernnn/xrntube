@@ -1,8 +1,8 @@
 // Shared across background, content script, popup, and options.
 // Loaded as a plain classic script everywhere, so it just hangs things off `self`.
-self.BlockTube = self.BlockTube || {};
+self.XrnTube = self.XrnTube || {};
 
-self.BlockTube.MSG = {
+self.XrnTube.MSG = {
   BLOCK_CHANNEL: "BLOCK_CHANNEL",
   BLOCK_VIDEO: "BLOCK_VIDEO",
   UNBLOCK_CHANNEL: "UNBLOCK_CHANNEL",
@@ -10,9 +10,8 @@ self.BlockTube.MSG = {
   GET_BLOCKLIST: "GET_BLOCKLIST",
   BLOCKLIST_UPDATED: "BLOCKLIST_UPDATED",
   IMPORT_BLOCKLIST: "IMPORT_BLOCKLIST",
-  CLEAR_BLOCKED_VIDEOS: "CLEAR_BLOCKED_VIDEOS", // wipe every blocked video in one bulk write
   GET_PAGE_TARGET: "GET_PAGE_TARGET",
-  // A blocked channel can be in one of two modes (BlockTube.CHANNEL_MODE
+  // A blocked channel can be in one of two modes (XrnTube.CHANNEL_MODE
   // below): SET_CHANNEL_MODE flips an already-blocked channel between them,
   // and WHITELIST/UNWHITELIST manage the "let these specific videos through"
   // exception list used by the softer mode.
@@ -27,11 +26,15 @@ self.BlockTube.MSG = {
   SET_ENTRY_HIDDEN: "SET_ENTRY_HIDDEN",
   SET_CHANNEL_AGE_RULE: "SET_CHANNEL_AGE_RULE",
   FETCH_CHANNEL_SUBS: "FETCH_CHANNEL_SUBS",
-  // Enrich a batch of channels in one round-trip: fetch each channel page
-  // concurrently in the worker, then write all results with a single storage
-  // write (per-channel FETCH_CHANNEL_SUBS was one sync/local write each — the
-  // real bottleneck on a big list). Also captures @handle + display name.
+  // Look a few channels up and wait for the answer (one storage write for the
+  // lot). Also captures @handle + display name.
   BULK_FETCH_CHANNEL_INFO: "BULK_FETCH_CHANNEL_INFO",
+  // The sweep: queue channels for lookup in the background, where it keeps
+  // going after the options page closes and pauses itself when YouTube
+  // throttles. Progress lives in chrome.storage.local under `bt_sweep`.
+  START_SWEEP: "START_SWEEP",
+  STOP_SWEEP: "STOP_SWEEP",
+  GET_SWEEP: "GET_SWEEP",
   // Push the current blocklist to every open YouTube tab once (after a bulk
   // enrich, so tabs pick up the freshly-scraped @handles without a reload —
   // the enrich messages skip the per-write broadcast for speed).
@@ -48,11 +51,19 @@ self.BlockTube.MSG = {
   // permission, which would be a new install-time prompt for a one-line message.
   SHOW_TOAST: "SHOW_TOAST",
   // "Recently unblocked" undo log (chrome.storage.local, not synced).
+  // RESTORE_UNBLOCK takes `ts` (the record's own stamp, returned by every
+  // removal) or a log `index`; `ts` is what an Undo toast uses, since the
+  // index of a record shifts as soon as anything else is removed.
   GET_RECENT_UNBLOCKS: "GET_RECENT_UNBLOCKS",
   RESTORE_UNBLOCK: "RESTORE_UNBLOCK",
   CLEAR_RECENT_UNBLOCKS: "CLEAR_RECENT_UNBLOCKS",
-  // Cross-browser blocklist sync via a private GitHub Gist (see
-  // background/gist-sync.js). The options page owns the UI; background.js owns
+  // Remove many things in ONE storage write and ONE undo record:
+  // { channels: [ids] | "all", videos: [ids] | "all", keywords: bool,
+  //   allowlist: bool }. Per-entry UNBLOCK_* is one loadAll + write + DNR
+  // rebuild each, which is unusable for "delete all" on a 5,000-entry list.
+  DELETE_DATA: "DELETE_DATA",
+  // Blocklist sync through your own server (see background/server-sync.js
+  // and server/xrntube-sync.py). The options page owns the UI; background.js owns
   // the token and runs the push/pull/merge cycle.
   GET_SYNC_STATUS: "GET_SYNC_STATUS",
   SET_SYNC_CONFIG: "SET_SYNC_CONFIG",
@@ -74,31 +85,30 @@ self.BlockTube.MSG = {
 // published more than that many days ago are blocked — recent uploads pass
 // (and whitelisted IDs always pass). Defaults to FULL when a channel entry
 // predates the `mode` field, so old blocklists keep behaving exactly as before.
-self.BlockTube.CHANNEL_MODE = {
+// Where blocked content — and Home / Shorts, when those toggles are on — get
+// sent instead. Lives here because background.js redirects to it at the
+// network layer (DNR) and content.js redirects to it from the page, and the
+// two must not drift; it used to be declared separately in both.
+self.XrnTube.SAFE_LANDING_URL = "https://www.youtube.com/feed/subscriptions";
+
+self.XrnTube.CHANNEL_MODE = {
   FULL: "full",
   EXCEPT_WHITELIST: "exceptWhitelist"
 };
 
-// chrome.storage.sync hard limits: QUOTA_BYTES = 102400, QUOTA_BYTES_PER_ITEM = 8192,
-// MAX_ITEMS = 512. We chunk each list into multiple keys so no single item ever
-// gets close to the per-item cap, and we track how many items exist so we know
-// when we're approaching MAX_ITEMS and must spill into local-only storage.
-self.BlockTube.STORAGE = {
-  CHUNK_SIZE: 50, // entries per sync storage chunk, kept well under 8KB/item
-  MAX_SYNC_ITEMS: 480, // stay under the 512 hard cap with headroom for meta keys
-  META_KEY: "bt_meta",
-  CHANNEL_CHUNK_PREFIX: "bt_ch_",
-  VIDEO_CHUNK_PREFIX: "bt_vid_",
-  LOCAL_OVERFLOW_KEY: "bt_overflow",
-  // chrome.storage.local. Tombstones record deletions so the gist merge doesn't
+self.XrnTube.STORAGE = {
+  // chrome.storage.local. { channels: { <key>: entry }, videos: { <id>: entry } }
+  // — the whole blocklist, one key (see background.js → the blocklist store).
+  BLOCKLIST_KEY: "bt_blocklist",
+  // chrome.storage.local. Tombstones record deletions so the sync merge doesn't
   // resurrect an entry another device already unblocked: { "channel:<key>" |
   // "video:<id>": <deletedAtMs> }. Pruned once older than TOMBSTONE_TTL_MS.
   TOMBSTONE_KEY: "bt_tombstones",
   TOMBSTONE_TTL_MS: 30 * 24 * 60 * 60 * 1000,
-  // chrome.storage.local. The gist-sync record — GitHub token, gist id, last
-  // seen version, timestamps, last error, and the device's clock offset vs.
-  // GitHub. Deliberately in local (not sync) storage: the token must not ride
-  // chrome.storage.sync to other browsers.
+  // chrome.storage.local. The sync record — server address, user name and
+  // password, last seen version, timestamps, last error, and the device's
+  // clock offset vs. the server. Deliberately in local (not sync) storage: the
+  // password must not ride chrome.storage.sync to other browsers.
   SYNC_KEY: "bt_sync"
 };
 
@@ -107,7 +117,7 @@ self.BlockTube.STORAGE = {
 // an install with nothing saved behaves exactly as it did before toggles
 // existed. The options page edits these; content.js reads them (and
 // background.js reads redirectHomepage / removeShorts when building DNR rules).
-self.BlockTube.SETTINGS_KEY = "bt_settings";
+self.XrnTube.SETTINGS_KEY = "bt_settings";
 
 // Which generation of the channel scrape produced an entry's `subs`. Bumped
 // when the scrape starts reading a *different, better* place, so entries whose
@@ -117,15 +127,15 @@ self.BlockTube.SETTINGS_KEY = "bt_settings";
 //       a channel page embeds shelves of other people's videos and channel
 //       cards, and the page's own header sits past where the reader stopped.
 //   2 — the channel's own `pageHeaderRenderer`, off its search tab.
-self.BlockTube.SUBS_SCRAPE_VERSION = 2;
+self.XrnTube.SUBS_SCRAPE_VERSION = 2;
 // chrome.storage.sync. { list: [{ p: <pattern>, re: <bool: treat as regex> }],
 // ts: <ms> }. A video whose title matches any pattern is scrubbed (JS only —
-// CSS can't match text). ts drives last-write-wins in the gist merge.
-self.BlockTube.KEYWORDS_KEY = "bt_keywords";
+// CSS can't match text). ts drives last-write-wins in the sync merge.
+self.XrnTube.KEYWORDS_KEY = "bt_keywords";
 // chrome.storage.sync. { list: { [channelKey]: { note?, ts } }, ts: <ms> } —
 // channels that must never be hidden, whatever else matches. `ts` drives
-// last-write-wins in the gist merge (same scheme as KEYWORDS_KEY).
-self.BlockTube.ALLOWLIST_KEY = "bt_allowlist";
+// last-write-wins in the sync merge (same scheme as KEYWORDS_KEY).
+self.XrnTube.ALLOWLIST_KEY = "bt_allowlist";
 // ---------------------------------------------------------------------------
 // Feature toggles.
 //
@@ -138,7 +148,7 @@ self.BlockTube.ALLOWLIST_KEY = "bt_allowlist";
 //
 // Adding a leaf: add it here, gate the code on it via `on(key)` in content.js,
 // and it appears in the options UI automatically.
-self.BlockTube.SETTING_GROUPS = [
+self.XrnTube.SETTING_GROUPS = [
   {
     id: "shorts",
     label: "Shorts",
@@ -180,8 +190,17 @@ self.BlockTube.SETTING_GROUPS = [
       { key: "mastheadNotifications", label: "Notifications bell", desc: "" },
       { key: "hideVoiceSearch", label: "Voice search microphone", desc: "" },
       { key: "hideSearchSuggestions", label: "Search autocomplete", desc: "The suggestions dropdown under the search box." },
-      { key: "hideAskYouTube", label: "\u201cAsk YouTube\u201d button", desc: "The AI chat button that appears beside the search box once you click into it." },
       { key: "accountButtonOnHover", label: "Account avatar until hovered", desc: "Fades the avatar in only when you move to the top-right." }
+    ]
+  },
+  {
+    id: "ai",
+    label: "AI features",
+    desc: "YouTube's generative-AI surfaces.",
+    items: [
+      { key: "hideAskYouTube", label: "\u201cAsk\u201d buttons and panels", desc: "The AI chat button beside the search box, and the matching \u201cAsk\u201d section under a video's description." },
+      { key: "hideVideoSummaries", label: "AI video summaries", desc: "The collapsible \u201cSummary\u201d card YouTube folds into a search result, above the video's own description." },
+      { key: "hideAutoChapters", label: "Auto-generated chapters", desc: "The chapters YouTube makes up for a video whose creator didn't add any \u2014 the marks on the progress bar, the chapter name beside the timer, and the Chapters list. Chapters the creator wrote stay." }
     ]
   },
   {
@@ -192,6 +211,8 @@ self.BlockTube.SETTING_GROUPS = [
       { key: "removeRelated", label: "Related videos column", desc: "Removes the \u201cup next\u201d column and widens the video into the space." },
       { key: "removeEndScreen", label: "End-screen suggestions", desc: "The grid of videos over the player at the end, plus in-player cards." },
       { key: "descriptionInfocards", label: "Channel card in the description", desc: "The creator's avatar, subscriber count, Videos/About buttons and outbound social links, shown under a video's description." },
+      { key: "commentsTwoColumn", label: "Comments in two columns", desc: "Lays the comment list out in two columns instead of one, so more fits on screen." },
+      { key: "pipButton", label: "Picture-in-picture button", desc: "Adds YouTube's own (normally hidden) pop-out button to the player: the video floats in a small window that stays on top while you use other tabs and apps." },
       { key: "actionShare", label: "Share button", desc: "" },
       { key: "actionSave", label: "Save button", desc: "" },
       { key: "actionDownload", label: "Download button", desc: "" },
@@ -236,16 +257,16 @@ self.BlockTube.SETTING_GROUPS = [
 
 // Flat { key: bool } derived from the tree — the stored shape. Everything
 // defaults on except a leaf that opts out with `default: false`.
-self.BlockTube.DEFAULT_SETTINGS = {};
-for (const g of self.BlockTube.SETTING_GROUPS) {
-  for (const it of g.items) self.BlockTube.DEFAULT_SETTINGS[it.key] = it.default !== false;
+self.XrnTube.DEFAULT_SETTINGS = {};
+for (const g of self.XrnTube.SETTING_GROUPS) {
+  for (const it of g.items) self.XrnTube.DEFAULT_SETTINGS[it.key] = it.default !== false;
 }
 
 // Settings written by an older version used one coarse key per surface. Map
 // each to the leaves that replaced it so an upgrade keeps the user's choices
 // instead of silently switching removed features back on. Applied on read, and
 // only where the user had explicitly turned something OFF.
-self.BlockTube.LEGACY_SETTING_MAP = {
+self.XrnTube.LEGACY_SETTING_MAP = {
   removeShorts: ["shortsFeedTiles", "shortsPlayer", "shortsChannelTab"],
   cleanSidebar: ["sidebarHome", "sidebarShorts", "sidebarExplore", "sidebarMoreFromYouTube", "sidebarReportHistory", "sidebarFooter"],
   cleanMasthead: ["mastheadCreate", "mastheadNotifications"],
@@ -255,10 +276,10 @@ self.BlockTube.LEGACY_SETTING_MAP = {
 };
 
 // Merge stored settings over the defaults, expanding any legacy coarse keys.
-self.BlockTube.resolveSettings = function (stored) {
-  const out = { ...self.BlockTube.DEFAULT_SETTINGS };
+self.XrnTube.resolveSettings = function (stored) {
+  const out = { ...self.XrnTube.DEFAULT_SETTINGS };
   const s = stored || {};
-  for (const [legacy, leaves] of Object.entries(self.BlockTube.LEGACY_SETTING_MAP)) {
+  for (const [legacy, leaves] of Object.entries(self.XrnTube.LEGACY_SETTING_MAP)) {
     if (s[legacy] === false) for (const k of leaves) out[k] = false;
   }
   for (const [k, v] of Object.entries(s)) {
@@ -267,10 +288,8 @@ self.BlockTube.resolveSettings = function (stored) {
   return out;
 };
 
-// GitHub Gist sync (background/gist-sync.js).
-self.BlockTube.SYNC = {
-  GIST_FILENAME: "blocktube-blocklist.json",
-  GIST_DESCRIPTION: "BlockTube blocklist sync — managed by the extension, do not hand-edit",
+// Sync through your own server (background/server-sync.js).
+self.XrnTube.SYNC = {
   SCHEMA_VERSION: 1,
   POLL_ALARM: "bt-sync-poll",
   POLL_PERIOD_MIN: 3, // how often each device pulls (no realtime channel)

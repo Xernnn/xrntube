@@ -31,16 +31,20 @@ it names.
   breakage degrades to "embed pages stop being guarded", not an error.
 - The `contextMenus` permission is now actually used — see "Right-click to
   block". It had been declared for years with no call behind it.
-- `background/gist-sync.js` assumes the GitHub REST shape (`/gists`,
-  `/gists/:id`, `history[0].version`) and that the account's BlockTube gist
-  is on page 1 of `/gists?per_page=100` (true right after creation; a user
-  with >100 gists *and* a pre-existing BlockTube gist could make a second
-  one, leaving two to reconcile — rare, and the merge still converges). The
-  push debounce is a plain `setTimeout` that a suspended worker can drop;
-  the `bt-sync-poll` alarm (`SYNC.POLL_PERIOD_MIN`, min ~1 in production
-  Chrome) is the backstop. Live-tested only against a 401 (bad token) — a
-  real multi-device gist round-trip wasn't exercised in this environment (no
-  test PAT should be improvised).
+- `background/server-sync.js`'s push debounce is a plain `setTimeout` that a
+  suspended worker can drop; the `bt-sync-poll` alarm (`SYNC.POLL_PERIOD_MIN`,
+  min ~1 in production Chrome) is the backstop. The protocol is our own
+  (docs/sync-server.md), so nothing upstream can move under it — the fragile
+  part is the hosting: on Tailscale, adding a path with `tailscale serve`
+  instead of `tailscale funnel` silently takes the whole address off the
+  public internet.
+- **YouTube throttles channel lookups.** A few hundred fast ones (16 in
+  parallel, as the sweep once ran) got a machine's `/channel/UC…` requests
+  redirected to Google's "unusual traffic" page for an hour or more; the
+  extension may not follow that redirect, so the fetch throws. That throw is
+  treated as throttling (pause, keep the channel queued), never as a result.
+  If lookups stop landing, `curl -sI` a `/channel/UC…` URL and look for
+  `google.com/sorry`.
 - YouTube is mid-migration to a new tile component family, `yt-lockup-view-model`,
   that shares nothing with the legacy `ytd-*`/`ytm-*` custom elements. Confirmed
   live: a channel's own "Playlists" tab and playlist results in search render
@@ -103,7 +107,15 @@ it names.
 - **Layer 0 failing is invisible from the outside.** The DOM scrub catches
   whatever it misses, so the only symptom is that tiles flash before
   disappearing again. `datalayer-live-test` exists precisely because every
-  other test in the suite would still pass with layer 0 completely dead.
+  other test in the suite would still pass with layer 0 completely dead —
+  but that runs here, not on the machine where YouTube renames a field next
+  month. So `noteLayer0Miss()` in content.js counts the tiles the DOM scrub
+  removes on a surface layer 0 claims to cover and `console.warn`s once past
+  `LAYER0_WARN_AT` (10). It waits `LAYER0_GRACE_MS` (10s) first, because
+  layer 0 races YouTube for the first paint and deliberately loses sometimes;
+  only what arrives afterwards, through the fetches it definitely hooks,
+  counts as evidence. Measured: 0 warnings with the rule table healthy, one
+  warning with it neutered.
 - **The tag list is not the whole surface, and the gaps cluster on search and
   channel pages.** Nine renderer families reached `RENDERER_SELECTOR` late
   precisely because they appear nowhere else: `ytd-universal-watch-card-renderer`
@@ -179,6 +191,84 @@ it names.
   recognising the state it just created. `feedloop-test` guards both directions
   — the loop stopping, and an unblocked or partially-blocked feed still paging
   normally, since over-correcting here would break scrolling everywhere.
+
+  **A search page slips past all of that**, which is why there is a second
+  brake. The results page is tall on its own — masthead, filter chips, a
+  channel card, a shelf — so its sentinel can sit further than 1.5 viewports
+  down while YouTube still prefetches, and every removal we make quietly
+  leaves room for the next batch. Geometry can't see it. `noteJudgedRound()`
+  counts **rounds** instead: layer 0 describes each response before it
+  renders, so one judged batch is one fetch, and three in a row that carried
+  videos (≥ `EXHAUST_MIN_VIDEOS`) with none surviving sets `feedExhausted`.
+  One surviving video resets the count — that is the over-correction guard,
+  and it is the assertion to keep if these thresholds are ever tuned. The
+  flag then does two things: `curbRunawayFeed()` stops waiting for geometry,
+  and the hook strips `continuationItemRenderer` / `continuations` out of
+  every further response, because a sentinel removed from the DOM is simply
+  re-created from the next one. Thresholds and reset behaviour are pinned in
+  `datalayer-test` (offline, lifted from content.js); `feedloop-test` checks
+  the live outcome and reports which brake stopped the page.
+- **A lockup buries its byline three levels below where the scan stops.**
+  `collectChannelRefs()` walks `MAX_SCAN_DEPTH = 10` levels into each
+  BYLINE_FIELDS subtree, and a `lockupViewModel`'s channel sits at
+  `metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel
+  .metadataRows[0].metadataParts[0].text.commandRuns[0].onTap
+  .innertubeCommand.browseEndpoint.browseId` — thirteen. A `videoRenderer`'s
+  `shortBylineText` is shallow, so the symptom is lopsided and easy to
+  misread: a blocked channel's ordinary videos vanish from search while its
+  **playlist cards stay**, and if the entry carries an age rule nothing
+  downstream can remove them either (a playlist has no date). The rule table's
+  `bylinePaths` starts the walk at the metadata rows instead; raising the
+  global depth cap would have worked too and is the wrong trade — a deeper
+  blanket scan is how a description `@mention` becomes an uploader.
+  `datalayer-test` pins it with a fixture at the real depth (a shallower one
+  passes with or without the fix, which is worse than no test).
+- **A tile's own title will date it if you let it.** The age rule reads from
+  `AGE_SCOPE_SEL` — `yt-content-metadata-view-model`, `#metadata-line`,
+  `ytd-video-meta-block`, and a Shorts subhead — and only falls back to the
+  whole tile (minus the title) when a tile has none of them. Reading
+  `el.textContent` outright is the tile-sized version of the `document.body`
+  bug: live, "Apple Silicon Explained in 56 seconds" was the single short to
+  survive a 2-day rule on a channel's Shorts tab, and "24 hours with the
+  iPhone" would do the same to an ordinary video. If YouTube renames the
+  metadata component, age rules quietly start reading titles again — the
+  offline cases in `tilescope-test` are what catch that.
+- **The watch page's related column names no channel in the DOM.** Measured
+  live: a rail of 26 `yt-lockup-view-model`s, two anchors each, both
+  `/watch?v=…`, and the uploader rendered as plain text — so `tileChannels()`
+  finds nothing, no channel block of any kind can touch a related video, and
+  the hover menu can only offer "Block this video". Reading the name and
+  matching it against the blocklist is exactly the "never guess a channel"
+  trap, so the fix is upstream: `page-hook.js` hooks `/youtubei/v1/next`,
+  where the byline's `browseEndpoint` still exists. **This makes layer 0
+  load-bearing on the watch page** — the one place a miss there is a blocking
+  failure rather than a latency regression. The first rail arrives with
+  `ytInitialData`; every in-app hop between videos fetches a fresh one —
+  from `/next` until YouTube moved that hop to **`/youtubei/v1/get_watch`**,
+  which bundles `[{ playerResponse }, { watchNextResponse }]`. Unhooked, it
+  let every blocked channel's related tile through after a click (4 of 4,
+  live); `streamWatchParts()` now passes the player part straight through and
+  filters only the watch-next one, so playback keeps its head start (buffering
+  the bundle cost +0.9s click→playing). If blocked channels start reappearing
+  in the sidebar, check the network panel for which endpoint carries the rail
+  now, that it is in `HOOKED`, and that `lockupViewModel`'s byline paths still
+  resolve, before looking anywhere in the DOM layer.
+- **The relative date has a new shape, and a date that doesn't parse
+  disables age rules silently.** YouTube moved tiles to "3d ago", "2w ago",
+  "7y ago" (one letter, no space) alongside "3 days ago" and "4 wk ago" — even
+  mixed on one page. `parseAgeDays()` read none of the compact ones, every
+  tile counted as undated, and "unknown age means recent" kept them all: a
+  1-day rule blocked nothing. If an age rule stops working, look at a tile's
+  metadata line first.
+- **Auto-generated chapters are told apart only in the JSON.** Creator and
+  AI chapters render as the same elements; the watch-next response keys the
+  player-bar markers `AUTO_CHAPTERS` vs `DESCRIPTION_CHAPTERS` and names the
+  panel `engagement-panel-macro-markers-auto-chapters` vs
+  `…-description-chapters`, and every other surface (description cards, the
+  panel-header chip, the player-bar button) is a command pointing at that
+  panel. If `hideAutoChapters` stops working, look for those two names in a
+  fresh watch response first; the one CSS backstop (the panel's `target-id`)
+  covers only the side panel.
 - Everything except `processRenderer()`'s blocklist removals runs on the
   ~400ms `scheduleExtrasScrub()` throttle (see Architecture) — a small
   latency window traded for page-load performance. Anything that must

@@ -74,7 +74,7 @@ JSON.stringify(order.sort()) === JSON.stringify(["Big", "Unknown"])
 // blocklist bar's ⋯ menu now — a sweep you run about once, not a control that
 // earns permanent space — so the menu has to be opened to see it.
 await p.evaluate(() => {
-  const v = self.BlockTube.SUBS_SCRAPE_VERSION;
+  const v = self.XrnTube.SUBS_SCRAPE_VERSION;
   state = {
     channels: {
       a: { name: "A", ts: 1 },

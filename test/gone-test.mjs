@@ -45,7 +45,7 @@ for (const id of GONE) channels[id] = { name: id, ts: Date.now() };
 channels[ALIVE] = { name: ALIVE, ts: Date.now() };
 // Seeded already-gone: an import must carry the flag (so a restored backup
 // doesn't queue every dead channel again), and a later scrape must clear it.
-const SUBS_V = await p.evaluate(() => self.BlockTube.SUBS_SCRAPE_VERSION);
+const SUBS_V = await p.evaluate(() => self.XrnTube.SUBS_SCRAPE_VERSION);
 channels[REVIVED] = {
   name: REVIVED,
   ts: Date.now(),

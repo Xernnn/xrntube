@@ -32,9 +32,19 @@ const judgeSrc = (() => {
   return m[0];
 })();
 
+// The round counter that stops a search paging in nothing but blocked
+// videos, lifted out of content.js the same way (constants included, so the
+// thresholds under test are the shipped ones).
+const roundsSrc = (() => {
+  const consts = contentSrc.match(/\n  const EXHAUST_ROUNDS = [\s\S]*?\n  let feedExhausted = false;\n/);
+  const fn = contentSrc.match(/\n  function noteJudgedRound\(items, blockedIdx\) \{[\s\S]*?\n  \}\n/);
+  if (!consts || !fn) throw new Error("could not find noteJudgedRound() in content.js");
+  return consts[0] + fn[0];
+})();
+
 const harness = `
   (() => {
-    const BT = self.BlockTube;
+    const BT = self.XrnTube;
     const { buildBlockIndex, compileFilters, normalizeChannelKey, parseAgeDays,
             plausibleAgeDays, parseDurationSec, blockReasonFor } = BT;
     let blockIndex = BT.EMPTY_INDEX;
@@ -49,15 +59,34 @@ const harness = `
     window.addEventListener("message", (e) => {
       if (e.source !== window) return;
       const d = e.data;
-      if (!d || d.__blocktube !== "judge" || !Array.isArray(d.items)) return;
+      if (!d || d.__xrntube !== "judge" || !Array.isArray(d.items)) return;
       const blocked = [];
       d.items.forEach((it, i) => { if (judgeHookItem(it)) blocked.push(i); });
-      window.postMessage({ __blocktube: "verdict", id: d.id, blocked }, location.origin);
+      window.postMessage({ __xrntube: "verdict", id: d.id, blocked }, location.origin);
     });
   })();
 `;
 
-const scripts = [read("../shared/constants.js"), read("../shared/block-logic.js"), harness, read("../content/page-hook.js")];
+// Stands in for the network under the hook's fetch wrapper (page-hook.js
+// captures `window.fetch` when it loads, so this must load first). It serves
+// `window.__stubBody` in 7-byte chunks — small enough that multi-byte
+// characters and the brackets inside strings land across chunk boundaries,
+// which is what streamWatchParts() has to survive.
+const fetchStub = `
+  window.__stubBody = "";
+  window.fetch = async () => {
+    const bytes = new TextEncoder().encode(window.__stubBody);
+    let i = 0;
+    const body = new ReadableStream({
+      pull(c) {
+        if (i >= bytes.length) return c.close();
+        c.enqueue(bytes.slice(i, i + 7));
+        i += 7;
+      }
+    });
+    return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+  };`;
+const scripts = [read("../shared/constants.js"), read("../shared/block-logic.js"), harness, fetchStub, read("../content/page-hook.js")];
 
 const fail = (m) => {
   console.error("FAIL:", m);
@@ -98,6 +127,18 @@ const withMention = (ucid, handle) => ({
   ]
 });
 
+// A Short, as a channel's Shorts tab and every Shorts shelf render it: a
+// title, a view count, and no publish date of any kind.
+const short = (videoId, title, name, ucid, handle) => ({
+  shortsLockupViewModel: {
+    entityId: `shorts-shelf-item-${videoId}`,
+    accessibilityText: `${title}, 1.4 million views – play Short`,
+    onTap: { innertubeCommand: { reelWatchEndpoint: { videoId } } },
+    overlayMetadata: { primaryText: { content: title } },
+    metadata: byline(name, ucid, handle)
+  }
+});
+
 // A UC id is exactly "UC" + 22 chars, and collectChannelKeys() enforces that
 // before it will treat a browseId as a channel. Three of these were a char
 // short on the first draft, which silently made their cases pass by matching
@@ -124,11 +165,11 @@ for (const content of scripts) await page.addScriptTag({ content });
 // real `ytInitialData` interception and read back what survived. Filtering is
 // asynchronous now (the hook has to ask), so this waits for the hook's own
 // completion marker rather than guessing at a delay.
-async function filter(blocklist, filters, data) {
+async function filter(blocklist, filters, data, { exhausted = false, hideAutoChapters = false } = {}) {
   return page.evaluate(
-    async ([bl, f, d]) => {
+    async ([bl, f, d, ex, ac]) => {
       window.__btHarness.setState(bl, f);
-      window.postMessage({ __blocktube: "config", active: true }, location.origin);
+      window.postMessage({ __xrntube: "config", active: true, exhausted: ex, hideAutoChapters: ac }, location.origin);
       await new Promise((r) => setTimeout(r, 0)); // let the config land
       window.__btDataLayer.initialData = "pending";
       window.ytInitialData = d;
@@ -139,7 +180,7 @@ async function filter(blocklist, filters, data) {
       }
       return window.ytInitialData;
     },
-    [blocklist, filters, data]
+    [blocklist, filters, data, exhausted, hideAutoChapters]
   );
 }
 
@@ -387,7 +428,7 @@ const results = (o) =>
 // normally. Cheap to re-introduce, so it is pinned here.
 {
   const verdicts = await page.evaluate((ucid) => {
-    const BT = self.BlockTube;
+    const BT = self.XrnTube;
     const idx = BT.buildBlockIndex({ channels: { [ucid]: { mode: "full" } }, videos: {}, allowlist: {} });
     const asMap = new Map([[ucid, "Bad"]]);
     return {
@@ -399,6 +440,328 @@ const results = (o) =>
   verdicts.fromArray && verdicts.fromIterator && verdicts.fromSet
     ? ok("blockReasonFor() blocks the same whether given an array, a Set or an iterator")
     : fail(`iterator/Set handling broken: ${JSON.stringify(verdicts)}`);
+}
+
+// ---- 12. an exhausted surface loses its continuation ----
+// When content.js has watched several whole responses arrive with no video
+// surviving, it flips `exhausted` and the hook takes the continuation out of
+// everything that follows. Removing the sentinel from the DOM is not enough
+// on its own — YouTube re-creates it from the next response — so this is the
+// part that actually ends an "it keeps loading until one gets through" loop.
+{
+  const withMore = () =>
+    wrap([
+      video("uuuuuuuuuuu", "x", "Good", GOOD, "@good"),
+      { continuationItemRenderer: { trigger: "CONTINUATION_TRIGGER_ON_ITEM_SHOWN", continuationEndpoint: {} } }
+    ]);
+
+  const normal = await filter({ channels: { [BAD]: { mode: "full" } }, videos: {}, allowlist: {} }, null, withMore());
+  has(normal, "continuationItemRenderer")
+    ? ok("a normal response keeps its continuation — the feed still pages")
+    : fail("continuation removed from a response that was not exhausted");
+
+  const cut = await filter(
+    { channels: { [BAD]: { mode: "full" } }, videos: {}, allowlist: {} },
+    null,
+    withMore(),
+    { exhausted: true }
+  );
+  !has(cut, "continuationItemRenderer")
+    ? ok("an exhausted surface's continuation is stripped, so nothing asks for more")
+    : fail("continuation survived on an exhausted surface");
+  same(videoIds(cut), ["uuuuuuuuuuu"])
+    ? ok("…and stripping it leaves the results themselves alone")
+    : fail(`stripping also took results: ${JSON.stringify(videoIds(cut))}`);
+}
+
+// ---- 13. the round counter: when does a surface count as exhausted? ----
+// Lifted from content.js, so these are the shipped thresholds. The two
+// directions matter equally: never stopping is the bug being fixed, and
+// stopping early would cut a search off while it still had results to show.
+{
+  const run = (body) =>
+    page.evaluate(
+      ([src, b]) =>
+        new Function(`
+          const dbg = () => {};
+          const postHookConfig = () => {};
+          const scheduleExtrasScrub = () => {};
+          let onSurface = true;
+          const onLayer0Surface = () => onSurface;
+          ${src}
+          const round = (n, survivors) => {
+            const items = [];
+            const blocked = [];
+            for (let i = 0; i < n; i += 1) {
+              items.push({ videoId: "v" + i });
+              if (i >= survivors) blocked.push(i);
+            }
+            noteJudgedRound(items, blocked);
+          };
+          ${b}
+        `)(),
+      [roundsSrc, body]
+    );
+
+  const afterEach = await run(`
+    const seen = [];
+    for (let r = 0; r < 3; r += 1) { round(6, 0); seen.push(feedExhausted); }
+    return seen;
+  `);
+  JSON.stringify(afterEach) === JSON.stringify([false, false, true])
+    ? ok("three responses with no surviving video, and only the third, ends the paging")
+    : fail(`wrong round at which it fired: ${JSON.stringify(afterEach)}`);
+
+  const oneSurvivor = await run(`
+    round(6, 0); round(6, 0); round(6, 1); round(6, 0); round(6, 0);
+    return feedExhausted;
+  `);
+  oneSurvivor === false
+    ? ok("a single surviving video resets the count")
+    : fail("one surviving video did not reset the count — a working search would be cut off");
+
+  const tiny = await run(`
+    for (let r = 0; r < 6; r += 1) round(2, 0);
+    return feedExhausted;
+  `);
+  tiny === false
+    ? ok("batches too small to prove anything neither count nor reset")
+    : fail("a two-video batch counted as an empty round");
+
+  const offSurface = await run(`
+    onSurface = false;
+    for (let r = 0; r < 6; r += 1) round(6, 0);
+    return feedExhausted;
+  `);
+  offSurface === false
+    ? ok("a watch page is never declared exhausted (its rail is not an infinite feed)")
+    : fail("the round counter fired off a paging surface");
+}
+
+// ---- 14. an age rule has to reach Shorts, which carry no date ----
+// A Short's renderer has a title and a view count and nothing else, so
+// `ageDays` is null for every one of them. Reading that as "recent" (the rule
+// that protects a date which simply hasn't hydrated) exempted every short an
+// age-ruled channel has: its Videos tab emptied while its Shorts tab stayed
+// complete. Both layers have to answer this the same way, so it lives in
+// blockReasonFor() and is asserted here through the hook.
+{
+  const aged = { channels: { [SOFT]: { mode: "exceptWhitelist", blockOlderThanDays: 2 } }, videos: {}, allowlist: {} };
+  const out = await filter(
+    aged,
+    null,
+    wrap([
+      short("s1111111111", "an old short", "Soft", SOFT, "@soft"),
+      video("v2222222222", "old upload", "Soft", SOFT, "@soft", { publishedTimeText: { simpleText: "3 weeks ago" } }),
+      video("v3333333333", "todays upload", "Soft", SOFT, "@soft", { publishedTimeText: { simpleText: "1 hour ago" } })
+    ])
+  );
+  same(videoIds(out), ["v3333333333"])
+    ? ok("age rule: the dateless Short and the 3-week-old video go, today's upload stays")
+    : fail(`expected only v3333333333, got ${JSON.stringify(videoIds(out))}`);
+}
+
+// ...and the same Short with no age rule on the entry is blocked as a plain
+// video-only block always did, i.e. the flag changes nothing on its own.
+{
+  const plain = { channels: { [SOFT]: { mode: "exceptWhitelist" } }, videos: {}, allowlist: {} };
+  const out = await filter(plain, null, wrap([short("s4444444444", "a short", "Soft", SOFT, "@soft")]));
+  videoIds(out).length === 0
+    ? ok("video-only without an age rule still takes their Shorts")
+    : fail(`short survived a plain video-only block: ${JSON.stringify(videoIds(out))}`);
+}
+
+// A whitelisted Short still wins, age rule or not — the exception list is
+// checked before any of this.
+{
+  const aged = {
+    channels: { [SOFT]: { mode: "exceptWhitelist", blockOlderThanDays: 2, whitelist: { s5555555555: "kept" } } },
+    videos: {},
+    allowlist: {}
+  };
+  const out = await filter(aged, null, wrap([short("s5555555555", "kept short", "Soft", SOFT, "@soft")]));
+  same(videoIds(out), ["s5555555555"])
+    ? ok("a whitelisted Short survives the age rule")
+    : fail(`whitelisted short was removed: ${JSON.stringify(videoIds(out))}`);
+}
+
+// ---- 15. a playlist lockup is a playlist, not a video with a strange id ----
+// `lockupViewModel` is one tag for several kinds of tile; `contentType` says
+// which. A playlist lockup's `contentId` is a `PL…` id, and taking that for a
+// video id made it a video nothing could date — so an age-ruled channel's
+// playlist cards survived in search for good, which is precisely how they
+// were reported. The DOM scrub reaches the same verdict from the `&list=`
+// link (tilescope-test), since the page itself carries no type marker.
+{
+  // The byline is at the depth YouTube actually uses — thirteen levels in,
+  // reached through `commandRuns`. The generic scan gives up at ten, so this
+  // fixture fails without the rule's `bylinePaths`, which is the whole point
+  // of it: a shallower stand-in would pass either way and prove nothing.
+  const playlistLockup = {
+    lockupViewModel: {
+      contentId: "PLB7ZcpBcwdC7lbptiTx9d",
+      contentType: "LOCKUP_CONTENT_TYPE_PLAYLIST",
+      metadata: {
+        lockupMetadataViewModel: {
+          title: { content: "Season 1" },
+          metadata: {
+            contentMetadataViewModel: {
+              metadataRows: [
+                {
+                  metadataParts: [
+                    {
+                      text: {
+                        content: "Blocked Channel",
+                        commandRuns: [{ onTap: { innertubeCommand: navEndpoint(SOFT, "@soft") } }]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  };
+  const aged = { channels: { [SOFT]: { mode: "exceptWhitelist", blockOlderThanDays: 2 } }, videos: {}, allowlist: {} };
+  const out = await filter(aged, null, wrap([playlistLockup]));
+  !has(out, "lockupViewModel")
+    ? ok("an age-ruled channel's playlist card is removed (a playlist has no date to pass the rule with)")
+    : fail("playlist lockup survived an age-ruled block");
+}
+
+// ---- YouTube's auto-generated chapters (the hideAutoChapters switch) ----
+// A watch-next response in YouTube's shape: the player-bar markers, the
+// chapter button, the chapter panel, a "Chapters" chip in another panel's
+// header, and the description's chapter cards — all pointing at one panel,
+// whose id says which kind of chapters these are.
+const watchNext = (key, extra = {}) => {
+  const panel =
+    key === "AUTO_CHAPTERS" ? "engagement-panel-macro-markers-auto-chapters" : "engagement-panel-macro-markers-description-chapters";
+  const open = {
+    commandExecutorCommand: { commands: [{ updateEngagementPanelContentCommand: { contentSourcePanelIdentifier: { tag: panel } } }] }
+  };
+  return {
+    ...extra,
+    playerOverlays: {
+      playerOverlayRenderer: {
+        decoratedPlayerBarRenderer: {
+          decoratedPlayerBarRenderer: {
+            playerBar: {
+              multiMarkersPlayerBarRenderer: {
+                visibleOnLoad: { key },
+                markersMap: [{ key, value: { chapters: [{ chapterRenderer: { title: { simpleText: "One" } } }] } }]
+              }
+            },
+            playerBarActionButton: { buttonRenderer: { command: open } }
+          }
+        }
+      }
+    },
+    engagementPanels: [
+      { engagementPanelSectionListRenderer: { panelIdentifier: panel, targetId: panel, content: {} } },
+      {
+        engagementPanelSectionListRenderer: {
+          panelIdentifier: "engagement-panel-searchable-transcript",
+          header: {
+            engagementPanelTitleHeaderRenderer: {
+              subheader: {
+                chipBarViewModel: {
+                  chips: [
+                    { chipViewModel: { text: "Chapters", tapCommand: { innertubeCommand: open } } },
+                    { chipViewModel: { text: "Transcript", tapCommand: { innertubeCommand: {} } } }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        engagementPanelSectionListRenderer: {
+          panelIdentifier: "engagement-panel-structured-description",
+          content: {
+            structuredDescriptionContentRenderer: {
+              items: [
+                { horizontalCardListRenderer: { header: { richListHeaderRenderer: { navigationButton: { buttonRenderer: { command: open } } } } } },
+                { horizontalCardListRenderer: { header: { richListHeaderRenderer: { title: { simpleText: "Music" } } } } }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  };
+};
+const AUTO_PANEL = "engagement-panel-macro-markers-auto-chapters";
+const noBlocks = { channels: {}, videos: {}, allowlist: {} };
+{
+  const out = await filter(noBlocks, null, watchNext("AUTO_CHAPTERS"), { hideAutoChapters: true });
+  const s = JSON.stringify(out);
+  !s.includes("AUTO_CHAPTERS") && !s.includes(AUTO_PANEL)
+    ? ok("auto chapters: markers, chapter button, panel, chip and description cards all removed")
+    : fail("auto chapters survived: " + s.slice(0, 300));
+  s.includes('"Transcript"') && s.includes('"Music"') && s.includes("engagement-panel-structured-description")
+    ? ok("…while the transcript chip, other description cards and other panels stay")
+    : fail("the strip took more than the auto chapters: " + s.slice(0, 300));
+  const creator = watchNext("DESCRIPTION_CHAPTERS");
+  const kept = await filter(noBlocks, null, structuredClone(creator), { hideAutoChapters: true });
+  JSON.stringify(kept) === JSON.stringify(creator)
+    ? ok("creator-written chapters are left exactly as they were")
+    : fail("creator chapters were touched: " + JSON.stringify(kept).slice(0, 300));
+  const off = await filter(noBlocks, null, watchNext("AUTO_CHAPTERS"), { hideAutoChapters: false });
+  JSON.stringify(off).includes("AUTO_CHAPTERS")
+    ? ok("switch off: auto chapters stay")
+    : fail("auto chapters removed with the switch off");
+}
+
+// ---- /get_watch, streamed part by part ----
+// In-app navigation fetches `[{player part}, {watch-next part}]`. The player
+// part must come back byte for byte (so playback isn't held up re-encoding
+// it), the watch-next part filtered — related column and auto chapters.
+{
+  const playerPart = {
+    responseContext: {},
+    playerResponse: { videoDetails: { title: 'Kênh "Thử" ] } [ { \\ Nghiệm — 🎬', lengthSeconds: "60" } }
+  };
+  const related = [video("bbbbbbbbbbb", "from a blocked channel", "Bad", BAD, "@bad"), video("ggggggggggg", "fine", "Good", GOOD, "@good")];
+  const nextPart = {
+    responseContext: {},
+    watchNextResponse: watchNext("AUTO_CHAPTERS", {
+      contents: { twoColumnWatchNextResults: { secondaryResults: { secondaryResults: { results: related } } } }
+    })
+  };
+  const body = JSON.stringify([playerPart, nextPart]);
+  const res = await page.evaluate(
+    async ([bl, b]) => {
+      window.__btHarness.setState(bl, null);
+      window.postMessage({ __xrntube: "config", active: true, exhausted: false, hideAutoChapters: true }, location.origin);
+      await new Promise((r) => setTimeout(r, 0));
+      window.__stubBody = b;
+      const text = await (await fetch("https://bt.test/youtubei/v1/get_watch?prettyPrint=false")).text();
+      return text;
+    },
+    [{ channels: { [BAD]: { mode: "full" } }, videos: {}, allowlist: {} }, body]
+  );
+  let parsed = null;
+  try {
+    parsed = JSON.parse(res);
+  } catch (e) {
+    fail("streamed /get_watch body is not valid JSON: " + e.message);
+  }
+  if (parsed) {
+    res.startsWith("[" + JSON.stringify(playerPart) + ",")
+      ? ok("/get_watch: the player part streams through byte for byte, multi-byte text and bracket-laden strings included")
+      : fail("player part changed: " + res.slice(0, 200));
+    const ids = videoIds(parsed[1]);
+    !ids.includes("bbbbbbbbbbb") && ids.includes("ggggggggggg")
+      ? ok("/get_watch: a blocked channel's related tile is removed, others stay")
+      : fail("related column not filtered in /get_watch: " + ids.join(","));
+    !JSON.stringify(parsed[1]).includes("AUTO_CHAPTERS")
+      ? ok("/get_watch: auto chapters removed from the watch-next part")
+      : fail("auto chapters survived /get_watch");
+  }
 }
 
 await browser.close();

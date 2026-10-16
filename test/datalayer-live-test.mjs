@@ -51,24 +51,24 @@ const send = (m) => ext.evaluate((mm) => chrome.runtime.sendMessage(mm), m);
     stats: window.__btDataLayer ?? null,
     hookGetter: !!(Object.getOwnPropertyDescriptor(window, "ytInitialData") || {}).get,
     fetchPatched: !/\[native code\]/.test(String(window.fetch)),
-    blockTube: typeof window.BlockTube
+    xrnTube: typeof window.XrnTube
   }));
   await probe.close();
 
   // A content script throwing on startup is the failure mode that broke this
   // the first time: listing a shared file in both worlds meant the isolated
   // entry silently didn't get it, and content.js died with "Cannot
-  // destructure property 'MSG' of 'self.BlockTube'". That is what this
+  // destructure property 'MSG' of 'self.XrnTube'". That is what this
   // assertion is for, so it matches that signature rather than "any uncaught
   // error" — live YouTube throws its own occasionally (seen: `ShadyDOM.patch
   // is not a function` from a half-loaded Polymer bundle, with every other
   // assertion here passing and no errors at all on a clean re-run, with or
   // without the extension). Anything else is printed, not failed on.
-  const ours = errs.filter((e) => /BlockTube/i.test(e));
+  const ours = errs.filter((e) => /XrnTube/i.test(e));
   if (errs.length && !ours.length) console.log("   (YouTube's own page errors, ignored):", JSON.stringify(errs));
   ours.length === 0
-    ? ok("neither world threw a BlockTube error on startup")
-    : fail(`BlockTube page errors: ${JSON.stringify(ours)}`);
+    ? ok("neither world threw a XrnTube error on startup")
+    : fail(`XrnTube page errors: ${JSON.stringify(ours)}`);
   world.stats
     ? ok("MAIN-world page hook is loaded on youtube.com")
     : fail('window.__btDataLayer missing — the world:"MAIN" content script did not run');
@@ -78,9 +78,9 @@ const send = (m) => ext.evaluate((mm) => chrome.runtime.sendMessage(mm), m);
   // The blocklist lives in the isolated world and never crosses. All that
   // goes over postMessage is a description of what YouTube itself just sent,
   // so nothing the page can read reveals what the user blocks.
-  world.blockTube === "undefined"
-    ? ok("no BlockTube global is exposed to the page")
-    : fail(`window.BlockTube is ${world.blockTube} on the page`);
+  world.xrnTube === "undefined"
+    ? ok("no XrnTube global is exposed to the page")
+    : fail(`window.XrnTube is ${world.xrnTube} on the page`);
 }
 
 // ---- it filters a real search continuation ----

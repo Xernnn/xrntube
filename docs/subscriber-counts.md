@@ -70,10 +70,12 @@ are already current.
 
 ## Subscriber counts are fetched once
 
-Opening the options page kicks off `autoFetchMissingSubs()`, which runs the
-normal `bulkFetchSubs()` job over every channel with **no recorded attempt**
-and ends, like every other bulk run, with one `SYNC_NOW` — so the counts,
-`@handle`s and real names land in the gist without anyone pressing a button.
+Opening the options page kicks off `autoFetchMissingSubs()`, which queues
+every channel with **no recorded attempt** on the background sweep
+(`START_SWEEP`; the background drops ids already queued). The sweep keeps
+going after the page closes, pauses itself when YouTube throttles, and ends by
+rebroadcasting — so the counts, `@handle`s and real names reach open tabs and
+the sync server without anyone pressing a button.
 
 The gate is `subsAttempted(entry)` (`!!entry.subsAt`), **not** "has a count":
 
@@ -85,9 +87,11 @@ The gate is `subsAttempted(entry)` (`!!entry.subsAt`), **not** "has a count":
 - A channel that *hides* its count, or has none, records `subsAt` with no
   `subs`, so it is not retried on every open forever — it just sits in the
   **No sub count** tab.
-- A hard fetch failure records nothing (`BULK_FETCH_CHANNEL_INFO` only writes
-  channels whose scrape returned something), so genuinely transient errors —
-  offline, rate-limited — *are* retried next time.
+- A hard fetch failure records nothing (a lookup only writes channels whose
+  scrape returned something), so genuinely transient errors are retried next
+  time — and throttling (a 429, or a fetch that throws because YouTube
+  redirected to Google's "unusual traffic" page) pauses the whole sweep with
+  the channel still queued.
 - A channel that is **gone** — deleted, terminated, or renamed so its old
   `@handle` 404s — is permanently unfetchable, and treating that as a
   transient failure is what made "some channels never get a sub count" a

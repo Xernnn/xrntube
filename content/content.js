@@ -1,5 +1,5 @@
 (() => {
-  const { MSG, CHANNEL_MODE, DEFAULT_SETTINGS, SETTINGS_KEY, KEYWORDS_KEY, ALLOWLIST_KEY, resolveSettings } = self.BlockTube;
+  const { MSG, CHANNEL_MODE, DEFAULT_SETTINGS, SETTINGS_KEY, KEYWORDS_KEY, ALLOWLIST_KEY, resolveSettings } = self.XrnTube;
   // The verdict itself lives in shared/block-logic.js, because the MAIN-world
   // page hook has to reach the same one. Nothing below may re-implement any of
   // these — see that file's header.
@@ -7,6 +7,7 @@
     plausibleAgeDays,
     parseAgeDays,
     parseDurationSec,
+    ageForRule,
     normalizeChannelKey,
     channelBlocks,
     buildBlockIndex,
@@ -17,7 +18,7 @@
     EMPTY_FILTERS,
     anyFilterActive,
     blockReasonFor
-  } = self.BlockTube;
+  } = self.XrnTube;
 
   // ---------- embedded players (manifest all_frames) ----------
   // The manifest injects into frames so a youtube.com/embed/<id> player on
@@ -55,7 +56,7 @@
         const blank = () => {
           document.documentElement.innerHTML =
             '<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;' +
-            'background:#0f0f0f;color:#888;font:13px system-ui,-apple-system,sans-serif">Blocked by BlockTube</body>';
+            'background:#0f0f0f;color:#888;font:13px system-ui,-apple-system,sans-serif">Blocked by XrnTube</body>';
           try {
             document.querySelectorAll("video").forEach((v) => v.pause());
           } catch {}
@@ -76,8 +77,10 @@
     return;
   }
 
-  // Where blocked content — and now Home and Shorts entirely — get sent instead.
-  const SAFE_LANDING_URL = "https://www.youtube.com/feed/subscriptions";
+  // Where blocked content — and now Home and Shorts entirely — get sent
+  // instead. One definition, in shared/constants.js, shared with the DNR
+  // rules background.js builds against the same URL.
+  const { SAFE_LANDING_URL } = self.XrnTube;
 
   // User-configurable feature toggles (options page). Every non-blocklist
   // behaviour — Shorts removal, homepage redirect, sidebar/masthead cleanup,
@@ -98,7 +101,7 @@
 
   // ---------- debug mode ----------
   // Enable with ?bt-debug in the URL or localStorage.setItem("bt_debug","1").
-  // Logs every removal with a reason, and exposes window.__blockTube for
+  // Logs every removal with a reason, and exposes window.__xrnTube for
   // "why isn't this blocking?" — the recurring failure mode being a channel
   // whose key format on the tile doesn't match how it's stored.
   const DEBUG = (() => {
@@ -109,7 +112,7 @@
     }
   })();
   function dbg(...a) {
-    if (DEBUG) console.debug("%c[BlockTube]", "color:#c00;font-weight:bold", ...a);
+    if (DEBUG) console.debug("%c[XrnTube]", "color:#c00;font-weight:bold", ...a);
   }
 
   // ---------- UI-language labels ----------
@@ -367,6 +370,49 @@
       ytd-masthead button-view-model:has(${ariaSel("", L.askAi)}),
       ${ariaSel("ytd-masthead ", L.askAi)}
         { display: none !important; }`,
+    hideVideoSummaries: `
+      /* YouTube's AI-written summary of a video, folded into the search
+         result as a collapsible card above the description snippet. The
+         host element is the same \`ytd-expandable-metadata-renderer\` that
+         carries a watch page's chapter list, so the rule must key off what
+         makes this one a summary \u2014 the \`has-video-summary\` attribute, or
+         the summary view model inside it \u2014 and never the tag alone, or
+         chapters go with it. The inner view model is listed too, in case
+         YouTube reparents it under some other host. */
+      ytd-expandable-metadata-renderer[has-video-summary],
+      ytd-expandable-metadata-renderer:has(video-summary-content-view-model),
+      video-summary-content-view-model
+        { display: none !important; }`,
+    hideAutoChapters: `
+      /* The real work is in page-hook.js, which drops YouTube's generated
+         chapters from the watch JSON before anything renders. This only
+         backs up the one surface whose element says which kind it is: the
+         side panel's target-id names the auto panel, never the creator's. */
+      ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-macro-markers-auto-chapters"]
+        { display: none !important; }`,
+    commentsTwoColumn: `
+      /* Comments in two columns. Only the thread list is columnised \u2014 the
+         header ("1,234 Comments" + the sort control) is a sibling of
+         #contents, not inside it, so it keeps the full width on its own.
+         break-inside on the threads is the load-bearing part: without it a
+         long comment is sliced across the column boundary mid-sentence.
+         The continuation sentinel spans both columns so it stays at the
+         bottom where YouTube expects to find it when it pages in more. */
+      ytd-comments#comments ytd-item-section-renderer#sections > #contents {
+        column-count: 2;
+        column-gap: 32px;
+      }
+      ytd-comments#comments ytd-item-section-renderer#sections > #contents > ytd-comment-thread-renderer {
+        break-inside: avoid;
+        -webkit-column-break-inside: avoid;
+        display: block;
+        width: 100%;
+        margin-bottom: 8px;
+      }
+      ytd-comments#comments ytd-item-section-renderer#sections > #contents > ytd-continuation-item-renderer,
+      ytd-comments#comments ytd-item-section-renderer#sections > #contents > bt-comment-cap {
+        column-span: all;
+      }`,
     descriptionInfocards: `
       /* The creator's channel card under a video's description \u2014 avatar,
          subscriber count, Videos/About buttons, and their outbound social
@@ -376,6 +422,13 @@
          rule would keep working on its own. */
       ytd-video-description-infocards-section-renderer
         { display: none !important; }`,
+    // YouTube ships a working picture-in-picture button in every player and
+    // hides it; this only un-hides it — the click, icon and tooltip are its
+    // own. Watch page only (embeds on other sites are left alone), and only
+    // where the browser has the picture-in-picture API, so no dead button.
+    pipButton: document.pictureInPictureEnabled
+      ? `ytd-watch-flexy #movie_player .ytp-pip-button { display: inline-block !important; }`
+      : "",
     accountButtonOnHover: `
       ytd-masthead ytd-topbar-menu-button-renderer:has(#avatar-btn),
       ytd-masthead #avatar-btn {
@@ -500,7 +553,7 @@
   // Renderer tags that represent "one video/short/playlist tile" across every
   // surface: home grid, search results, watch-page sidebar, channel pages,
   // playlists (both the playlist tile itself and videos inside an open
-  // playlist/queue), shorts shelves. m.youtube.com (Firefox for Android) uses
+  // playlist/queue), shorts shelves. m.youtube.com (phone browsers) uses
   // ytm- prefixed equivalents with a similar shape.
   const RENDERER_SELECTOR = [
     "ytd-rich-item-renderer",
@@ -893,7 +946,21 @@
     root.querySelectorAll(SHORTS_ITEM_SELECTOR).forEach((el) => {
       if (!el.isConnected) return;
       const shelf = findShelfAncestor(el);
+      // Take the grid wrapper with it when nothing else is inside. A
+      // channel's Shorts tab renders every short as
+      // `ytd-rich-item-renderer > ytm-shorts-lockup-view-model-v2`, and
+      // removing only the inner tile left 50 empty wrappers standing
+      // (measured on /@…/shorts) — they render as nothing, but they are
+      // still tiles as far as everything downstream is concerned.
+      const wrapper = el.closest("ytd-rich-item-renderer, ytm-rich-item-renderer");
       el.remove();
+      if (
+        wrapper &&
+        wrapper.isConnected &&
+        !wrapper.querySelector(`${SHORTS_ITEM_SELECTOR},${RENDERER_SELECTOR},${LOCKUP_SELECTOR}`)
+      ) {
+        wrapper.remove();
+      }
       if (shelf) scheduleShelfPrune(shelf);
     });
     // Shorts occasionally surface as a plain-looking video tile (e.g. mixed
@@ -1170,7 +1237,7 @@
   // both entries reaches only one of them — and the isolated one losing it
   // means this file dies on startup. See page-hook.js's header.
   //
-  // Entirely best-effort. If the hook never loads (an older Firefox without
+  // Entirely best-effort. If the hook never loads (a browser without
   // `world: "MAIN"`, or the file failing for any reason) no messages arrive,
   // nothing here runs, and every layer below — instant-hide CSS, DOM scrub,
   // nav guards — works exactly as it did before.
@@ -1180,7 +1247,18 @@
         // Deliberately not gated on `blocklistLoaded`: applyBlocklist() runs
         // before that flag is set, so gating on it sent `active: false` on the
         // one call that mattered and left layer 0 switched off for the tab.
-        { __blocktube: "config", active: blockIndex.channels.size > 0 || blockIndex.videos.size > 0 || anyFilter() },
+        {
+          __xrntube: "config",
+          active: blockIndex.channels.size > 0 || blockIndex.videos.size > 0 || anyFilter(),
+          // Set once this page view has paged in nothing but blocked videos
+          // several times over: the hook then takes the continuation token
+          // out of every further response, which is the only way to stop
+          // YouTube re-creating the sentinel we removed.
+          exhausted: feedExhausted,
+          // Only the JSON says which chapters YouTube generated (see
+          // page-hook.js), so this switch is applied there, not here.
+          hideAutoChapters: !!settings.hideAutoChapters
+        },
         location.origin
       );
     } catch {}
@@ -1205,6 +1283,7 @@
         durationSec: it.lengthText ? parseDurationSec(it.lengthText) : null,
         ageDays,
         isPlaylist: !!it.isPlaylist,
+        isShort: !!it.isShort,
         channelKeys: keys
       },
       blockIndex,
@@ -1216,11 +1295,12 @@
     if (e.source !== window) return;
     const d = e.data;
     if (!d) return;
-    if (d.__blocktube === "hello") {
+    if (d.__xrntube === "hello") {
+      pageHookPresent = true;
       postHookConfig();
       return;
     }
-    if (d.__blocktube !== "judge" || !Array.isArray(d.items)) return;
+    if (d.__xrntube !== "judge" || !Array.isArray(d.items)) return;
     const blocked = [];
     for (let i = 0; i < d.items.length; i += 1) {
       let reason = null;
@@ -1242,8 +1322,11 @@
     // fully-blocked feed means extra continuation fetches before the loop is
     // broken (measured: 2 instead of 0).
     if (blocked.length) notePageSuppressed(blocked.length);
+    // ...and one response is one round, for the "this search is only ever
+    // going to page in blocked videos" check (noteJudgedRound).
+    noteJudgedRound(d.items, blocked);
     try {
-      window.postMessage({ __blocktube: "verdict", id: d.id, blocked }, location.origin);
+      window.postMessage({ __xrntube: "verdict", id: d.id, blocked }, location.origin);
     } catch {}
   });
 
@@ -1304,6 +1387,25 @@
     ".yt-decorated-avatar-view-model-wiz"
   ].join(",");
 
+  // Where a tile keeps its "2.1M views • 3 weeks ago" line. The age rule reads
+  // ONLY from here, for the same reason `currentPageAgeDays()` never touches
+  // `document.body`: a title is text too, and "Apple Silicon Explained in 56
+  // seconds" parses as an age of 56 seconds. Measured live — that one short
+  // was the single tile to survive a 2-day rule on a channel's Shorts tab,
+  // because its own title dated it. Titles like "24 hours with the iPhone" or
+  // "5 minutes of…" do the same thing to ordinary videos, in both directions.
+  //
+  // A Shorts tile's subhead is listed deliberately: it holds a view count and
+  // never a date, so it resolves to "no date" rather than falling through to
+  // the wide read — which is what `isShort` then answers (ageForRule()).
+  const AGE_SCOPE_SEL = [
+    "yt-content-metadata-view-model",
+    ".yt-content-metadata-view-model-wiz__metadata-text",
+    "#metadata-line",
+    "ytd-video-meta-block",
+    ".shortsLockupViewModelHostMetadataSubhead"
+  ].join(",");
+
   // The scopes to read a tile's channels from, widest-correct first. Falls
   // back to the whole tile whenever the narrow scopes name no channel at all,
   // so this can only ever *remove* false positives: a tile shape we don't
@@ -1317,6 +1419,17 @@
       if (found.size) return found;
     }
     return collectChannels(el);
+  }
+
+  // The text the age rule is allowed to look at. The metadata line when the
+  // tile has one; otherwise the tile minus its own title, which is the part
+  // that lies. An unknown tile shape therefore still gets a wide read — just
+  // never one that includes the words the uploader chose.
+  function tileAgeText(el, videoTitle) {
+    const scopes = el.querySelectorAll ? el.querySelectorAll(AGE_SCOPE_SEL) : [];
+    if (scopes.length) return Array.from(scopes, (n) => n.textContent || "").join(" ");
+    const all = el.textContent || "";
+    return videoTitle ? all.split(videoTitle).join(" ") : all;
   }
 
   function extractInfo(el) {
@@ -1359,20 +1472,47 @@
     }
 
     const channels = tileChannels(el);
+    // A channel card is not a playlist either, for the same reason it is not
+    // a video: search's watch card carries a "play all" link to the channel's
+    // uploads playlist, and blockReasonFor() removes a playlist by a blocked
+    // channel in EVERY mode — whitelist and age rule included, because a
+    // playlist has no single publish date. So a video-only block, whose whole
+    // point is that the channel itself stays on screen, deleted the one card
+    // on the search page that IS the channel. Confirmed live: the card went
+    // with "playlist by blocked channel UC…", while the JSON filter (where
+    // `universalWatchCardRenderer` is a channel card and can carry no
+    // playlist flag at all) kept it — the two layers disagreeing about the
+    // same tile.
+    //
+    // A `&list=` link, on the other hand, DOES mean playlist here, even
+    // though the tile also names a video. Measured live on a search for a
+    // channel whose seasons are playlists: every playlist card is a
+    // `yt-lockup-view-model` whose every anchor is
+    // `/watch?v=<first episode>&list=PL…` — there is no `/playlist?list=`
+    // link and no type attribute anywhere in the DOM, while a plain video
+    // lockup carries no `list=` at all. Reading "it names a video, so it is a
+    // video" therefore let a blocked channel's playlist cards through, and an
+    // age rule then kept them for good (a playlist has no date). The JSON
+    // filter tells the two apart properly, by `contentType`; this is the
+    // DOM's best available signal and it agrees with it on every shape seen
+    // live.
     const isPlaylist =
-      (el.matches && el.matches(PLAYLIST_TILE_TAGS)) || !!el.querySelector(PLAYLIST_LINK_SEL);
+      !isChannelCard && ((el.matches && el.matches(PLAYLIST_TILE_TAGS)) || !!el.querySelector(PLAYLIST_LINK_SEL));
     if (!videoId && channels.size === 0 && !isPlaylist) return null;
     // Only bother reading the tile's publish text / duration when a blocked
     // channel has an age rule / a duration filter is active — parsing every
     // tile otherwise is wasted work.
-    let ageDays = blockIndex.anyAgeRule && videoId ? parseAgeDays(el.textContent || "") : null;
+    let ageDays = blockIndex.anyAgeRule && videoId ? parseAgeDays(tileAgeText(el, videoTitle)) : null;
     if (!plausibleAgeDays(ageDays)) ageDays = null;
     const durationSec =
       videoId && (filterRec.durMinSec > 0 || filterRec.durMaxSec > 0) ? readDurationSec(el) : null;
-    return { videoId, videoTitle, channels, ageDays, durationSec, isPlaylist };
+    // Whether this is a Short matters only to the age rule, and only because
+    // a Short never carries a date — see ageForRule() in shared/block-logic.js.
+    const isShort = !!videoId && !!(el.querySelector('a[href*="/shorts/"]') || (el.matches && el.matches(SHORTS_ITEM_SELECTOR)));
+    return { videoId, videoTitle, channels, ageDays, durationSec, isPlaylist, isShort };
   }
 
-  // Why a tile is blocked, as a short string — null if it isn't. isBlocked()
+  // Why a tile is blocked, as a short string — null if it isn't. "Blocked"
   // is just "reason != null"; keeping them one function means the debug log
   // and the real decision can never disagree.
   //
@@ -1392,6 +1532,7 @@
         durationSec: info.durationSec,
         ageDays: info.ageDays,
         isPlaylist: info.isPlaylist,
+        isShort: info.isShort,
         channelKeys: info.channels.keys()
       },
       blockIndex,
@@ -1400,7 +1541,7 @@
     // Which index the channel matched through is only ever wanted while
     // debugging a "why isn't this blocking?" report, so it's appended here
     // rather than threaded through the shared decision. `?bt-debug`'s
-    // window.__blockTube.explain() reports it independently too.
+    // window.__xrnTube.explain() reports it independently too.
     if (reason && DEBUG && reason.startsWith("channel ")) {
       for (const key of info.channels.keys()) {
         if (!blockedEntryFor(key)) continue;
@@ -1410,23 +1551,44 @@
     }
     return reason;
   }
-  function isBlocked(info) {
-    return blockReason(info) !== null;
-  }
-
   function injectBlockButton(el, info) {
     if (el.dataset.btBtn === "1") return;
+    // A grid cell is `*-rich-item-renderer > <tile>`, and both tags are tiles
+    // here. The wrapper carries the button — removing it takes the whole cell
+    // — so the tile inside gets none. A button on each is how a phone (where
+    // every 🚫 is always shown) came to offer two XrnTube menus per video on
+    // channel tabs and the other rich-grid feeds.
+    if (el.parentElement && el.parentElement.closest("ytd-rich-item-renderer, ytm-rich-item-renderer")) return;
     el.dataset.btBtn = "1";
     if (!info.videoId && info.channels.size === 0) return;
 
     const btn = document.createElement("div");
     btn.className = "bt-block-btn";
-    btn.title = "Block on BlockTube";
+    btn.title = "Block on XrnTube";
     btn.textContent = "🚫";
 
     const menu = document.createElement("div");
     menu.className = "bt-block-menu";
     menu.hidden = true;
+
+    // The tile is gone the instant you click, so every block here confirms on
+    // the page with an Undo — otherwise a misclick means a trip to the options
+    // page to find and delete it. Undo waits for the block to land first, or
+    // the unblock could run ahead of it and leave the entry in place.
+    const blockAndRemove = (blockMsg, unblockMsg, label) => {
+      const sent = chrome.runtime.sendMessage(blockMsg).catch(() => {});
+      const shelf = findShelfAncestor(el);
+      el.remove();
+      if (shelf) scheduleShelfPrune(shelf);
+      showToast(label, {
+        label: "Undo",
+        run: async () => {
+          await sent;
+          await chrome.runtime.sendMessage(unblockMsg).catch(() => {});
+          showToast("Unblocked — it'll be back the next time YouTube loads this list.");
+        }
+      });
+    };
 
     if (info.videoId) {
       const videoOpt = document.createElement("button");
@@ -1434,10 +1596,11 @@
       videoOpt.addEventListener("click", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        chrome.runtime.sendMessage({ type: MSG.BLOCK_VIDEO, id: info.videoId, title: info.videoTitle });
-        const shelf = findShelfAncestor(el);
-        el.remove();
-        if (shelf) scheduleShelfPrune(shelf);
+        blockAndRemove(
+          { type: MSG.BLOCK_VIDEO, id: info.videoId, title: info.videoTitle },
+          { type: MSG.UNBLOCK_VIDEO, id: info.videoId },
+          "Video blocked."
+        );
       });
       menu.appendChild(videoOpt);
     }
@@ -1450,10 +1613,11 @@
       fullOpt.addEventListener("click", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        chrome.runtime.sendMessage({ type: MSG.BLOCK_CHANNEL, id: key, name, mode: CHANNEL_MODE.FULL });
-        const shelf = findShelfAncestor(el);
-        el.remove();
-        if (shelf) scheduleShelfPrune(shelf);
+        blockAndRemove(
+          { type: MSG.BLOCK_CHANNEL, id: key, name, mode: CHANNEL_MODE.FULL },
+          { type: MSG.UNBLOCK_CHANNEL, id: key },
+          `Blocked ${name || key}.`
+        );
       });
       menu.appendChild(fullOpt);
 
@@ -1465,15 +1629,11 @@
       softOpt.addEventListener("click", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        chrome.runtime.sendMessage({
-          type: MSG.BLOCK_CHANNEL,
-          id: key,
-          name,
-          mode: CHANNEL_MODE.EXCEPT_WHITELIST
-        });
-        const shelf = findShelfAncestor(el);
-        el.remove();
-        if (shelf) scheduleShelfPrune(shelf);
+        blockAndRemove(
+          { type: MSG.BLOCK_CHANNEL, id: key, name, mode: CHANNEL_MODE.EXCEPT_WHITELIST },
+          { type: MSG.UNBLOCK_CHANNEL, id: key },
+          `Blocked videos from ${name || key}.`
+        );
       });
       menu.appendChild(softOpt);
     }
@@ -1519,6 +1679,17 @@
     ).some((b) => membersOnlyText((b.textContent || "").trim()));
   }
 
+  // Whether any channel on the tile resolves to a blocked entry with an age
+  // rule — i.e. whether this tile's verdict still depends on its date.
+  function ageRuledChannelOn(info) {
+    if (!blockIndex.anyAgeRule || !info.channels) return false;
+    for (const key of info.channels.keys()) {
+      const e = blockedEntryFor(key);
+      if (e && e.blockOlderThanDays > 0) return true;
+    }
+    return false;
+  }
+
   function processRenderer(el) {
     if (el.dataset.btChecked === "1") return;
     if (settings.membersOnlyTiles && isMembersOnlyTile(el)) {
@@ -1534,6 +1705,7 @@
       const shelf = findShelfAncestor(el);
       dbg("removed", el.tagName.toLowerCase(), "—", reason);
       notePageSuppressed(1);
+      noteLayer0Miss();
       el.remove();
       if (shelf) scheduleShelfPrune(shelf);
       return;
@@ -1548,10 +1720,16 @@
       // normal page load.
       const titlePending = filterRec.matchers.length && info && info.videoId && !info.videoTitle;
       const durPending = (filterRec.durMinSec > 0 || filterRec.durMaxSec > 0) && info && info.videoId && info.durationSec == null;
+      // Same trap for the age rule: a feed tile mounts before its "3 weeks
+      // ago" line, an unknown age reads as recent, and a tile checked in that
+      // window kept an old video of an age-ruled channel on screen for good.
+      // A Short never gets a date (ageForRule() already answers for it), so
+      // it is not pending.
+      const agePending = !!(info && info.videoId && info.ageDays == null && !info.isShort && ageRuledChannelOn(info));
       // A live stream has no duration and never will, so bound the retries
       // rather than re-processing it on every pass forever.
       const tries = Number(el.dataset.btPending || 0);
-      if ((titlePending || durPending) && tries < REHYDRATE_MAX_TRIES) {
+      if ((titlePending || durPending || agePending) && tries < REHYDRATE_MAX_TRIES) {
         el.dataset.btPending = String(tries + 1);
       } else {
         delete el.dataset.btPending;
@@ -1652,6 +1830,40 @@
   // hydrated after processRenderer already marked them checked, plus the
   // "Membership" / "Members-only content" shelf and the channel Membership
   // tab (neither is a tile). Gated on hideMemberships.
+  // ---------- cap how many comments load ----------
+  // YouTube pages comments in forever. `commentLimit` (0 = no cap) keeps the
+  // first N top-level threads and then takes out the continuation sentinel,
+  // which is the thing that makes YouTube ask for more as you scroll —
+  // removing the excess threads alone just makes it fetch again to refill.
+  //
+  // Replies are left alone: the cap is about how far the comment section
+  // scrolls, not about hiding parts of a conversation you chose to open.
+  const COMMENT_CAP_TAG = "bt-comment-cap";
+  function capComments(root) {
+    const limit = filterRec.commentLimit;
+    if (!limit || !root.querySelectorAll) return;
+    const contents = root.querySelector("ytd-comments#comments ytd-item-section-renderer#sections > #contents");
+    if (!contents) return;
+    const threads = contents.querySelectorAll(":scope > ytd-comment-thread-renderer");
+    if (threads.length <= limit) return;
+    for (let i = limit; i < threads.length; i += 1) threads[i].remove();
+    contents.querySelectorAll(":scope > " + CONTINUATION_SEL).forEach((el) => el.remove());
+    if (!contents.querySelector(COMMENT_CAP_TAG)) {
+      const note = document.createElement(COMMENT_CAP_TAG);
+      // Inline styles so neither YouTube's stylesheets nor our own touch it,
+      // and so it matches none of our scrub selectors.
+      note.style.cssText = [
+        "display:block",
+        "padding:16px 0",
+        "color:#888",
+        "font:500 13px/1.5 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif"
+      ].join(";");
+      note.textContent = `Comments limited to ${limit} by XrnTube.`;
+      contents.appendChild(note);
+    }
+    dbg("comments capped at", limit);
+  }
+
   function scrubMembersOnly(root) {
     if (!anyOn(MEMBERSHIP_KEYS)) return;
     if (!root.querySelectorAll) return;
@@ -1860,6 +2072,59 @@
   const CURB_REMOVE_BUDGET = 150; // per pass, so cleanup never becomes a long task
   const NOTICE_TAG = "bt-blocked-notice";
 
+  // ---------- the same loop, counted in pages instead of pixels ----------
+  // The curb below reads the page: is the sentinel on screen, did we take
+  // enough away. That is exactly right for a grid whose height stops growing,
+  // and it cannot see the case a *search* produces. A results page is tall on
+  // its own — masthead, filter chips, a channel card, a shelf — so the
+  // sentinel can sit below the fold while every video in each arriving batch
+  // is blocked, and each fetch quietly makes room for the next. From the
+  // outside it reads as "it keeps loading until one gets through".
+  //
+  // So count rounds as well. Layer 0 describes every renderer in a response
+  // before it renders, so one judged batch IS one fetch: a batch that carried
+  // videos and had none survive is an empty round, and a single surviving
+  // video resets the count. After EXHAUST_ROUNDS of those the surface is
+  // declared exhausted — the page stops asking for more (the hook strips the
+  // continuation out of what arrives, so YouTube cannot just re-create the
+  // sentinel) and says why.
+  //
+  // This needs layer 0; with the hook absent nothing calls noteJudgedRound()
+  // and the pixel-based curb below is the whole story, exactly as before.
+  const EXHAUST_ROUNDS = 3;
+  // A batch smaller than this proves nothing either way — a shelf-only
+  // response, or the tail of a page — so it neither counts nor resets.
+  const EXHAUST_MIN_VIDEOS = 3;
+  let emptyRounds = 0;
+  let feedExhausted = false;
+
+  // One response's worth of verdicts, from the judge handler above.
+  function noteJudgedRound(items, blockedIdx) {
+    if (feedExhausted) return;
+    // Only the surfaces that page results in forever. A watch page judges its
+    // related column through the same path, and cutting continuations there
+    // would also cut the one that loads more comments.
+    if (!onLayer0Surface()) return;
+    let videos = 0;
+    let survived = 0;
+    const gone = new Set(blockedIdx);
+    for (let i = 0; i < items.length; i += 1) {
+      if (!items[i] || !items[i].videoId) continue; // a channel card is not a result
+      videos += 1;
+      if (!gone.has(i)) survived += 1;
+    }
+    if (survived > 0) {
+      emptyRounds = 0;
+      return;
+    }
+    if (videos < EXHAUST_MIN_VIDEOS) return;
+    if ((emptyRounds += 1) < EXHAUST_ROUNDS) return;
+    feedExhausted = true;
+    dbg("nothing survived", EXHAUST_ROUNDS, "responses in a row — stopping the continuations");
+    postHookConfig(); // tell the hook to stop letting continuations through
+    scheduleExtrasScrub(); // curbRunawayFeed() puts the notice up
+  }
+
   // How many tiles this page view has had taken away. Counting removals — not
   // surviving tiles — is what makes the check below survive its own cleanup:
   // once the curb has removed everything there is nothing left to count, and a
@@ -1868,8 +2133,57 @@
   function notePageSuppressed(n) {
     suppressedOnPage += n;
   }
+  // ---------- is layer 0 still doing its job? ----------
+  // The JSON filter failing is invisible from the outside: the DOM scrub
+  // quietly covers for it and the only symptom is tiles flashing before they
+  // disappear. Every test in the suite still passes with it completely dead,
+  // which is why datalayer-live-test exists — but that only runs here, not on
+  // the user's machine when YouTube renames a field next month.
+  //
+  // So: count the tiles the DOM scrub removes on a surface layer 0 claims to
+  // cover, and say something once the count is clearly not a rounding error.
+  // The grace period matters — layer 0 races YouTube for the first paint and
+  // deliberately loses sometimes, so early removals are expected and only
+  // what arrives later (via the fetches it definitely hooks) is evidence.
+  let pageHookPresent = false;
+  let pageStartedAt = Date.now();
+  let layer0Misses = 0;
+  let layer0Warned = false;
+  const LAYER0_GRACE_MS = 10000;
+  const LAYER0_WARN_AT = 10;
+  // The surfaces page-hook.js hooks: /youtubei/v1/search and .../browse.
+  // The surfaces layer 0 hooks AND that page results in: search, the feeds,
+  // a channel's tabs. `/watch` is hooked too (the related column, via
+  // `/youtubei/v1/next`) but is deliberately not here — its sidebar is a
+  // fixed-length rail, not an infinite feed, so neither the miss warning nor
+  // the exhaustion count applies to it.
+  function onLayer0Surface() {
+    const p = location.pathname;
+    return p === "/results" || p === "/" || p.startsWith("/feed/") || !!normalizeChannelKey(p) || LEGACY_CHANNEL_PATH_RE.test(p);
+  }
+  function noteLayer0Miss() {
+    if (layer0Warned || !pageHookPresent) return;
+    if (Date.now() - pageStartedAt < LAYER0_GRACE_MS) return;
+    if (!onLayer0Surface()) return;
+    if ((layer0Misses += 1) < LAYER0_WARN_AT) return;
+    layer0Warned = true;
+    console.warn(
+      "[XrnTube] The JSON filter let " + layer0Misses + " tiles through on " + location.pathname +
+        " — the DOM scrub caught them, so nothing is unblocked, but layer 0 looks degraded. " +
+        "Reload with ?bt-debug and check window.__btDataLayer: candidates at 0 means the rule table " +
+        "matches no renderers; candidates climbing with removed at 0 means their byline paths moved. " +
+        "See docs/fragility.md."
+    );
+  }
+
   function resetPageSuppressed() {
     suppressedOnPage = 0;
+    // A new page view is a new search / a new feed: it gets its own rounds,
+    // and the hook has to start letting continuations through again.
+    const was = feedExhausted;
+    emptyRounds = 0;
+    feedExhausted = false;
+    if (was) postHookConfig();
     document.querySelectorAll(NOTICE_TAG).forEach((el) => el.remove());
   }
 
@@ -1892,17 +2206,26 @@
   // silently blank page raises.
   function curbRunawayFeed() {
     const sentinel = document.querySelector(CONTINUATION_SEL);
-    if (!sentinel) return;
-    if (suppressedOnPage < CURB_MIN_SUPPRESSED) return; // short, but not by us
-    // Match YouTube's own trigger: it fetches while the sentinel is in (or
-    // near) the viewport. Testing "can the page scroll at all" is NOT the same
-    // thing and gets this wrong — a blocked channel page still scrolls by the
-    // height of its masthead and header (measured 1388px against a 1000px
-    // viewport), so that test passed while the feed underneath was looping.
-    const rect = sentinel.getBoundingClientRect();
-    if (rect.top > window.innerHeight * 1.5) return; // out of range; loading normally
+    // `feedExhausted` is the other way in: several whole responses in a row
+    // carried videos and not one of them survived. That is a fact about what
+    // YouTube is sending, not about where the sentinel happens to be, so it
+    // skips the geometry tests below — on a search page they are exactly what
+    // the loop slips past.
+    if (!feedExhausted) {
+      if (!sentinel) return;
+      if (suppressedOnPage < CURB_MIN_SUPPRESSED) return; // short, but not by us
+      // Match YouTube's own trigger: it fetches while the sentinel is in (or
+      // near) the viewport. Testing "can the page scroll at all" is NOT the same
+      // thing and gets this wrong — a blocked channel page still scrolls by the
+      // height of its masthead and header (measured 1388px against a 1000px
+      // viewport), so that test passed while the feed underneath was looping.
+      const rect = sentinel.getBoundingClientRect();
+      if (rect.top > window.innerHeight * 1.5) return; // out of range; loading normally
+    } else if (!sentinel && document.querySelector(NOTICE_TAG)) {
+      return; // already curbed, and nothing new has been asked for since
+    }
 
-    sentinel.parentNode && document.querySelectorAll(CONTINUATION_SEL).forEach((el) => el.remove());
+    document.querySelectorAll(CONTINUATION_SEL).forEach((el) => el.remove());
 
     // Reclaim whatever is still sitting hidden in the DOM, in bounded batches.
     let budget = CURB_REMOVE_BUDGET;
@@ -1916,7 +2239,11 @@
       // the height lands above any sentinel YouTube re-creates. Appending after
       // the grid leaves the sentinel at the top of the viewport and changes
       // nothing (measured: still 21 requests in 30s).
-      const host = sentinel.parentNode || document.querySelector("ytd-rich-grid-renderer, ytd-section-list-renderer");
+      const host =
+        (sentinel && sentinel.parentNode) ||
+        document.querySelector(
+          "ytd-section-list-renderer #contents, ytd-rich-grid-renderer #contents, ytd-rich-grid-renderer, ytd-section-list-renderer"
+        );
       if (host) {
         const note = document.createElement(NOTICE_TAG);
         // Inline styles so neither YouTube's stylesheets nor our own can touch
@@ -1932,9 +2259,24 @@
           "font:500 14px/1.6 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif",
           "text-align:center"
         ].join(";");
-        note.textContent = "Everything here is blocked by BlockTube.";
+        // Three different situations reach this point, and saying
+        // "everything here is blocked" while a couple of videos are plainly
+        // on screen — which is exactly what an age rule leaves behind — reads
+        // as a bug in the extension.
+        const anythingLeft = queryTiles(document).some((el) => el.offsetParent !== null);
+        note.textContent = feedExhausted
+          ? "XrnTube stopped loading more — the last " +
+            EXHAUST_ROUNDS +
+            " pages of results were entirely blocked. Reload to keep looking."
+          : anythingLeft
+            ? "The rest of this page is blocked by XrnTube."
+            : "Everything here is blocked by XrnTube.";
         host.appendChild(note);
-        dbg("runaway feed curbed —", suppressedOnPage, "tiles suppressed; continuation stopped");
+        dbg(
+          "runaway feed curbed —",
+          feedExhausted ? EXHAUST_ROUNDS + " empty rounds" : suppressedOnPage + " tiles suppressed",
+          "; continuation stopped"
+        );
       }
     }
   }
@@ -2027,7 +2369,7 @@
       // Videos on the Videos/Streams grid: whitelist + age rule still apply.
       const remove = info.isPlaylist
         ? true
-        : info.videoId && channelBlocks(entry, info.videoId, info.ageDays);
+        : info.videoId && channelBlocks(entry, info.videoId, ageForRule(info.ageDays, info.isShort));
       if (remove) {
         const shelf = findShelfAncestor(el);
         notePageSuppressed(1);
@@ -2081,11 +2423,11 @@
       if (el.dataset.btChecked === "1") delete el.dataset.btChecked;
       processRenderer(el);
     });
-    // Video tiles processRenderer left un-checked because a title or duration
-    // badge hadn't hydrated — re-process just those. LOCKUP_SELECTOR belongs
+    // Video tiles processRenderer left un-checked because a title, duration
+    // badge or publish date hadn't hydrated — re-process just those. LOCKUP_SELECTOR belongs
     // here: search results are `yt-lockup-view-model` now, so leaving it out
     // meant the modern tiles were never re-examined at all.
-    if (anyFilter()) {
+    if (anyFilter() || blockIndex.anyAgeRule) {
       root
         .querySelectorAll(
           "ytd-video-renderer, ytd-rich-item-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, " +
@@ -2159,6 +2501,7 @@
     scrubOwnChannelPage(document.documentElement);
     scrubPosts(document.documentElement);
     scrubComments(document.documentElement);
+    capComments(document.documentElement);
     curbRunawayFeed();
     // A fresh (non-SPA) load renders its metadata long after the blocklist
     // arrives, and "yt-navigate-finish" is not guaranteed to fire for it — so
@@ -2293,7 +2636,8 @@
   const CHANNEL_LINK_SEL = SCOPE_CHANNEL_LINK_SEL;
   // The uploader byline on a watch page — the owner and any collaborators,
   // without the description's links to the same channel's other URL form.
-  const OWNER_BYLINE_SEL = "#owner, ytd-video-owner-renderer, ytm-slim-owner-renderer";
+  // m.youtube.com's is the owner icon in the action bar under the player.
+  const OWNER_BYLINE_SEL = "#owner, ytd-video-owner-renderer, ytm-slim-owner-renderer, ytm-slim-video-action-bar-renderer";
   function findScopeForCurrentPage() {
     // The currently-visible Shorts player wins outright: several
     // ytd-reel-video-renderer elements are mounted at once for the vertical
@@ -2328,7 +2672,9 @@
       // so its author gets picked up by the channel check.
       selectors = ["ytd-backstage-post-renderer", "ytd-post-renderer"];
     } else {
-      selectors = ["ytd-watch-metadata", "#above-the-fold", "#owner"];
+      // m.youtube.com: the slim metadata section under the player holds the
+      // title, the owner icon and the date.
+      selectors = ["ytd-watch-metadata", "#above-the-fold", "#owner", "ytm-slim-video-metadata-section-renderer"];
     }
 
     let fallback = null;
@@ -2425,6 +2771,11 @@
     if (vm) {
       videoId = vm[1];
       videoTitle = document.title.replace(/ - YouTube$/, "").trim();
+      // m.youtube.com leaves the tab title at a bare "YouTube" for a while.
+      if (!videoTitle || videoTitle === "YouTube") {
+        const h = document.querySelector("ytd-watch-metadata h1, h2.slim-video-information-title");
+        videoTitle = h ? h.textContent.trim() : "";
+      }
     }
 
     const scope = findScopeForCurrentPage();
@@ -2527,9 +2878,12 @@
   // be off-screen entirely. Inline styles and a unique tag name so no YouTube
   // stylesheet (or ours) can affect it, and so it can't match any of our own
   // scrub selectors.
+  //
+  // `action` ({ label, run }) adds one button — the hover menu's Undo. The
+  // banner itself stays click-through; only the button takes the pointer.
   let toastEl = null;
   let toastTimer = 0;
-  function showToast(text) {
+  function showToast(text, action) {
     if (!text || !document.body) return;
     if (!toastEl) {
       toastEl = document.createElement("bt-toast");
@@ -2553,6 +2907,20 @@
       document.body.appendChild(toastEl);
     }
     toastEl.textContent = text;
+    if (action) {
+      const b = document.createElement("button");
+      b.textContent = action.label;
+      b.style.cssText =
+        "margin-left:14px;padding:0;border:0;background:none;color:#8ab4ff;font:inherit;" +
+        "font-weight:700;text-decoration:underline;cursor:pointer;pointer-events:auto";
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        b.disabled = true;
+        action.run();
+      });
+      toastEl.appendChild(b);
+    }
     // re-append so it stays on top of anything YouTube added since
     document.body.appendChild(toastEl);
     requestAnimationFrame(() => {
@@ -2566,7 +2934,7 @@
         if (toastEl && toastEl.parentNode) toastEl.remove();
         toastEl = null;
       }, 250);
-    }, 2600);
+    }, action ? 7000 : 2600);
   }
 
   // Best-effort age of the video on the current watch page, for the age-rule
@@ -2595,7 +2963,8 @@
     "ytd-watch-info-text", // the "N views • <date>" line itself
     "#info-container",
     "ytd-watch-metadata",
-    "#above-the-fold"
+    "#above-the-fold",
+    ".slim-video-information-subtitle" // m.youtube.com: "1.9M views · 3 weeks ago"
   ];
   function currentPageAgeDays() {
     const meta = document.querySelector(
@@ -2665,6 +3034,17 @@
     const endpoint = e.detail?.endpoint;
     const webUrl = endpoint?.commandMetadata?.webCommandMetadata?.url || "";
 
+    // Lift the continuation block as the navigation STARTS, not when it
+    // finishes. The new page's `/next` (or `/browse`) goes out while it is in
+    // flight, and a watch page's `/next` also carries the "load more
+    // comments" continuation — so clearing this only on `yt-navigate-finish`
+    // could cut the comments of the page you just navigated to.
+    if (feedExhausted) {
+      feedExhausted = false;
+      emptyRounds = 0;
+      postHookConfig();
+    }
+
     // Shorts — bail before the player even mounts (toggle-gated).
     if (settings.shortsPlayer && (endpoint?.reelWatchEndpoint || webUrl.startsWith("/shorts"))) {
       window.location.href = SAFE_LANDING_URL;
@@ -2710,6 +3090,8 @@
     // no longer what's on screen, and the suppressed-tile tally starts over.
     bounced = false;
     resetPageSuppressed();
+    pageStartedAt = Date.now();
+    layer0Misses = 0;
     runExtras(); // the scrub batch + checkCurrentPageAndRedirect()
   });
 
@@ -2726,6 +3108,8 @@
   window.addEventListener("popstate", () => {
     bounced = false;
     resetPageSuppressed();
+    pageStartedAt = Date.now();
+    layer0Misses = 0;
     scheduleExtrasScrub();
     checkCurrentPageAndRedirect();
   });
@@ -2733,13 +3117,13 @@
   // ---------- debug surface (only when DEBUG) ----------
   if (DEBUG) {
     console.debug(
-      "%c[BlockTube] debug mode on%c — every removal is logged below with its reason. " +
-        "For __blockTube.state() / __blockTube.why('<selector>'), switch the console's " +
-        "JavaScript context (top-left dropdown) to “BlockTube”.",
+      "%c[XrnTube] debug mode on%c — every removal is logged below with its reason. " +
+        "For __xrnTube.state() / __xrnTube.why('<selector>'), switch the console's " +
+        "JavaScript context (top-left dropdown) to “XrnTube”.",
       "color:#c00;font-weight:bold",
       "color:inherit;font-weight:normal"
     );
-    window.__blockTube = {
+    window.__xrnTube = {
       state: () => ({
         channels: blockIndex.channels.size,
         byHandle: blockIndex.byHandle.size,
@@ -2749,6 +3133,12 @@
         durMinSec: filterRec.durMinSec,
         durMaxSec: filterRec.durMaxSec,
         anyAgeRule: blockIndex.anyAgeRule,
+        // The runaway-feed state, so a test (and a bug report) can tell WHICH
+        // brake stopped a feed: `suppressedOnPage` drives the geometry curb,
+        // `emptyRounds`/`feedExhausted` the round counter.
+        suppressedOnPage,
+        emptyRounds,
+        feedExhausted,
         settings,
         blocklistLoaded
       }),

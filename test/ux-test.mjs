@@ -23,8 +23,8 @@ const send = (m) => opt.evaluate((mm) => chrome.runtime.sendMessage(mm), m);
 
 // --- page tabs ---
 const pages = await opt.locator(".page-tab").count();
-pages === 5
-  ? ok("5 page tabs (Blocklist / Keywords / Never-block / Settings / Sync)")
+pages === 6
+  ? ok("6 page tabs (Blocklist / Keywords / Never-block / Settings / Sync / Backup & data)")
   : fail("page tabs: " + pages);
 const blVisible = await opt.locator("#page-blocklist").isVisible();
 const setHidden = await opt.locator("#page-settings").isHidden();
@@ -35,12 +35,12 @@ await opt.waitForTimeout(150);
 (await opt.locator("#page-settings").isVisible()) && (await opt.locator("#page-blocklist").isHidden())
   ? ok("clicking Settings tab swaps the visible page")
   : fail("settings tab did not swap");
-(await opt.locator("#settings-list .switch").count()) === 35 ? ok("35 toggles present on Settings page") : fail("toggle count");
+(await opt.locator("#settings-list .switch").count()) === 39 ? ok("39 toggles present on Settings page") : fail("toggle count");
 
 await opt.locator('.page-tab[data-page="sync"]').click();
 await opt.waitForTimeout(150);
 (await opt.locator("#page-sync").isVisible()) && (await opt.locator("#sync-card").isVisible())
-  ? ok("Sync tab shows the gist card")
+  ? ok("Sync tab shows the sync card")
   : fail("sync tab");
 
 // remembered across reload
@@ -83,14 +83,20 @@ const clearTxt = await clearBtn.textContent();
   ? ok(`clear button shown: "${clearTxt.trim()}"`)
   : fail(`clear button wrong: hidden=${await clearBtn.isHidden()} text="${clearTxt}"`);
 
-await clearBtn.click(); // dialog auto-accepted
-await opt.waitForTimeout(600);
+await clearBtn.click();
+// Destructive actions confirm in the page's own dialog now, not confirm().
+await opt.waitForSelector("#modal:not([hidden])", { timeout: 3000 });
+/3 blocked videos/.test(await opt.textContent("#modal-title"))
+  ? ok("delete-all asks first, naming the count")
+  : fail("confirm dialog title: " + (await opt.textContent("#modal-title")));
+await opt.click("#modal-confirm");
+await opt.waitForTimeout(800);
 const after = await send({ type: "GET_BLOCKLIST" });
 Object.keys(after.videos).length === 0
   ? ok("mass-delete removed every blocked video")
   : fail(`${Object.keys(after.videos).length} videos left after clear`);
 
-// tombstones written so the deletion propagates via gist
+// tombstones written so the deletion propagates through sync
 const tombs = await opt.evaluate(() => chrome.storage.local.get("bt_tombstones"));
 const vidTombs = Object.keys(tombs.bt_tombstones || {}).filter((k) => k.startsWith("video:"));
 vidTombs.length >= 3 ? ok(`${vidTombs.length} video tombstones written`) : fail("no video tombstones: " + JSON.stringify(tombs));

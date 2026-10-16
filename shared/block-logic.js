@@ -15,10 +15,10 @@
 //
 // Loaded as a plain classic script everywhere, hanging things off `self`.
 // `shared/constants.js` must load first — CHANNEL_MODE comes from there.
-self.BlockTube = self.BlockTube || {};
+self.XrnTube = self.XrnTube || {};
 
 (() => {
-  const { CHANNEL_MODE } = self.BlockTube;
+  const { CHANNEL_MODE } = self.XrnTube;
 
   // Parses YouTube's relative "published" text ("3 days ago", "2 weeks ago",
   // "Streamed 5 months ago", "1 year ago") into an approximate age in days.
@@ -53,6 +53,16 @@ self.BlockTube = self.BlockTube || {};
 
   function parseAgeDays(text) {
     const t = text || "";
+    // The compact form YouTube rolled out in 2026 — "3d ago", "2w ago", "7y
+    // ago", "5h ago", "4mo ago": one letter, no space, which the table below
+    // never matched, so every such tile read as undated and an age rule kept
+    // all of them. Only taken with "ago" right after it: the same line
+    // carries the view count ("6.7M"), which would otherwise read as minutes.
+    const c = t.match(/(\d+)\s?(mo|[ywdhms])\s+ago\b/i);
+    if (c) {
+      const per = { y: 365, mo: 30, w: 7, d: 1, h: 1 / 24, m: 1 / 1440, s: 1 / 86400 };
+      return parseInt(c[1], 10) * per[c[2].toLowerCase()];
+    }
     for (const [re, days] of AGE_UNITS) {
       const m = t.match(re);
       if (m) return parseInt(m[1], 10) * days;
@@ -87,6 +97,26 @@ self.BlockTube = self.BlockTube || {};
   //    (recent uploads pass; unknown age is treated as "recent" so a
   //    parse failure never over-blocks a channel the user wants to keep
   //    partly visible).
+  // A Short has NO publish date on any surface. Not "we couldn't parse it" —
+  // there is nothing to parse: the tile renders a title and a view count, and
+  // the JSON behind it (`shortsLockupViewModel`) carries
+  // `"<title>, 1.4 million views – play Short"` and no date field at all
+  // (confirmed live on a channel's Shorts tab, in the DOM and in
+  // `ytInitialData`). So the "unknown age means recent, never over-block"
+  // rule — which exists for a date that simply hasn't hydrated yet — quietly
+  // exempted every short a channel has: an age-ruled channel's Videos tab
+  // emptied while its Shorts tab stayed complete, which reads as the rule not
+  // working at all.
+  //
+  // A dateless short is therefore treated as older than any threshold. It is
+  // the only reading of "block their videos older than N days" that doesn't
+  // leave half the channel behind, and unlike a missing byline there is no
+  // later pass that could ever do better.
+  const UNDATED_SHORT_AGE_DAYS = Number.MAX_SAFE_INTEGER;
+  function ageForRule(ageDays, isShort) {
+    return ageDays == null && isShort ? UNDATED_SHORT_AGE_DAYS : ageDays;
+  }
+
   function channelBlocks(entry, videoId, ageDays) {
     if (!entry) return false;
     if (entry.mode === CHANNEL_MODE.EXCEPT_WHITELIST) {
@@ -170,7 +200,12 @@ self.BlockTube = self.BlockTube || {};
     return {
       matchers,
       durMinSec: Math.max(0, Math.floor(Number(rec && rec.durMinSec) || 0)),
-      durMaxSec: Math.max(0, Math.floor(Number(rec && rec.durMaxSec) || 0))
+      durMaxSec: Math.max(0, Math.floor(Number(rec && rec.durMaxSec) || 0)),
+      // How many top-level comment threads to keep on a watch page (0 = all).
+      // Not a block rule — nothing downstream consults it in blockReasonFor()
+      // — but it lives with the other numeric knobs so there is one place a
+      // number the user typed gets read and clamped.
+      commentLimit: Math.max(0, Math.floor(Number(rec && rec.commentLimit) || 0))
     };
   }
 
@@ -183,9 +218,9 @@ self.BlockTube = self.BlockTube || {};
   // The single verdict, for a thing described by whatever the caller could
   // see. `item` is a plain object; every field is optional, and a field the
   // caller couldn't read must be null/undefined rather than a guess:
-  //   videoId, videoTitle, durationSec, ageDays, isPlaylist,
+  //   videoId, videoTitle, durationSec, ageDays, isPlaylist, isShort,
   //   channelKeys (iterable of "UC…" / "@handle")
-  // Returns a short reason string, or null when nothing blocks it. isBlocked()
+  // Returns a short reason string, or null when nothing blocks it. "Blocked"
   // is just "reason != null" — keeping them one function is what stops the
   // debug log and the real decision ever disagreeing.
   function blockReasonFor(item, index, filters) {
@@ -218,19 +253,21 @@ self.BlockTube = self.BlockTube || {};
       // age rule — a playlist has no single publish date, and "block their
       // videos" naturally covers "block their playlists of those videos".
       if (item.isPlaylist) return `playlist by blocked channel ${key}`;
-      if (channelBlocks(e, item.videoId, item.ageDays)) {
+      if (channelBlocks(e, item.videoId, ageForRule(item.ageDays, item.isShort))) {
         return `channel ${key} (${e.mode || "full"}${e.blockOlderThanDays ? `, >${e.blockOlderThanDays}d` : ""})`;
       }
     }
     return null;
   }
 
-  Object.assign(self.BlockTube, {
+  Object.assign(self.XrnTube, {
     AGE_UNITS,
     MAX_PLAUSIBLE_AGE_DAYS,
     plausibleAgeDays,
     parseAgeDays,
     parseDurationSec,
+    UNDATED_SHORT_AGE_DAYS,
+    ageForRule,
     CHANNEL_HREF_RE,
     normalizeChannelKey,
     channelBlocks,

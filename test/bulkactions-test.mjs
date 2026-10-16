@@ -44,9 +44,12 @@ const reseed = async () => {
   await p.waitForTimeout(1800);
 };
 
-// Every bulkApply action goes through a confirm(); Playwright dismisses
-// dialogs unless told otherwise, which silently turns each one into a no-op.
-p.on("dialog", (d) => d.accept());
+// Never-block and Delete confirm in the page's own dialog (#modal), not a
+// native confirm() — accept it the way a user would.
+const confirmModal = async () => {
+  await p.waitForSelector("#modal:not([hidden])", { timeout: 3000 });
+  await p.click("#modal-confirm");
+};
 
 // Enter select mode and tick the seeded rows.
 const selectSeeded = async () => {
@@ -103,6 +106,7 @@ IDS.every((id) => bl.channels[id] && bl.channels[id].mode === "exceptWhitelist")
 await reseed();
 await selectSeeded();
 await p.click("#bulk-allow");
+await confirmModal();
 await p.waitForTimeout(1500);
 bl = await blocklist();
 const allow = bl.allowlist || {};
@@ -114,18 +118,26 @@ IDS.every((id) => allow[id.toLowerCase()] || allow[id])
 await reseed();
 await selectSeeded();
 await p.click("#bulk-unblock");
+await confirmModal();
 await p.waitForTimeout(1800);
 bl = await blocklist();
 IDS.every((id) => !bl.channels[id])
   ? ok("bulk Unblock removes every selected channel")
   : fail("bulk Unblock left some behind: " + JSON.stringify(IDS.filter((i) => bl.channels[i])));
 
-// ...and the removals are undoable, like any other unblock.
+// ...and the removals are undoable, like any other unblock — as ONE record,
+// so a single Undo brings the whole selection back.
 const recent = await msg({ type: "GET_RECENT_UNBLOCKS" });
 const log = Array.isArray(recent) ? recent : recent && recent.log;
-Array.isArray(log) && log.length >= IDS.length
-  ? ok(`bulk Unblock is undoable (${log.length} records in the undo log)`)
-  : fail(`bulk unblock left no undo trail: ${JSON.stringify(recent).slice(0, 120)}`);
+const rec = Array.isArray(log) && log[0];
+rec && IDS.every((id) => rec.channels && rec.channels[id])
+  ? ok(`bulk Delete is undoable (one record holding all ${IDS.length})`)
+  : fail(`bulk delete left no single undo record: ${JSON.stringify(recent).slice(0, 160)}`);
+await msg({ type: "RESTORE_UNBLOCK", ts: rec && rec.ts });
+bl = await blocklist();
+IDS.every((id) => bl.channels[id])
+  ? ok("restoring that one record brings every selected channel back")
+  : fail("restore missed some: " + JSON.stringify(IDS.filter((i) => !bl.channels[i])));
 
 errs.length === 0 ? ok("no options-page errors during bulk actions") : fail(`page error: ${errs[0]}`);
 

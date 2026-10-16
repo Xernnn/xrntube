@@ -18,17 +18,26 @@ if (!files.length) {
   process.exit(1);
 }
 
+// A live test that fails is run once more before it counts: YouTube's markup
+// and timing vary run to run, and a second clean pass is the difference
+// between "flaky" and "broken". The summary still says which needed it.
+// RETRY=0 turns that off.
+const retries = process.env.RETRY === "0" ? 0 : 1;
 const results = [];
 for (const f of files) {
-  process.stdout.write(`\n\x1b[1m=== ${f} ===\x1b[0m\n`);
-  const r = spawnSync("node", [join(dir, f)], { stdio: "inherit", timeout: 5 * 60 * 1000 });
-  results.push({ f, ok: r.status === 0, status: r.status, timedOut: r.error?.code === "ETIMEDOUT" });
+  let r;
+  let attempt = 0;
+  do {
+    process.stdout.write(`\n\x1b[1m=== ${f}${attempt ? " (2nd try)" : ""} ===\x1b[0m\n`);
+    r = spawnSync("node", [join(dir, f)], { stdio: "inherit", timeout: 5 * 60 * 1000 });
+  } while (r.status !== 0 && attempt++ < retries);
+  results.push({ f, ok: r.status === 0, retried: attempt > 0, status: r.status, timedOut: r.error?.code === "ETIMEDOUT" });
 }
 
 console.log("\n\x1b[1m=== summary ===\x1b[0m");
 let failed = 0;
-for (const { f, ok, status, timedOut } of results) {
-  if (ok) console.log(`  \x1b[32mPASS\x1b[0m  ${f}`);
+for (const { f, ok, retried, status, timedOut } of results) {
+  if (ok) console.log(`  \x1b[32mPASS\x1b[0m  ${f}${retried ? "  (passed on 2nd try)" : ""}`);
   else {
     failed++;
     console.log(`  \x1b[31mFAIL\x1b[0m  ${f}${timedOut ? " (timed out)" : ` (exit ${status})`}`);

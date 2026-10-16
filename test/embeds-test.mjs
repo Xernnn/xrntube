@@ -106,7 +106,7 @@ const embedState = async () => {
 await setEmbeds(false);
 await ext.waitForTimeout(1200);
 const offState = await embedState();
-offState.inside && !offState.inside.body.startsWith("Blocked by BlockTube")
+offState.inside && !offState.inside.body.startsWith("Blocked by XrnTube")
   ? ok(`default (off): a blocked channel's embed is untouched (${JSON.stringify(offState.inside)})`)
   : fail(`embeds were altered while the setting was OFF: ${JSON.stringify(offState.inside)}`);
 
@@ -114,7 +114,7 @@ offState.inside && !offState.inside.body.startsWith("Blocked by BlockTube")
 await setEmbeds(true);
 await ext.waitForTimeout(1200);
 const onState = await embedState();
-onState.inside && onState.inside.body.startsWith("Blocked by BlockTube")
+onState.inside && onState.inside.body.startsWith("Blocked by XrnTube")
   ? ok("opted in: the embedded player is blanked")
   : fail(`embed was not blocked with the setting ON: ${JSON.stringify(onState.inside)}`);
 
@@ -131,7 +131,7 @@ await other.waitForTimeout(9000);
 const okFrame = other.frames().find((fr) => fr.url().includes("/embed/"));
 const okInside = okFrame ? await okFrame.evaluate(() => (document.body.textContent || "").trim().slice(0, 40)).catch(() => null) : null;
 await other.close();
-!(okInside || "").startsWith("Blocked by BlockTube")
+!(okInside || "").startsWith("Blocked by XrnTube")
   ? ok("an unblocked channel's embed still plays while opted in")
   : fail("blanked an embed whose channel is not blocked (false positive)");
 

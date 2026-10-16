@@ -6,7 +6,7 @@ import { chromium } from "playwright";
 //     means the rest of the blocklist is simply unreachable);
 //   - the "No sub count" tab collects channels with no usable number;
 //   - opening the page fetches counts for channels never looked up, and
-//     pushes them to the gist;
+//     pushes them to the sync server;
 //   - a count once cached is never re-fetched.
 //
 // Mostly synthetic data; three real channels are used for the one assertion
@@ -36,7 +36,7 @@ const optionsUrl = `chrome-extension://${extId}/options/options.html`;
 // that omits this reads as a blocklist that has never been swept.
 const probe = await ctx.newPage();
 await probe.goto(optionsUrl);
-const SUBS_V = await probe.evaluate(() => self.BlockTube.SUBS_SCRAPE_VERSION);
+const SUBS_V = await probe.evaluate(() => self.XrnTube.SUBS_SCRAPE_VERSION);
 await probe.close();
 
 // Seed: synthetic channels that already carry a count (so the auto-fetch has

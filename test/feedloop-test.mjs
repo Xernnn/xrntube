@@ -105,5 +105,64 @@ partial.reqs > 0
   ? ok("no notice while results are still visible")
   : fail("notice shown on a search that still has visible results");
 
+// ---- 4. a search where nothing survives: counted in rounds, not pixels ----
+// The curb above reads geometry, and a results page is tall on its own
+// (masthead, filter chips, a channel card, a shelf) — so its sentinel can sit
+// out of range while every video in each arriving batch is blocked, and each
+// fetch quietly makes room for the next. `noteJudgedRound()` is what covers
+// that: one judged response is one round, and three rounds with no surviving
+// video stop the continuations outright. A keyword that matches every title
+// is the cheapest way to make "nothing survives" true of a real search.
+await send({ type: "UNBLOCK_CHANNEL", id: HANDLE });
+await ext.evaluate(() =>
+  chrome.storage.sync.set({ bt_keywords: { list: [{ p: ".", re: true }], ts: Date.now(), durMinSec: 0, durMaxSec: 0 } })
+);
+await ext.waitForTimeout(2500);
+
+const dead = await ctx.newPage();
+let deadReqs = 0;
+dead.on("request", (r) => {
+  if (/youtubei\/v1\/(browse|search)/.test(r.url())) deadReqs++;
+});
+await dead.goto("https://www.youtube.com/results?search_query=tech+news&bt-debug=1", { waitUntil: "domcontentloaded" });
+await dead.waitForTimeout(6000);
+for (let i = 0; i < 3; i++) {
+  await dead.mouse.wheel(0, 3000);
+  await dead.waitForTimeout(1000);
+}
+const settled = deadReqs;
+await dead.waitForTimeout(15000);
+const deadState = await dead.evaluate(() => {
+  const note = document.querySelector("bt-blocked-notice");
+  return {
+    // The two brakes write different notices, which is the only way from out
+    // here to tell which one stopped the page: geometry (the sentinel came
+    // into range on a short page) or rounds (three responses, no survivors).
+    notice: note ? (note.textContent || "").trim() : null,
+    sentinels: document.querySelectorAll("ytd-continuation-item-renderer").length
+  };
+});
+await dead.close();
+deadReqs === settled
+  ? ok(`a search with nothing left to show stops fetching (0 more in 15s after ${settled})`)
+  : fail(`fully-blocked search still fetching: ${deadReqs - settled} more requests in 15s`);
+deadState.sentinels === 0
+  ? ok("no continuation sentinel left for YouTube to trigger on")
+  : fail(`${deadState.sentinels} continuation sentinel(s) still in the page`);
+deadState.notice ? ok("the page says why it stopped") : fail("no notice on an exhausted search");
+// Which brake won depends on how tall YouTube happened to render the page, so
+// this reports rather than asserts. The round counter's own thresholds are
+// pinned offline in datalayer-test ("three responses with no surviving
+// video…"), where the page's height can't decide the outcome.
+console.log(
+  "   (stopped by:",
+  /stopped loading more/.test(deadState.notice || "") ? "the round counter" : "the sentinel curb",
+  "—",
+  JSON.stringify((deadState.notice || "").slice(0, 60)) + ")"
+);
+
+await ext.evaluate(() =>
+  chrome.storage.sync.set({ bt_keywords: { list: [], ts: Date.now(), durMinSec: 0, durMaxSec: 0 } })
+);
 await send({ type: "UNBLOCK_CHANNEL", id: HANDLE });
 await ctx.close();

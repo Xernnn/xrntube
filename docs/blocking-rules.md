@@ -11,7 +11,7 @@ cross-format matching work) and [architecture.md](architecture.md).
 A blocked-channel entry is `{ name, ts, updated_at, localOnly, mode, whitelist,
 blockOlderThanDays?, hidden?, subs?, subsAt?, handle?, ucid?, gone? }` (a video entry
 is `{ title, ts, updated_at, hidden? }`). `mode` is from
-`BlockTube.CHANNEL_MODE` (`shared/constants.js`):
+`XrnTube.CHANNEL_MODE` (`shared/constants.js`):
 
 - **`FULL`** (the default, and what every entry predating this field
   implicitly is — `channelBlocks()`/DNR treat a missing `mode` as `FULL`):
@@ -43,7 +43,12 @@ is `{ title, ts, updated_at, hidden? }`). `mode` is from
   blocklist-load paths; the style clears itself when you navigate off the
   channel page. Date parsing (`parseAgeDays()`) is
   language-independent (`AGE_UNITS`, ~15 languages — see "UI-language
-  labels").
+  labels"), and reads YouTube's three English shapes: "3 days ago", "4 wk
+  ago", and the compact "3d ago" / "2w ago" / "7y ago" it rolled out in 2026
+  (only with "ago" after it — the line also says "6.7M"). A date that doesn't
+  parse is treated as recent, so an unrecognised format silently switches
+  every age rule off rather than failing loudly; `locale-age-test` pins all
+  three.
 
   **`currentPageAgeDays()` answers "how old is the video on this page", and a
   wrong answer is a false bounce off a video the user is entitled to watch.**
@@ -65,10 +70,33 @@ is `{ title, ts, updated_at, hidden? }`). `mode` is from
   tile path, goes through `plausibleAgeDays()` (−1 … 100 years): a value outside
   that is not an age, it is a parse bug, and it must read as *unknown*. Unknown
   means `null`, and `channelBlocks()` does not block on null — the 2s heartbeat
-  re-checks once the real metadata mounts. `age-test` asserts both directions on
+  re-checks once the real metadata mounts. The tile path has the same need:
+  `processRenderer()` leaves a tile *pending* (not `data-bt-checked`) while
+  an age-ruled channel is on it and its date is still unread
+  (`ageRuledChannelOn()`), so `recheckHydratingTiles()` comes back once the
+  metadata line mounts — without it an old video checked in that window
+  stayed on screen for good (the same trap as the duration filter below). `age-test` asserts both directions on
   the watch page, since a rule that blocks everything and a rule that blocks
   nothing both look like "working" from one side. `extractInfo()` only reads the date when `anyAgeRule` is true
   (some blocked channel has the field), so the common case pays nothing.
+
+**A Short carries no publish date on any surface**, so the age rule needs a
+rule of its own for them. The tile renders a title and a view count; the JSON
+behind it (`shortsLockupViewModel`) carries
+`"<title>, 1.4 million views – play Short"` and no date field — confirmed
+live, in the DOM and in `ytInitialData`. That is not a date that hasn't
+hydrated yet, it is a surface that never has one, so the usual "unknown age
+means recent, never over-block" reading exempted every short an age-ruled
+channel has: its Videos tab emptied down to the last two uploads while its
+Shorts tab stayed complete at 50, which reads as the rule not working.
+`ageForRule()` (shared/block-logic.js) therefore treats a **dateless Short as
+older than any threshold**; `isShort` is set by the DOM scrub (a `/shorts/`
+link or a Shorts tag) and by the JSON filter (`reelItemRenderer`,
+`shortsLockupViewModel`), so both layers answer alike. The whitelist still
+wins, and a channel with no age rule blocks its Shorts exactly as before.
+One asymmetry, deliberate: the Shorts *player* page can usually read a real
+date, so the nav guard still judges it on that and fails open when it can't —
+a tile that cannot be dated is hidden, a page that can be dated is judged.
 
 Other per-entry fields (channels *and* videos): `hidden` — a pure
 options-UI flag (`MSG.SET_ENTRY_HIDDEN`); the entry stays fully blocked,
@@ -83,17 +111,17 @@ back off. Entries carry `subsV` (`SUBS_SCRAPE_VERSION`), the generation of the
 scrape that produced the number, so a change of source re-fetches once and
 then never again. `applyChannelInfo(map)` writes a whole batch of
 results with one storage write. `MSG.FETCH_CHANNEL_SUBS` (one channel) and
-`MSG.BULK_FETCH_CHANNEL_INFO` (a batch, fanned out 8-wide) both go through
-it — **neither calls `broadcastUpdate`** (this metadata is cosmetic: content
-scripts and DNR don't use it), so a big sweep isn't N × DNR-rebuilds; the
-options page repaints from `storage.onChanged` and pushes to the gist once
-at the end via `SYNC_NOW`. All of these fields ride the gist sync
-automatically as extra keys on the entry.
+`MSG.BULK_FETCH_CHANNEL_INFO` (a small batch) and the background sweep
+(`START_SWEEP`, see architecture.md) all go through it — a lookup itself
+doesn't call `broadcastUpdate` (a batch would otherwise be N × DNR rebuilds);
+the sweep rebroadcasts every 200 channels and once at the end, which also
+pushes to the sync server. All of these fields ride the sync automatically as
+extra keys on the entry.
 
 ## `channelBlocks()` — the single decision function
 
-`content/content.js`'s `channelBlocks(entry, videoId, ageDays)` is the
-single source of truth both the DOM scrub (`isBlocked()`) and the navigation
+`shared/block-logic.js`'s `channelBlocks(entry, videoId, ageDays)` is the
+single source of truth both the DOM scrub (`blockReason()`) and the navigation
 guards (`checkCurrentPageAndRedirect()` — which computes `ageDays` via
 `currentPageAgeDays()` — and `yt-navigate-start`) call through — pass
 `null` for videoId to get "does this mode block the channel itself", a real
@@ -124,8 +152,8 @@ its title matches any pattern **or** (when either bound is > 0) its duration
 badge is shorter than `durMinSec` / longer than `durMaxSec`. `content.js`
 compiles the patterns in `applyKeywords()` (loaded alongside `bt_settings`,
 live via `chrome.storage.onChanged`) into `keywordMatchers`; `blockReason()`
-(the single function `isBlocked()` delegates to — it returns a *string* so
-the debug log and the real decision can't drift) and the nav guard's
+(it returns a *string* rather than a boolean so the debug log and the real
+decision can't drift) and the nav guard's
 `matchesFilter()` check both. `anyFilter()` gates the work: `extractInfo()`
 only reads the duration badge (`readDurationSec()` — scans the
 time-status/duration badges specifically, ignoring "4K"/"New") when a bound
@@ -148,7 +176,7 @@ no duration, ever — isn't re-read for the life of the page; size it against
 the **2s heartbeat**, not the ~400ms throttle, because the throttle only fires
 on DOM mutation and a settled page is driven by the heartbeat alone (at 8
 tries ≈ 16s a 2½-hour video still slipped through). The options **Keywords** page
-tab edits both (title list + a "Block videos by length" block). The gist
+tab edits both (title list + a "Block videos by length" block). The sync
 merge carries the whole `keywords` object as last-write-wins on `ts`;
 `kwFingerprint()` (list + duration bounds, ts excluded) in `sameBlocklist()`
 is what makes a duration-only edit still push.
@@ -167,7 +195,7 @@ in `blockedEntryFor()` (returns `undefined` for an allow-listed key — covers
 the nav guards and `scrubOwnChannelPage`), at the top of `blockReason()`
 (covers keyword/duration), in `checkCurrentPageAndRedirect()`, and skips the
 channel's clause in `updateInstantHideBlocklistCSS()`. `background.js`
-excludes allow-listed keys from `rebuildDnrRules()`. `gist-sync.js` syncs it
+excludes allow-listed keys from `rebuildDnrRules()`. `server-sync.js` syncs it
 exactly like `keywords` (LWW on `ts`, `allowFingerprint()` in
 `sameBlocklist()`). Options **Never-block** page tab + a "Never-block"
 button in the bulk-select bar manage it. A DOM node already deleted before a
@@ -176,11 +204,33 @@ unblocking) — the allow-list is not retroactive within a paint.
 
 ## Playlists and community posts
 
-`extractInfo()` sets `info.isPlaylist` (the tile matches `PLAYLIST_TILE_TAGS`
-or carries a `PLAYLIST_LINK_SEL` link — `list=PL…/UU…/OL…/FL…`, not
-auto-`RD…` mixes). `blockReason()` then returns "blocked" for a playlist
-tile as soon as *any* channel on it resolves via `blockedEntryFor()` —
-regardless of block mode or age rule, since a playlist has no single date.
+`extractInfo()` sets `info.isPlaylist` when the tile matches
+`PLAYLIST_TILE_TAGS` or carries a `PLAYLIST_LINK_SEL` link
+(`list=PL…/UU…/OL…/FL…`, not auto-`RD…` mixes). `blockReason()` then returns
+"blocked" for a playlist tile as soon as *any* channel on it resolves via
+`blockedEntryFor()` — regardless of block mode or age rule, since a playlist
+has no single date.
+
+Two things about that rule are worth knowing before touching it, because
+"blocked regardless of mode" is a blunt verdict to reach by accident — and an
+equally bad one to *miss*, since nothing downstream can date a collection:
+
+- **A playlist card names a video, and is still a playlist.** Measured live on
+  a search for a channel whose seasons are playlists: each card is a
+  `yt-lockup-view-model` whose every anchor is
+  `/watch?v=<first episode>&list=PL…` — no `/playlist?list=` link, no type
+  attribute, nothing else to go on. The `&list=` link is therefore the DOM's
+  whole signal, and relaxing it to "it names a video, so it is a video" let
+  every one of that channel's playlist cards through; with an age rule on the
+  entry they then stayed for good, because a playlist has no date to compare.
+  The JSON filter has the real answer — `lockupViewModel.contentType`
+  (`LOCKUP_CONTENT_TYPE_PLAYLIST` / `…_VIDEO` / `…_SHORTS`), read via the rule
+  table's `kindFrom` — and a playlist lockup's `contentId` is a `PL…` id, not
+  a video id. Both layers must keep answering "playlist" for this tile.
+- **A channel card is never a playlist** (`CHANNEL_CARD_TAGS`), even though
+  search's watch card carries a "play all" link to the channel's uploads.
+  Under a video-only block that deleted the one card on the search page that
+  *is* the channel, with the reason "playlist by blocked channel UC…".
 
 Community posts are **not** tiles (`RENDERER_SELECTOR` doesn't list them) —
 `POST_SELECTOR` (`ytd-backstage-post-thread-renderer` + friends) gets its

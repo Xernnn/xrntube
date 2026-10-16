@@ -30,6 +30,29 @@
   opacity: 1;
 }
 
+/* A touchscreen has no hover, so the button would never appear: always show
+   it there, a little larger so a fingertip can hit it.
+
+   Always shown, its page-wide z-index also put it on top of YouTube's own
+   overlays: a tile scrolled under the sticky watch-page player still showed
+   its 🚫 there, a stray second button over the video.
+   `isolation` keeps the z-index inside the tile it belongs to. */
+@media (hover: none) {
+  [data-bt-btn] {
+    isolation: isolate;
+  }
+  .bt-block-btn {
+    opacity: 0.85;
+    width: 28px;
+    height: 28px;
+    line-height: 28px;
+    font-size: 15px;
+  }
+  .bt-block-menu {
+    bottom: 34px;
+  }
+}
+
 .bt-block-menu {
   position: absolute;
   bottom: 28px;

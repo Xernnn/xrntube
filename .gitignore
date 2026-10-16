@@ -1,7 +1,26 @@
-node_modules
-/blocktube_backup*.json
-/blocktube-import.json
+# dependencies
+node_modules/
+
+# blocklist exports are personal data — never commit one
+/blocktube*.json
+/xrntube-backup*.json
+
+# build output (npm run package)
+dist/
+
+# test browser profiles
 /test/.profile*/
+
+# env / secrets
+.env
+.env.*
+
+# logs
 *.log
+
+# editor / OS
+.idea/
+.vscode/
+*.swp
 .DS_Store
-package-lock.json
+Thumbs.db

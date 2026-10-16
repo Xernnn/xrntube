@@ -159,3 +159,20 @@ button:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
 }
+
+.foot-btns { display: flex; gap: 8px; }
+
+/* "Blocked" + Unblock, side by side. */
+.btn-group.row-inline { flex-direction: row; align-items: center; gap: 10px; }
+.status { font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.unblock-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.unblock-btn:hover { border-color: var(--ink-3); color: var(--ink); }

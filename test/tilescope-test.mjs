@@ -54,6 +54,33 @@ const lifted = [
   grabFn("tileChannels")
 ].join("\n");
 
+// ...and what KIND of thing a tile is, which rides on the same scoping
+// question: extractInfo() decides "video / playlist / channel card", and
+// getting that wrong takes a tile out under a rule that was never meant for
+// it. The age and duration reads are stubbed — they only run when a rule
+// needs them, and they are covered by age-test / duration-test.
+const liftedInfo = [
+  lifted,
+  grabConst("PLAYLIST_TILE_TAGS"),
+  // (its value starts on the next line, so grabConst's "= <value>" shape
+  // doesn't fit it)
+  grabFrom(src, "content.js", /\n  const PLAYLIST_LINK_SEL =[\s\S]*?;\n/, "const PLAYLIST_LINK_SEL"),
+  grabConst("VIDEO_ID_FROM_QUERY_RE"),
+  grabConst("VIDEO_ID_FROM_SHORTS_RE"),
+  grabConst("SHORTS_ITEM_SELECTOR"),
+  grabFrom(src, "content.js", /\n  const AGE_SCOPE_SEL = [\s\S]*?;\n/, "const AGE_SCOPE_SEL"),
+  // the real date parser, so the age cases below test the shipped one
+  grabConst("AGE_UNITS", shared, "shared/block-logic.js"),
+  grabConst("MAX_PLAUSIBLE_AGE_DAYS", shared, "shared/block-logic.js"),
+  grabFn("plausibleAgeDays", shared, "shared/block-logic.js"),
+  grabFn("parseAgeDays", shared, "shared/block-logic.js"),
+  `const blockIndex = { anyAgeRule: true };
+   const filterRec = { durMinSec: 0, durMaxSec: 0 };
+   const readDurationSec = () => null;`,
+  grabFn("tileAgeText"),
+  grabFn("extractInfo")
+].join("\n");
+
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 await page.setContent("<!doctype html><body></body>");
@@ -61,6 +88,26 @@ await page.evaluate((code) => {
   // eslint-disable-next-line no-new-func
   window.tileChannels = new Function(`${code}\nreturn tileChannels;`)();
 }, lifted);
+await page.evaluate((code) => {
+  // eslint-disable-next-line no-new-func
+  window.extractInfo = new Function(`${code}\nreturn extractInfo;`)();
+}, liftedInfo);
+
+// What extractInfo() makes of `html`'s root element.
+const infoFor = (html) =>
+  page.evaluate((h) => {
+    document.body.innerHTML = h;
+    const i = window.extractInfo(document.body.firstElementChild);
+    return (
+      i && {
+        videoId: i.videoId,
+        isPlaylist: i.isPlaylist,
+        isShort: i.isShort,
+        ageDays: i.ageDays,
+        channels: [...i.channels.keys()]
+      }
+    );
+  }, html);
 
 // Returns the channel keys tileChannels() attributes to `html`'s root element.
 const keysFor = (html) =>
@@ -161,6 +208,114 @@ const cardKeys = await keysFor(
 cardKeys[0] === "@cardowner"
   ? ok("watch card alone resolves to its own channel")
   : fail(`watch card resolved to [${cardKeys}]`);
+
+// ---- a channel card is neither a video nor a playlist ----
+// Search's watch card lists the channel's videos AND links its uploads
+// playlist ("play all"). Reading either off the card takes the whole card
+// out — and a playlist by a blocked channel is blocked in every mode, so a
+// video-only block, which exists to keep the channel itself on screen,
+// deleted exactly the card that IS the channel.
+const cardHtml = `<ytd-universal-watch-card-renderer>
+     <ytd-watch-card-rich-header-renderer><a href="/@cardowner">Card Owner</a></ytd-watch-card-rich-header-renderer>
+     <a href="/playlist?list=PLaaaaaaaaaaaaaaaaaaaa">Play all</a>
+     <ytd-watch-card-compact-video-renderer><a href="/watch?v=abcdefghijk">A video</a></ytd-watch-card-compact-video-renderer>
+   </ytd-universal-watch-card-renderer>`;
+const cardInfo = await infoFor(cardHtml);
+cardInfo && cardInfo.isPlaylist === false
+  ? ok("a watch card carrying a “play all” link is not judged as a playlist")
+  : fail(`watch card came back as ${JSON.stringify(cardInfo)}`);
+cardInfo && cardInfo.videoId === null
+  ? ok("…and no video id is read off it either")
+  : fail(`watch card took a video id: ${JSON.stringify(cardInfo)}`);
+
+// A playlist card names a video too — and is still a playlist. Measured live:
+// a channel whose seasons are playlists renders each one as a lockup whose
+// every anchor is `/watch?v=<first episode>&list=PL…`, with no
+// `/playlist?list=` link and no type attribute anywhere in the DOM. Reading
+// "it names a video, so it is a video" let those cards through, and an age
+// rule then kept them permanently (a playlist has no date to compare).
+const playlistCardInfo = await infoFor(
+  `<yt-lockup-view-model>
+     <a href="/watch?v=abcdefghijk&list=PLcccccccccccccccccccc">Season 1</a>
+     <div class="yt-lockup-metadata-view-model-wiz__metadata"><a href="/@uploader">Uploader</a></div>
+     <yt-thumbnail-overlay-badge-view-model>7 videos</yt-thumbnail-overlay-badge-view-model>
+   </yt-lockup-view-model>`
+);
+playlistCardInfo && playlistCardInfo.isPlaylist === true
+  ? ok("a playlist card whose only links are watch?v=…&list= is judged as a playlist")
+  : fail(`playlist card came back as ${JSON.stringify(playlistCardInfo)}`);
+
+// A Short is flagged as one, because a Short is the tile that never carries a
+// publish date and the age rule has to tell that apart from a date that has
+// not hydrated yet.
+const shortInfo = await infoFor(
+  `<ytd-rich-item-renderer>
+     <ytm-shorts-lockup-view-model-v2>
+       <a href="/shorts/abcdefghijk">A short</a>
+     </ytm-shorts-lockup-view-model-v2>
+   </ytd-rich-item-renderer>`
+);
+shortInfo && shortInfo.isShort === true && shortInfo.videoId === "abcdefghijk"
+  ? ok("a Shorts tile is reported as a Short")
+  : fail(`shorts tile came back as ${JSON.stringify(shortInfo)}`);
+const normalInfo = await infoFor(
+  `<ytd-video-renderer><a href="/watch?v=abcdefghijk">A video</a></ytd-video-renderer>`
+);
+normalInfo && normalInfo.isShort === false
+  ? ok("…and an ordinary video tile is not")
+  : fail(`ordinary tile came back as ${JSON.stringify(normalInfo)}`);
+
+// ---- the age rule reads the metadata line, not the title ----
+// "Apple Silicon Explained in 56 seconds" was, live, the one tile to survive a
+// 2-day rule on a channel's Shorts tab: its own title dated it at 56 seconds
+// old. Titles like "24 hours with the iPhone" do the same to ordinary videos.
+const titledInfo = await infoFor(
+  `<ytd-rich-item-renderer>
+     <a id="video-title" href="/watch?v=abcdefghijk">Apple Silicon Explained in 56 seconds</a>
+     <yt-content-metadata-view-model>2.8M views • 3 weeks ago</yt-content-metadata-view-model>
+   </ytd-rich-item-renderer>`
+);
+titledInfo && Math.round(titledInfo.ageDays) === 21
+  ? ok("a tile is dated by its metadata line, not by the numbers in its title")
+  : fail(`expected ~21 days, got ${JSON.stringify(titledInfo)}`);
+
+// No metadata line at all: the wide read still happens (unknown tile shapes
+// must keep working) — but with the title taken out of it.
+const noMetaInfo = await infoFor(
+  `<ytd-video-renderer>
+     <a id="video-title" href="/watch?v=abcdefghijk">Explained in 56 seconds</a>
+     <span>2 years ago</span>
+   </ytd-video-renderer>`
+);
+noMetaInfo && Math.round(noMetaInfo.ageDays) === 730
+  ? ok("…and a tile with no metadata line is read wide, minus its title")
+  : fail(`expected ~730 days, got ${JSON.stringify(noMetaInfo)}`);
+
+// A Short's subhead is a view count and never a date, so it must come back
+// unknown — that is what makes isShort the deciding fact.
+const shortAge = await infoFor(
+  `<ytd-rich-item-renderer>
+     <ytm-shorts-lockup-view-model-v2>
+       <a href="/shorts/abcdefghijk">Apple Silicon Explained in 56 seconds</a>
+       <div class="shortsLockupViewModelHostMetadataSubhead">2.8M views</div>
+     </ytm-shorts-lockup-view-model-v2>
+   </ytd-rich-item-renderer>`
+);
+shortAge && shortAge.ageDays === null && shortAge.isShort === true
+  ? ok("a Short reports no age at all, whatever its title says")
+  : fail(`short reported ${JSON.stringify(shortAge)}`);
+
+// The same link on something that really is a playlist tile must still count,
+// or the playlist rule stops working everywhere.
+const plInfo = await infoFor(
+  `<ytd-playlist-renderer>
+     <ytd-channel-name><a href="/@plowner">PL Owner</a></ytd-channel-name>
+     <a href="/playlist?list=PLbbbbbbbbbbbbbbbbbbbb">A playlist</a>
+   </ytd-playlist-renderer>`
+);
+plInfo && plInfo.isPlaylist === true
+  ? ok("a real playlist tile is still judged as a playlist")
+  : fail(`playlist tile came back as ${JSON.stringify(plInfo)}`);
 
 await browser.close();
 console.log("\nDONE");

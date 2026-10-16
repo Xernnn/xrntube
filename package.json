@@ -1,17 +1,14 @@
 {
-  "name": "blocktube",
+  "name": "xrntube",
   "private": true,
   "type": "module",
   "scripts": {
     "check": "for f in background/*.js shared/*.js content/*.js popup/*.js options/*.js test/*.mjs; do node --check \"$f\" || exit 1; done && node -e \"JSON.parse(require('fs').readFileSync('manifest.json','utf8'))\" && echo OK",
     "test": "node test/run.mjs",
-    "test:one": "node",
-    "lint:firefox": "web-ext lint --source-dir . --ignore-files 'test/**' 'node_modules/**'",
-    "run:firefox": "web-ext run --source-dir . --start-url 'https://www.youtube.com'",
-    "build:firefox": "web-ext build --source-dir . --overwrite-dest --ignore-files 'test/**' 'node_modules/**' 'package*.json' 'blocktube_backup*.json' 'blocktube-import.json'"
+    "test:fast": "RETRY=0 node test/run.mjs locale-age contextmenu datalayer-test tilescope datatools serversync",
+    "package": "node scripts/package.mjs"
   },
   "devDependencies": {
-    "playwright": "^1.47.0",
-    "web-ext": "^8.3.0"
+    "playwright": "^1.47.0"
   }
 }

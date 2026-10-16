@@ -1,40 +1,38 @@
 // ---------------------------------------------------------------------------
-// Cross-browser blocklist sync, with no server to run.
+// Blocklist sync through your own server (server/xrntube-sync.py).
 //
-// chrome.storage.sync only bridges browsers signed into the *same vendor's*
-// account (Chrome<->Chrome via Google, Firefox<->Firefox via a Firefox
-// Account) — it cannot carry a blocklist from Chrome on the desktop to Firefox
-// on a phone. This module adds a second transport that can: a single private
-// GitHub Gist, written to with a fine-grained personal access token the user
-// pastes into the options page once per device. GitHub is the entire backend —
-// nothing here is hosted, and it is free.
+// chrome.storage.sync only bridges browsers signed into the same Google
+// account, and a phone browser such as Quetta has no account sync at all. So
+// every device that should share one blocklist points at a small server you
+// run — the user's home server, published over HTTPS — with a user name and
+// password typed into the options page once per device.
 //
-// Wire format — one JSON file (SYNC.GIST_FILENAME) inside the gist:
+// Wire format — one JSON document per user on the server:
 //   { v: 1,
-//     channels:   { <key>: { name, ts, updated_at, mode, whitelist } },
+//     channels:   { <key>: { name, ts, updated_at, mode, whitelist, … } },
 //     videos:     { <id>:  { title, ts, updated_at } },
-//     tombstones: { "channel:<key>" | "video:<id>": <deletedAtMs> } }
+//     tombstones: { "channel:<key>" | "video:<id>": <deletedAtMs> },
+//     keywords, allowlist }
 //
 // Merge is last-write-wins per entry on `updated_at`, with tombstones so an
 // unblock on one device is not silently resurrected by a stale copy on
-// another. Timestamps come from GitHub's response `Date` header (fed back to
+// another. Timestamps come from the server's `Date` header (fed back to
 // background.js via host.setClockOffset) rather than the device clock, so skew
 // between devices can't decide a merge. Tombstones past STORAGE.TOMBSTONE_TTL_MS
-// are dropped on each cycle.
+// are dropped on each cycle. A push carries the version it read (If-Match):
+// when another device wrote in between, the server answers 412 and the cycle
+// simply runs again on the newer copy.
 //
 // There is no realtime channel: a change propagates on the next poll
 // (SYNC.POLL_PERIOD_MIN) or the next debounced push after a local edit. The
 // poll alarm also backstops the debounce timer, which a suspended service
-// worker / event page can otherwise drop.
+// worker can otherwise drop.
 //
 // This module never touches blocklist storage directly — background.js passes
-// it a `host` with the few operations it needs. Load order (see manifest
-// background.scripts and background.js's importScripts): constants.js, then
-// this file, then background.js, which calls gistSync.init(host).
+// it a `host` with the few operations it needs, and calls serverSync.init(host).
 // ---------------------------------------------------------------------------
 (() => {
-  const { STORAGE, SYNC, KEYWORDS_KEY, ALLOWLIST_KEY } = self.BlockTube;
-  const API = "https://api.github.com";
+  const { STORAGE, SYNC, KEYWORDS_KEY, ALLOWLIST_KEY } = self.XrnTube;
 
   let host = null;
 
@@ -49,9 +47,10 @@
     const res = await chrome.storage.local.get(STORAGE.SYNC_KEY);
     cfg = Object.assign(
       {
-        token: null,
-        gistId: null,
-        lastVersion: null,
+        url: null, // e.g. https://myserver.example/xrntube
+        user: null,
+        password: null,
+        lastVersion: null, // the server's ETag for what we last read or wrote
         lastPulledAt: 0,
         lastPushedAt: 0,
         lastError: null,
@@ -66,18 +65,31 @@
     await chrome.storage.local.set({ [STORAGE.SYNC_KEY]: cfg });
   }
 
-  // ---- GitHub REST helper -------------------------------------------------
-  async function gh(path, opts = {}) {
-    const headers = {
-      Accept: "application/vnd.github+json",
-      Authorization: "Bearer " + cfg.token,
-      "X-GitHub-Api-Version": "2022-11-28"
-    };
-    if (opts.body) headers["Content-Type"] = "application/json";
+  // ---- the server --------------------------------------------------------
+  const enabled = () => !!(cfg && cfg.url && cfg.user);
 
-    const r = await fetch(API + path, { ...opts, headers });
+  function authHeader() {
+    // btoa() takes Latin-1 only; encode first so any password works.
+    const bytes = new TextEncoder().encode(`${cfg.user}:${cfg.password || ""}`);
+    return "Basic " + btoa(String.fromCharCode(...bytes));
+  }
 
-    // Trust GitHub's clock over the device's for merge timestamps. Kept in
+  async function request(method, body, ifMatch) {
+    const headers = { Authorization: authHeader() };
+    if (ifMatch) headers["If-Match"] = ifMatch;
+    let payload;
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      payload = JSON.stringify(body);
+      // A few thousand channels is ~1MB of JSON; gzip it when the browser can.
+      if (typeof CompressionStream === "function") {
+        payload = await new Response(new Blob([payload]).stream().pipeThrough(new CompressionStream("gzip"))).blob();
+        headers["Content-Encoding"] = "gzip";
+      }
+    }
+    const r = await fetch(cfg.url.replace(/\/+$/, "") + "/state", { method, headers, body: payload, cache: "no-store" });
+
+    // Trust the server's clock over the device's for merge timestamps. Kept in
     // memory here; persisted with the rest of cfg at the end of the cycle.
     const dateHeader = r.headers.get("date");
     if (dateHeader) {
@@ -87,92 +99,42 @@
         if (host) host.setClockOffset(offset);
       }
     }
-
     if (!r.ok) {
-      const body = await r.text().catch(() => "");
-      const err = new Error(`GitHub ${r.status} ${r.statusText}${body ? " — " + body.slice(0, 200) : ""}`);
+      const err = new Error(
+        r.status === 401 ? "the server refused the user name or password" : `server answered ${r.status} ${r.statusText}`
+      );
       err.status = r.status;
       throw err;
     }
-    return r.status === 204 ? null : r.json();
-  }
-
-  // ---- gist discovery / creation ----------------------------------------
-  async function ensureGistId(initialSnapshot) {
-    if (cfg.gistId) return cfg.gistId;
-
-    // A device that has synced before will find the gist the first device
-    // created. Gists come back newest-first, so a freshly made one is on
-    // page 1 (a user with >100 gists and an old BlockTube gist is the only
-    // gap here — they'd re-create one, and the next cycle would then have two
-    // to reconcile; rare enough to leave).
-    const mine = await gh("/gists?per_page=100");
-    const hit = (mine || []).find((g) => g.files && g.files[SYNC.GIST_FILENAME]);
-    if (hit) {
-      cfg.gistId = hit.id;
-      return hit.id;
-    }
-
-    const created = await gh("/gists", {
-      method: "POST",
-      body: JSON.stringify({
-        description: SYNC.GIST_DESCRIPTION,
-        public: false,
-        files: { [SYNC.GIST_FILENAME]: { content: pretty(initialSnapshot) } }
-      })
-    });
-    cfg.gistId = created.id;
-    cfg.lastVersion = versionOf(created);
-    // Creating the gist WITH the snapshot is itself the first push — otherwise
-    // the status line reads "last pushed: never" after a successful connect.
-    cfg.lastPushedAt = host.now();
-    return created.id;
+    return r;
   }
 
   async function fetchRemote() {
-    const gist = await gh(`/gists/${cfg.gistId}`);
-    const file = gist.files && gist.files[SYNC.GIST_FILENAME];
+    const r = await request("GET");
     let data = emptySnapshot();
-    if (file) {
-      let content = file.content;
-      // GitHub truncates large file bodies in the gist response; fetch the
-      // raw blob in that case.
-      if (file.truncated && file.raw_url) {
-        content = await fetch(file.raw_url).then((res) => res.text());
-      }
-      try {
-        const parsed = JSON.parse(content);
-        data = {
-          v: SYNC.SCHEMA_VERSION,
-          channels: parsed.channels || {},
-          videos: parsed.videos || {},
-          tombstones: parsed.tombstones || {},
-          keywords: parsed.keywords && Array.isArray(parsed.keywords.list) ? parsed.keywords : { list: [], ts: 0 },
-          allowlist:
-            parsed.allowlist && parsed.allowlist.list && typeof parsed.allowlist.list === "object"
-              ? parsed.allowlist
-              : { list: {}, ts: 0 }
-        };
-      } catch {
-        // Corrupt or hand-edited file — treat as empty; our push heals it.
-      }
+    try {
+      const parsed = await r.json();
+      data = {
+        v: SYNC.SCHEMA_VERSION,
+        channels: parsed.channels || {},
+        videos: parsed.videos || {},
+        tombstones: parsed.tombstones || {},
+        keywords: parsed.keywords && Array.isArray(parsed.keywords.list) ? parsed.keywords : { list: [], ts: 0 },
+        allowlist:
+          parsed.allowlist && parsed.allowlist.list && typeof parsed.allowlist.list === "object"
+            ? parsed.allowlist
+            : { list: {}, ts: 0 }
+      };
+    } catch {
+      // Empty or corrupt document — treat as empty; our push heals it.
     }
-    return { data, version: versionOf(gist) };
+    return { data, version: r.headers.get("etag") };
   }
 
-  async function pushRemote(snapshot, fallbackVersion) {
-    const updated = await gh(`/gists/${cfg.gistId}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        files: { [SYNC.GIST_FILENAME]: { content: pretty(snapshot) } }
-      })
-    });
-    cfg.lastVersion = versionOf(updated) || fallbackVersion || cfg.lastVersion;
+  async function pushRemote(snapshot, version) {
+    const r = await request("PUT", snapshot, version || "*");
+    cfg.lastVersion = r.headers.get("etag") || cfg.lastVersion;
     cfg.lastPushedAt = host.now();
-  }
-
-  function versionOf(gist) {
-    return (gist && gist.history && gist.history[0] && gist.history[0].version) || null;
   }
 
   // ---- merge -----------------------------------------------------------
@@ -217,12 +179,6 @@
     return e ? e.updated_at || e.ts || 0 : -1;
   }
 
-  function stripRuntime(entry) {
-    if (!entry || typeof entry !== "object") return entry;
-    const { localOnly, ...rest } = entry; // localOnly is a per-device fact, never synced
-    return rest;
-  }
-
   // Merge one kind ("channel" / "video"). For each id, the newest surviving
   // entry across both sides competes with the newest tombstone across both
   // sides; the later timestamp wins, an entry taking a tie.
@@ -248,7 +204,7 @@
       const delTs = Math.max(localTombs[tombKey] || -1, remoteTombs[tombKey] || -1);
 
       if (liveTs >= 0 && liveTs >= delTs) {
-        outMap[id] = stripRuntime(liveEntry);
+        outMap[id] = liveEntry;
       } else if (delTs >= 0) {
         outTombs[tombKey] = delTs;
       }
@@ -261,10 +217,6 @@
       if ((tombs[k] || 0) < cutoff) delete tombs[k];
     }
     return tombs;
-  }
-
-  function pretty(snapshot) {
-    return JSON.stringify(snapshot, null, 2);
   }
 
   // Order-independent structural stringify, so a no-op write (same entries,
@@ -297,15 +249,9 @@
     );
   }
 
-  function mapValues(obj, fn) {
-    const out = {};
-    for (const [k, v] of Object.entries(obj || {})) out[k] = fn(v);
-    return out;
-  }
-
   // ---- one cycle: pull, merge, apply locally, push -------------------
-  async function cycle(reason) {
-    if (!cfg || !cfg.token) return { ok: false, reason: "not-configured" };
+  async function cycle() {
+    if (!enabled()) return { ok: false, reason: "not-configured" };
     if (running) {
       rerunQueued = true;
       return { ok: true, deferred: true };
@@ -318,14 +264,13 @@
       const localAllow = await readLocalAllowlist();
       const localSnapshot = {
         v: SYNC.SCHEMA_VERSION,
-        channels: mapValues(local.channels, stripRuntime),
-        videos: mapValues(local.videos, stripRuntime),
+        channels: local.channels,
+        videos: local.videos,
         tombstones: { ...localTombs },
         keywords: localKw,
         allowlist: localAllow
       };
 
-      await ensureGistId(localSnapshot);
       const { data: remote, version } = await fetchRemote();
 
       const merged = emptySnapshot();
@@ -380,6 +325,12 @@
       await persistCfg();
       return { ok: true, changedLocally, pushed };
     } catch (err) {
+      if (err && err.status === 412) {
+        // Another device wrote between our read and our write: start over on
+        // its copy. Nothing was lost — our edits are still in local storage.
+        rerunQueued = true;
+        return { ok: true, deferred: true };
+      }
       cfg.lastError = String((err && err.message) || err);
       await persistCfg().catch(() => {});
       return { ok: false, reason: "error", error: cfg.lastError, status: err && err.status };
@@ -387,60 +338,67 @@
       running = false;
       if (rerunQueued) {
         rerunQueued = false;
-        cycle("rerun");
+        cycle();
       }
     }
   }
 
   // ---- public API (consumed by background.js) --------------------------
-  self.BlockTube.gistSync = {
+  self.XrnTube.serverSync = {
     // Called once, at background.js top level (every worker wake).
     async init(hostImpl) {
       host = hostImpl;
       await loadCfg();
       host.setClockOffset(cfg.clockOffset || 0);
-      if (cfg.token) cycle("init");
+      if (enabled()) cycle();
     },
 
     // From broadcastUpdate() after any local write — schedule a debounced push.
     onLocalChange() {
-      if (!cfg || !cfg.token) return;
+      if (!enabled()) return;
       clearTimeout(pushTimer);
-      pushTimer = setTimeout(() => cycle("local-change"), SYNC.PUSH_DEBOUNCE_MS);
+      pushTimer = setTimeout(() => cycle(), SYNC.PUSH_DEBOUNCE_MS);
     },
 
     // Poll tick — background.js owns the alarm and forwards it here.
     onPoll() {
-      if (cfg && cfg.token) cycle("poll");
+      if (enabled()) cycle();
     },
 
-    // options page: connect with a token, or pass null to disconnect here.
-    async configure(token) {
+    // options page: connect with { url, user, password }, or pass null to
+    // disconnect this device.
+    async configure(conn) {
       clearTimeout(pushTimer);
       await loadCfg();
-      if (!token) {
-        Object.assign(cfg, { token: null, gistId: null, lastVersion: null, lastError: null });
+      if (!conn || !conn.url) {
+        Object.assign(cfg, { url: null, user: null, password: null, lastVersion: null, lastError: null });
         await persistCfg();
         return { ok: true, enabled: false };
       }
-      cfg.token = String(token).trim();
-      cfg.lastError = null;
+      Object.assign(cfg, {
+        url: String(conn.url).trim().replace(/\/+$/, ""),
+        user: String(conn.user || "").trim(),
+        // No password given on reconnect keeps the saved one.
+        password: conn.password !== undefined ? String(conn.password) : cfg.password || "",
+        lastVersion: null,
+        lastError: null
+      });
       await persistCfg();
-      const res = await cycle("configure");
+      const res = await cycle();
       return { ...res, enabled: true };
     },
 
     async syncNow() {
       await loadCfg();
-      return cycle("manual");
+      return cycle();
     },
 
     async status() {
       await loadCfg();
       return {
-        enabled: !!cfg.token,
-        gistId: cfg.gistId || null,
-        gistUrl: cfg.gistId ? "https://gist.github.com/" + cfg.gistId : null,
+        enabled: enabled(),
+        url: cfg.url || null,
+        user: cfg.user || null,
         lastPulledAt: cfg.lastPulledAt || 0,
         lastPushedAt: cfg.lastPushedAt || 0,
         remoteChannels: cfg.remoteChannels || 0,

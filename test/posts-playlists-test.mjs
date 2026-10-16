@@ -86,6 +86,54 @@ if (/\/feed\/subscriptions/.test(url3)) {
     : fail(`${posts} community posts survived on the channel's own Posts tab`);
 }
 
+// ---- 4. search's channel "watch card" is a CHANNEL, not a playlist ----
+// It carries a "play all" link to the channel's uploads playlist, and a
+// playlist by a blocked channel is removed in every mode — so the card that
+// video-only mode exists to keep on screen was being deleted with
+// "playlist by blocked channel UC…", while the JSON filter (where the same
+// card is a channel card) kept it. The rows inside it are separate tiles and
+// must still go.
+// YouTube shows this card for some name queries and not others, so the
+// baseline is measured with nothing blocked rather than assumed — a missing
+// card would otherwise read as a passing "removed" and as a failing "kept".
+const watchCardState = async () => {
+  const page = await ctx.newPage();
+  await page.goto("https://www.youtube.com/results?search_query=mkbhd", { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(9000);
+  const state = await page.evaluate(() => ({
+    card: document.querySelectorAll("ytd-universal-watch-card-renderer").length,
+    rows: [...document.querySelectorAll("ytd-watch-card-compact-video-renderer")].filter((t) => t.offsetParent !== null)
+      .length
+  }));
+  await page.close();
+  return state;
+};
+
+await send({ type: "UNBLOCK_CHANNEL", id: "@MKBHD" });
+await ext.waitForTimeout(1500);
+const baseCard = await watchCardState();
+if (!baseCard.card) {
+  console.log("   (skipped: YouTube served no watch card for this query — nothing to assert against)");
+} else {
+  await send({ type: "BLOCK_CHANNEL", id: "@MKBHD", name: "MKBHD", mode: "exceptWhitelist" });
+  await ext.waitForTimeout(3000);
+  const softCard = await watchCardState();
+  softCard.card > 0
+    ? ok(`video-only block: search's watch card for the channel is still there (${baseCard.card} → ${softCard.card})`)
+    : fail("video-only block deleted search's watch card (it is a channel card, not a playlist)");
+  softCard.rows === 0
+    ? ok(`…and the ${baseCard.rows} videos listed inside it are gone`)
+    : fail(`${softCard.rows} of the channel's videos still listed inside the watch card`);
+
+  // The same card under a FULL block: the channel is supposed to be gone.
+  await send({ type: "SET_CHANNEL_MODE", id: "@MKBHD", mode: "full" });
+  await ext.waitForTimeout(1000);
+  const fullCard = await watchCardState();
+  fullCard.card === 0
+    ? ok("full block: the watch card is gone")
+    : fail(`${fullCard.card} watch card(s) survived a full block`);
+}
+
 await send({ type: "UNBLOCK_CHANNEL", id: "@MKBHD" });
 await ctx.close();
 console.log("\nDONE");

@@ -1,25 +1,20 @@
 {
   "manifest_version": 3,
-  "name": "BlockTube \u2014 Channel & Video Blocker",
-  "version": "1.0.0",
-  "description": "Permanently remove blocked YouTube channels and videos from recommendations, search, and feeds. Blocklist syncs across your signed-in browsers.",
+  "name": "XrnTube — Channel & Video Blocker",
+  "version": "2.0.0",
+  "description": "Permanently remove blocked YouTube channels and videos from recommendations, search, and feeds. Syncs across your browsers through your own server.",
   "permissions": [
     "storage",
     "contextMenus",
     "declarativeNetRequest",
-    "alarms"
+    "alarms",
+    "unlimitedStorage"
   ],
   "host_permissions": [
-    "*://*.youtube.com/*",
-    "https://api.github.com/*"
+    "*://*.youtube.com/*"
   ],
   "background": {
-    "service_worker": "background/background.js",
-    "scripts": [
-      "shared/constants.js",
-      "background/gist-sync.js",
-      "background/background.js"
-    ]
+    "service_worker": "background/background.js"
   },
   "action": {
     "default_popup": "popup/popup.html",
@@ -69,11 +64,5 @@
       "run_at": "document_start",
       "all_frames": true
     }
-  ],
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "blocktube@local.extension",
-      "strict_min_version": "128.0"
-    }
-  }
+  ]
 }
