@@ -2084,6 +2084,34 @@
   const CURB_REMOVE_BUDGET = 150; // per pass, so cleanup never becomes a long task
   const NOTICE_TAG = "bt-blocked-notice";
 
+  // YouTube keeps the pages you came from in the DOM, hidden (`ytd-browse
+  // [hidden]`), so the document's first sentinel or feed is often not the one
+  // on screen. Arriving at a search from a channel's Videos tab, a
+  // document-wide querySelector found the channel grid's sentinel, removed
+  // it, and put the notice inside that hidden page, where nobody saw it — the
+  // search just stopped. Everything below reads the feed that is rendered.
+  const isRendered = (el) => el.getClientRects().length > 0;
+  // The list a feed's tiles and its sentinel live in, desktop and phone. The
+  // child combinators keep a section's own `#contents` (search nests them)
+  // from matching.
+  const FEED_LIST_SEL = [
+    "ytd-section-list-renderer > #contents",
+    "ytd-rich-grid-renderer > #contents",
+    "ytm-section-list-renderer > lazy-list",
+    "ytm-rich-grid-renderer > .rich-grid-renderer-contents"
+  ].join(",");
+  const FEED_PAGE_SEL = "ytd-search, ytd-browse, ytm-search, ytm-browse";
+  // Never the comments' sentinel (desktop's lives in ytd-comments, the
+  // phone's in an engagement panel like every other panel's). On a watch page
+  // it is the document's first, and a dozen blocked related videos were
+  // enough for the curb to stop the comments loading.
+  const NOT_A_FEED_SEL =
+    "ytd-comments, ytd-engagement-panel-section-list-renderer, ytm-engagement-panel-section-list-renderer, ytm-engagement-panel";
+  const activeSentinels = () =>
+    Array.from(document.querySelectorAll(CONTINUATION_SEL)).filter((el) => isRendered(el) && !el.closest(NOT_A_FEED_SEL));
+  const activeFeedList = () => Array.from(document.querySelectorAll(FEED_LIST_SEL)).find(isRendered) || null;
+  const activeNotice = () => Array.from(document.querySelectorAll(NOTICE_TAG)).find(isRendered) || null;
+
   // ---------- the same loop, counted in pages instead of pixels ----------
   // The curb below reads the page: is the sentinel on screen, did we take
   // enough away. That is exactly right for a grid whose height stops growing,
@@ -2141,9 +2169,20 @@
   // surviving tiles — is what makes the check below survive its own cleanup:
   // once the curb has removed everything there is nothing left to count, and a
   // tile-based test would stop recognising the very state it created.
+  //
+  // Two windows. `suppressedOnPage`, the curb's trigger, counts from when the
+  // page has rendered (pageViewRendered()): a first page that came back mostly
+  // blocked is short, its sentinel in range, and YouTube fetching the next
+  // page is exactly right — the curb is for the pages after that, when
+  // nothing that arrives survives. Counting the first page as well stopped a
+  // search for a blocked channel's name after its first two results.
+  // `blockedOnPage`, which the "nothing more to load" line reports, counts
+  // the whole page view from navigation start, first page included.
   let suppressedOnPage = 0;
+  let blockedOnPage = 0;
   function notePageSuppressed(n) {
     suppressedOnPage += n;
+    blockedOnPage += n;
   }
   // ---------- is layer 0 still doing its job? ----------
   // The JSON filter failing is invisible from the outside: the DOM scrub
@@ -2208,15 +2247,36 @@
     };
   }
 
-  function resetPageSuppressed() {
+  // A page view is starting. Called when the navigation STARTS, not when it
+  // finishes: the new page's first response arrives in between, and a reset
+  // at finish wiped what it had counted. Measured: a search reached from a
+  // channel page used up its rounds on that first response, had its
+  // continuation cut, and then lost the exhausted flag (and the tally the
+  // notice needs) to the reset — the feed stopped with nothing saying so.
+  function startPageView() {
     suppressedOnPage = 0;
+    blockedOnPage = 0;
+    health.early = 0;
+    health.dom = 0;
     // A new page view is a new search / a new feed: it gets its own rounds,
-    // and the hook has to start letting continuations through again.
+    // and the hook has to start letting continuations through again — before
+    // the new page's `/next` or `/browse` goes out, or it could cut the
+    // comments (a watch page's `/next` carries their continuation) or the
+    // first page of the feed you just opened.
     const was = feedExhausted;
     emptyRounds = 0;
     feedExhausted = false;
+    feedEndSince = 0;
     if (was) postHookConfig();
     document.querySelectorAll(NOTICE_TAG).forEach((el) => el.remove());
+  }
+
+  // ...and has rendered. The curb's count starts over here (see
+  // notePageSuppressed()), and so do the grace periods measured from it.
+  function pageViewRendered() {
+    suppressedOnPage = 0;
+    pageStartedAt = Date.now();
+    layer0Misses = 0;
   }
 
   // YouTube's infinite feeds fetch the next page whenever a continuation
@@ -2237,14 +2297,25 @@
   // is the load-bearing part, not decoration. It also answers the question a
   // silently blank page raises.
   function curbRunawayFeed() {
-    const sentinel = document.querySelector(CONTINUATION_SEL);
+    const sentinels = activeSentinels();
+    const sentinel = sentinels[0] || null;
     // `feedExhausted` is the other way in: several whole responses in a row
     // carried videos and not one of them survived. That is a fact about what
     // YouTube is sending, not about where the sentinel happens to be, so it
     // skips the geometry tests below — on a search page they are exactly what
     // the loop slips past.
     if (!feedExhausted) {
-      if (!sentinel) return;
+      if (!sentinel) {
+        // Only the surfaces that page results in: a watch page's related
+        // rail is fixed-length, and its end is no news.
+        if (onLayer0Surface()) noteFeedEnd();
+        return;
+      }
+      // More is coming after all (a filter chip, a late response): whatever
+      // "that's everything" line went up is no longer true.
+      feedEndSince = 0;
+      const ended = activeNotice();
+      if (ended && ended.getAttribute("kind") === "end") ended.remove();
       if (suppressedOnPage < CURB_MIN_SUPPRESSED) return; // short, but not by us
       // Match YouTube's own trigger: it fetches while the sentinel is in (or
       // near) the viewport. Testing "can the page scroll at all" is NOT the same
@@ -2253,64 +2324,111 @@
       // viewport), so that test passed while the feed underneath was looping.
       const rect = sentinel.getBoundingClientRect();
       if (rect.top > window.innerHeight * 1.5) return; // out of range; loading normally
-    } else if (!sentinel && document.querySelector(NOTICE_TAG)) {
+    } else if (!sentinel && activeNotice()) {
       return; // already curbed, and nothing new has been asked for since
     }
 
-    document.querySelectorAll(CONTINUATION_SEL).forEach((el) => el.remove());
+    // Insert *where the sentinel was* — inside the feed's own contents — so
+    // the height lands above any sentinel YouTube re-creates. Appending after
+    // the grid leaves the sentinel at the top of the viewport and changes
+    // nothing (measured: still 21 requests in 30s).
+    const host = (sentinel && sentinel.parentNode) || activeFeedList();
+    sentinels.forEach((el) => el.remove());
 
-    // Reclaim whatever is still sitting hidden in the DOM, in bounded batches.
+    // Reclaim whatever is still sitting hidden in this page, in bounded
+    // batches. Only this page: the hidden ones behind it are what Back
+    // restores, tiles and all.
+    const page = (host && host.closest(FEED_PAGE_SEL)) || host;
     let budget = CURB_REMOVE_BUDGET;
-    for (const el of queryTiles(document)) {
+    for (const el of page ? queryTiles(page) : []) {
       if (budget-- <= 0) break;
       if (el.offsetParent === null) el.remove();
     }
 
-    if (!document.querySelector(NOTICE_TAG)) {
-      // Insert *where the sentinel was* — inside the feed's own contents — so
-      // the height lands above any sentinel YouTube re-creates. Appending after
-      // the grid leaves the sentinel at the top of the viewport and changes
-      // nothing (measured: still 21 requests in 30s).
-      const host =
-        (sentinel && sentinel.parentNode) ||
-        document.querySelector(
-          "ytd-section-list-renderer #contents, ytd-rich-grid-renderer #contents, ytd-rich-grid-renderer, ytd-section-list-renderer"
-        );
-      if (host) {
-        const note = document.createElement(NOTICE_TAG);
-        // Inline styles so neither YouTube's stylesheets nor our own can touch
-        // it, and so it matches none of our scrub selectors. min-height is what
-        // actually breaks the loop.
-        note.style.cssText = [
-          "display:flex",
-          "align-items:center",
-          "justify-content:center",
-          "min-height:90vh",
-          "padding:40px 20px",
-          "color:#888",
-          "font:500 14px/1.6 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif",
-          "text-align:center"
-        ].join(";");
-        // Three different situations reach this point, and saying
-        // "everything here is blocked" while a couple of videos are plainly
-        // on screen — which is exactly what an age rule leaves behind — reads
-        // as a bug in the extension.
-        const anythingLeft = queryTiles(document).some((el) => el.offsetParent !== null);
-        note.textContent = feedExhausted
-          ? "XrnTube stopped loading more — the last " +
-            EXHAUST_ROUNDS +
-            " pages of results were entirely blocked. Reload to keep looking."
+    const existing = activeNotice();
+    if (existing && existing.getAttribute("kind") === "stop") return;
+    if (existing) existing.remove(); // an "end" line, now superseded
+    if (!host) return;
+    // Three different situations reach this point, and saying "everything
+    // here is blocked" while a couple of videos are plainly on screen —
+    // which is exactly what an age rule leaves behind — reads as a bug in the
+    // extension.
+    const anythingLeft = queryTiles(page).some((el) => el.offsetParent !== null);
+    host.appendChild(
+      feedNotice(
+        "stop",
+        feedExhausted
+          ? "XrnTube stopped loading more: the last " +
+              EXHAUST_ROUNDS +
+              " pages of results were all blocked, so nothing else is coming. Reload to look further."
           : anythingLeft
-            ? "The rest of this page is blocked by XrnTube."
-            : "Everything here is blocked by XrnTube.";
-        host.appendChild(note);
-        dbg(
-          "runaway feed curbed —",
-          feedExhausted ? EXHAUST_ROUNDS + " empty rounds" : suppressedOnPage + " tiles suppressed",
-          "; continuation stopped"
-        );
-      }
+            ? "XrnTube stopped loading more: everything further down is blocked, so nothing else is coming."
+            : "XrnTube stopped loading more: everything here is blocked."
+      )
+    );
+    dbg(
+      "runaway feed curbed —",
+      feedExhausted ? EXHAUST_ROUNDS + " empty rounds" : suppressedOnPage + " tiles suppressed",
+      "; continuation stopped"
+    );
+  }
+
+  // ---------- the feed ended on its own ----------
+  // Not every stop is ours. YouTube ends a feed too: a search that has run
+  // out, a channel's last video, and — measured on m.youtube.com — a phone
+  // feed after one batch that came back entirely blocked, which leaves no
+  // sentinel and sends no further request. The page just stops, and with
+  // nothing saying so a half-empty feed reads as "still loading". So once the
+  // feed on screen has had no sentinel for a moment, and something on it was
+  // blocked, say that nothing more is coming. A feed we took nothing from
+  // ends however YouTube ends it.
+  const FEED_END_GRACE_MS = 3000; // a page still hydrating has no sentinel yet either
+  const FEED_END_STABLE_MS = 1500; // ...nor, briefly, one trading its sentinel for the next
+  let feedEndSince = 0;
+  function noteFeedEnd() {
+    if (!blockedOnPage) return;
+    const now = Date.now();
+    if (now - pageStartedAt < FEED_END_GRACE_MS) return;
+    if (!feedEndSince) {
+      feedEndSince = now;
+      return;
     }
+    if (now - feedEndSince < FEED_END_STABLE_MS || activeNotice()) return;
+    const host = activeFeedList();
+    if (!host) return;
+    const n = blockedOnPage;
+    host.appendChild(feedNotice("end", `Nothing more to load. XrnTube blocked ${n} result${n === 1 ? "" : "s"} on this page.`));
+    dbg("feed ended with", n, "suppressed — said so");
+  }
+
+  // The line itself. Inline styles so neither YouTube's stylesheets nor our
+  // own can touch it, and so it matches none of our scrub selectors. It sits
+  // right where the next tiles would have appeared. A stop we made also
+  // carries min-height, and that is what actually breaks the loop: the page
+  // gets taller than the viewport, so a sentinel YouTube re-creates lands out
+  // of range. flex-basis / grid-column make it a full row in the rich grid,
+  // which is a wrapping flex container.
+  function feedNotice(kind, text) {
+    const note = document.createElement(NOTICE_TAG);
+    note.setAttribute("kind", kind);
+    note.style.cssText = [
+      "display:block",
+      "box-sizing:border-box",
+      "width:100%",
+      "flex:0 0 100%",
+      "grid-column:1/-1",
+      kind === "stop" ? "min-height:90vh" : "",
+      "margin:8px 0 0",
+      "padding:18px 16px 24px",
+      "border-top:1px solid rgba(128,128,128,.35)",
+      "color:#888",
+      "font:500 14px/1.6 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif",
+      "text-align:center"
+    ]
+      .filter(Boolean)
+      .join(";");
+    note.textContent = text;
+    return note;
   }
 
   // ---------- a blocked channel's OWN page (Videos / Streams / Home tabs) ----------
@@ -3070,19 +3188,7 @@
   window.addEventListener("yt-navigate-start", (e) => {
     const endpoint = e.detail?.endpoint;
     const webUrl = endpoint?.commandMetadata?.webCommandMetadata?.url || "";
-    health.early = 0;
-    health.dom = 0;
-
-    // Lift the continuation block as the navigation STARTS, not when it
-    // finishes. The new page's `/next` (or `/browse`) goes out while it is in
-    // flight, and a watch page's `/next` also carries the "load more
-    // comments" continuation — so clearing this only on `yt-navigate-finish`
-    // could cut the comments of the page you just navigated to.
-    if (feedExhausted) {
-      feedExhausted = false;
-      emptyRounds = 0;
-      postHookConfig();
-    }
+    startPageView(); // the counts and the continuation block belong to the page being left
 
     // Shorts — bail before the player even mounts (toggle-gated).
     if (settings.shortsPlayer && (endpoint?.reelWatchEndpoint || webUrl.startsWith("/shorts"))) {
@@ -3128,12 +3234,20 @@
   // whole new page's worth of content just mounted.
   window.addEventListener("yt-navigate-finish", () => {
     // A soft navigation is a new page view: whatever we bounced off before is
-    // no longer what's on screen, and the suppressed-tile tally starts over.
+    // no longer what's on screen. (Its tallies started at yt-navigate-start.)
     bounced = false;
-    resetPageSuppressed();
-    pageStartedAt = Date.now();
-    layer0Misses = 0;
+    pageViewRendered();
     runExtras(); // the scrub batch + checkCurrentPageAndRedirect()
+  });
+
+  // m.youtube.com announces its navigations as state-navigatestart /
+  // state-navigateend and never fires yt-navigate-*. Without these a phone
+  // kept one page's tally — and its exhaustion brake, under which the hook
+  // cuts every continuation — for every page after it, until a reload.
+  window.addEventListener("state-navigatestart", startPageView);
+  window.addEventListener("state-navigateend", () => {
+    pageViewRendered();
+    scheduleExtrasScrub();
   });
 
   // Back/Forward. A page restored from the back/forward cache does NOT re-run
@@ -3148,9 +3262,8 @@
   });
   window.addEventListener("popstate", () => {
     bounced = false;
-    resetPageSuppressed();
-    pageStartedAt = Date.now();
-    layer0Misses = 0;
+    startPageView();
+    pageViewRendered();
     scheduleExtrasScrub();
     checkCurrentPageAndRedirect();
   });
@@ -3176,8 +3289,10 @@
         anyAgeRule: blockIndex.anyAgeRule,
         // The runaway-feed state, so a test (and a bug report) can tell WHICH
         // brake stopped a feed: `suppressedOnPage` drives the geometry curb,
-        // `emptyRounds`/`feedExhausted` the round counter.
+        // `emptyRounds`/`feedExhausted` the round counter, `blockedOnPage`
+        // the "nothing more to load" line.
         suppressedOnPage,
+        blockedOnPage,
         emptyRounds,
         feedExhausted,
         settings,
