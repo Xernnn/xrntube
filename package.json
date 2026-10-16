@@ -3,10 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "for f in background/*.js shared/*.js content/*.js popup/*.js options/*.js test/*.mjs; do node --check \"$f\" || exit 1; done && node -e \"JSON.parse(require('fs').readFileSync('manifest.json','utf8'))\" && echo OK",
+    "check": "for f in background/*.js shared/*.js content/*.js popup/*.js options/*.js scripts/*.mjs test/*.mjs; do node --check \"$f\" || exit 1; done && node -e \"JSON.parse(require('fs').readFileSync('manifest.json','utf8'))\" && python3 -c \"import ast; ast.parse(open('server/xrntube-sync.py').read())\" && echo OK",
     "test": "node test/run.mjs",
     "test:fast": "RETRY=0 node test/run.mjs locale-age contextmenu datalayer-test tilescope datatools serversync",
-    "package": "node scripts/package.mjs"
+    "package": "node scripts/package.mjs",
+    "test:canary": "node scripts/canary.mjs"
   },
   "devDependencies": {
     "playwright": "^1.47.0"
