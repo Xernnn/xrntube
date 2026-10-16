@@ -391,27 +391,42 @@
       ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-macro-markers-auto-chapters"]
         { display: none !important; }`,
     commentsTwoColumn: `
-      /* Comments in two columns. Only the thread list is columnised \u2014 the
+      /* Comments in two columns. Only the thread list is laid out \u2014 the
          header ("1,234 Comments" + the sort control) is a sibling of
          #contents, not inside it, so it keeps the full width on its own.
-         break-inside on the threads is the load-bearing part: without it a
-         long comment is sliced across the column boundary mid-sentence.
-         The continuation sentinel spans both columns so it stays at the
-         bottom where YouTube expects to find it when it pages in more. */
+         Not CSS columns: those balance the whole list, so every batch that
+         loaded moved the split point and the top of the right column slid
+         into the bottom of the left. layoutCommentColumns() places each
+         thread instead, once, in whichever column was shorter, and it stays
+         there; [bt-cols] marks a list it manages. Until then (and if it ever
+         can't) a plain two-column grid stands in, which never moves a
+         thread either. Anything that isn't a thread \u2014 the continuation
+         sentinel, the cap notice \u2014 takes the full width below. */
       ytd-comments#comments ytd-item-section-renderer#sections > #contents {
-        column-count: 2;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
         column-gap: 32px;
+        align-items: start;
       }
       ytd-comments#comments ytd-item-section-renderer#sections > #contents > ytd-comment-thread-renderer {
-        break-inside: avoid;
-        -webkit-column-break-inside: avoid;
         display: block;
-        width: 100%;
+        min-width: 0;
         margin-bottom: 8px;
       }
-      ytd-comments#comments ytd-item-section-renderer#sections > #contents > ytd-continuation-item-renderer,
-      ytd-comments#comments ytd-item-section-renderer#sections > #contents > bt-comment-cap {
-        column-span: all;
+      ytd-comments#comments ytd-item-section-renderer#sections > #contents > :not(ytd-comment-thread-renderer) {
+        grid-column: 1 / -1;
+      }
+      ytd-comments#comments ytd-item-section-renderer#sections > #contents[bt-cols] {
+        display: block;
+        position: relative;
+        padding-top: var(--bt-cols-h, 0px);
+      }
+      ytd-comments#comments ytd-item-section-renderer#sections > #contents[bt-cols] > ytd-comment-thread-renderer {
+        position: absolute;
+        top: var(--bt-y, 0px);
+        left: calc(var(--bt-x, 0) * (50% + 16px));
+        width: calc(50% - 16px);
+        margin: 0;
       }`,
     descriptionInfocards: `
       /* The creator's channel card under a video's description \u2014 avatar,
@@ -1876,6 +1891,80 @@
     dbg("comments capped at", limit);
   }
 
+  // ---------- two comment columns that only ever grow ----------
+  // `commentsTwoColumn`. Each thread is put in whichever column is shorter
+  // when it first appears, and never changes column after: a batch that loads
+  // lands under both columns, and what you were reading stays where it was.
+  // (CSS columns rebalanced the whole list on every batch; see the
+  // commentsTwoColumn rule.) A thread that grows — replies opened, "Read
+  // more" — pushes down only the threads below it in its own column.
+  //
+  // The observers watch this one list, not the document, so they are no
+  // exception to the per-mutation rule: a new batch has to be placed before
+  // it paints, or it shows for a frame stacked at the top. The MutationObserver
+  // callback runs before paint as a microtask, the ResizeObserver one after
+  // layout and before paint.
+  const COMMENT_LIST_SEL = "ytd-comments#comments ytd-item-section-renderer#sections > #contents";
+  const COMMENT_ROW_GAP = 8; // px between threads in a column, as the grid fallback has
+  let commentCols = null; // { list, mo, ro, col: WeakMap<thread, 0|1> }
+
+  function syncCommentColumns() {
+    const list = settings.commentsTwoColumn ? document.querySelector(COMMENT_LIST_SEL) : null;
+    if (commentCols && commentCols.list === list) return;
+    if (commentCols) {
+      const old = commentCols;
+      commentCols = null;
+      old.mo.disconnect();
+      old.ro.disconnect();
+      old.list.removeAttribute("bt-cols");
+      old.list.style.removeProperty("--bt-cols-h");
+      for (const el of old.list.children) {
+        el.style.removeProperty("--bt-x");
+        el.style.removeProperty("--bt-y");
+      }
+    }
+    if (!list) return;
+    const state = { list, col: new WeakMap() };
+    state.ro = new ResizeObserver(() => layoutCommentColumns(state));
+    state.mo = new MutationObserver((muts) => {
+      for (const m of muts) {
+        m.addedNodes.forEach((n) => n.tagName === "YTD-COMMENT-THREAD-RENDERER" && state.ro.observe(n));
+        m.removedNodes.forEach((n) => n.tagName === "YTD-COMMENT-THREAD-RENDERER" && state.ro.unobserve(n));
+      }
+      layoutCommentColumns(state);
+    });
+    state.mo.observe(list, { childList: true });
+    for (const el of list.children) if (el.tagName === "YTD-COMMENT-THREAD-RENDERER") state.ro.observe(el);
+    commentCols = state;
+    list.setAttribute("bt-cols", "");
+    layoutCommentColumns(state);
+  }
+
+  function layoutCommentColumns(state) {
+    if (commentCols !== state) return; // detached; a late observer callback
+    const threads = [];
+    for (const el of state.list.children) if (el.tagName === "YTD-COMMENT-THREAD-RENDERER") threads.push(el);
+    // An emptied list is a new one (another video): YouTube re-uses thread
+    // elements for the next set, and they shouldn't inherit columns chosen
+    // for the comments they used to show.
+    if (!threads.length) state.col = new WeakMap();
+    // Every read before any write: one layout, not one per thread.
+    const heights = threads.map((el) => el.offsetHeight);
+    const colH = [0, 0];
+    for (let i = 0; i < threads.length; i += 1) {
+      const el = threads[i];
+      let c = state.col.get(el);
+      if (c === undefined) {
+        c = colH[1] < colH[0] ? 1 : 0;
+        state.col.set(el, c);
+      }
+      el.style.setProperty("--bt-x", String(c));
+      el.style.setProperty("--bt-y", colH[c] + "px");
+      if (heights[i]) colH[c] += heights[i] + COMMENT_ROW_GAP; // a hidden thread takes no gap either
+    }
+    state.list.style.setProperty("--bt-cols-h", Math.max(colH[0], colH[1]) + "px");
+  }
+
   function scrubMembersOnly(root) {
     if (!anyOn(MEMBERSHIP_KEYS)) return;
     if (!root.querySelectorAll) return;
@@ -2652,6 +2741,7 @@
     scrubPosts(document.documentElement);
     scrubComments(document.documentElement);
     capComments(document.documentElement);
+    syncCommentColumns();
     curbRunawayFeed();
     // A fresh (non-SPA) load renders its metadata long after the blocklist
     // arrives, and "yt-navigate-finish" is not guaranteed to fire for it — so
