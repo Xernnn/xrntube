@@ -68,6 +68,12 @@ self.XrnTube.MSG = {
   GET_SYNC_STATUS: "GET_SYNC_STATUS",
   SET_SYNC_CONFIG: "SET_SYNC_CONFIG",
   SYNC_NOW: "SYNC_NOW",
+  // The server's earlier copies of the document: SYNC_HISTORY lists them
+  // ({ items: [{ name, version, updated, channels, videos }] }),
+  // SYNC_HISTORY_GET { name } returns one, which the options page restores
+  // through its ordinary import preview.
+  SYNC_HISTORY: "SYNC_HISTORY",
+  SYNC_HISTORY_GET: "SYNC_HISTORY_GET",
   // Channel allow-list ("never block these"): a hard override that wins over
   // every block path — a collaborator block, a title-keyword / duration
   // filter, an age rule. ALLOW_CHANNEL adds a key ("UC…" or "@handle"),
@@ -103,13 +109,21 @@ self.XrnTube.STORAGE = {
   // chrome.storage.local. Tombstones record deletions so the sync merge doesn't
   // resurrect an entry another device already unblocked: { "channel:<key>" |
   // "video:<id>": <deletedAtMs> }. Pruned once older than TOMBSTONE_TTL_MS.
+  // A year, not a month: a device that comes back after the TTL no longer
+  // sees the deletion and pushes the entry back. A few thousand tombstones are
+  // tens of KB in the sync document, which is cheap against that.
   TOMBSTONE_KEY: "bt_tombstones",
-  TOMBSTONE_TTL_MS: 30 * 24 * 60 * 60 * 1000,
+  TOMBSTONE_TTL_MS: 365 * 24 * 60 * 60 * 1000,
   // chrome.storage.local. The sync record — server address, user name and
   // password, last seen version, timestamps, last error, and the device's
   // clock offset vs. the server. Deliberately in local (not sync) storage: the
   // password must not ride chrome.storage.sync to other browsers.
-  SYNC_KEY: "bt_sync"
+  SYNC_KEY: "bt_sync",
+  // chrome.storage.local. What this device and the server agreed on at the end
+  // of the last sync, for the small records with no tombstones — keyword
+  // ids and bounds, never-block keys, settings. The three-way merge in
+  // server-sync.js reads a deletion off it: in the base, gone from one side.
+  SYNC_BASE_KEY: "bt_sync_base"
 };
 
 // Feature toggles for the always-on, non-blocklist behaviours. Stored as one

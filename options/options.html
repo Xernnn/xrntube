@@ -312,8 +312,8 @@
                 browser on your phone &mdash; points at the same small sync service
                 (<code>server/xrntube-sync.py</code> in this repository) running on your
                 own server. Enter its address and your login once on each device; the
-                blocklist, keywords and never-block list then stay in step, with
-                deletions carried across too.
+                blocklist, keywords, never-block list and your &ldquo;What gets hidden&rdquo;
+                switches then stay in step, with deletions carried across too.
               </p>
               <div class="sync-form">
                 <input id="sync-url" type="url" placeholder="https://your-server.example/xrntube" autocomplete="off" spellcheck="false" />
@@ -324,6 +324,7 @@
               <div class="sync-status" id="sync-status" hidden></div>
               <div class="sync-actions" id="sync-actions" hidden>
                 <button id="sync-now" class="btn">Sync now</button>
+                <button id="sync-history" class="btn">Restore an earlier copy&hellip;</button>
                 <button id="sync-disconnect" class="btn sync-danger">Disconnect this device</button>
               </div>
             </section>

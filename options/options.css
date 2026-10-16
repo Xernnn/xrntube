@@ -700,6 +700,10 @@ a.drawer-btn { text-decoration: none; display: inline-flex; align-items: center;
 .plan > li { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line-2); }
 .plan > li:last-child { border-bottom: 0; }
 .plan input[type="checkbox"] { margin-top: 3px; accent-color: var(--focus); }
+.plan input[type="radio"] { margin-top: 3px; accent-color: var(--focus); }
+/* Restore an earlier copy: up to ~70 rows, so the list scrolls inside the dialog. */
+.history-list { max-height: 46vh; overflow-y: auto; }
+.history-list > li { cursor: pointer; }
 .plan .plan-title { color: var(--ink); font-weight: 600; }
 .plan .plan-sub { color: var(--ink-3); font-size: 12.5px; }
 .skipped { margin-top: 6px; }

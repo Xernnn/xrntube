@@ -12,6 +12,10 @@ import { chromium } from "playwright";
 //   - two devices writing at once both keep their edits (the 412 path)
 //   - keywords travel with the blocklist
 //   - a wrong password is refused, with a readable error
+//   - settings, keywords and the never-block list merge item by item: two
+//     devices each changing a different one keep both, a deletion travels
+//   - the server keeps earlier copies, and restoring one through the options
+//     page brings back what a "delete everything" took, on both devices
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -58,9 +62,13 @@ async function settle(...devs) {
 }
 const stamped = (name) => ({ name, mode: "full", subsAt: Date.now(), subsV: 9 });
 
+// Closed in `finally` too: an exception that skipped the closes left both
+// browsers running and the process waiting on them until the runner's timeout.
+let A;
+let B;
 try {
-  const A = await device("A");
-  const B = await device("B");
+  A = await device("A");
+  B = await device("B");
 
   // ---- wrong password ----
   const bad = await A.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_, user: USER, password: "nope" } });
@@ -109,11 +117,125 @@ try {
     ? ok("status reports the server, no error, and the right count")
     : fail("status: " + JSON.stringify(st));
 
-  await A.ctx.close();
-  await B.ctx.close();
+  // ---- settings: one shared set, merged switch by switch ----
+  const setSwitch = (d, key, on) =>
+    d.p.evaluate(
+      ([k, v]) =>
+        chrome.storage.sync.get("bt_settings").then((r) =>
+          chrome.storage.sync.set({ bt_settings: { ...XrnTube.resolveSettings(r.bt_settings), [k]: v } })
+        ),
+      [key, on]
+    );
+  const switches = async (d) => d.p.evaluate(() => chrome.storage.sync.get("bt_settings").then((r) => XrnTube.resolveSettings(r.bt_settings)));
+  await settle(A, B);
+  await setSwitch(A, "sidebarExplore", false);
+  await setSwitch(B, "actionClip", false);
+  await settle(A, B);
+  const sA = await switches(A);
+  const sB = await switches(B);
+  sA.sidebarExplore === false && sA.actionClip === false && sB.sidebarExplore === false && sB.actionClip === false
+    ? ok("a switch flipped on each device reaches the other, and neither undoes the other's")
+    : fail(`settings: A=${sA.sidebarExplore}/${sA.actionClip} B=${sB.sidebarExplore}/${sB.actionClip}`);
+
+  // ---- keywords: item by item, deletions included, bounds carried ----
+  // { add, drop, set } — data, not code: the options page's CSP forbids eval.
+  const editKw = (d, op) =>
+    d.p.evaluate(
+      ({ add, drop, set }) =>
+        chrome.storage.sync.get("bt_keywords").then((r) => {
+          const k = r.bt_keywords || { list: [] };
+          let list = k.list.filter((x) => x.p !== drop);
+          if (add) list = [{ p: add, re: false }, ...list];
+          return chrome.storage.sync.set({ bt_keywords: { ...k, ...(set || {}), list, ts: Date.now() } });
+        }),
+      op
+    );
+  const kwOf = async (d) => (await d.p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+  await editKw(A, { add: "from-a" });
+  await editKw(B, { add: "from-b" });
+  await settle(A, B);
+  const kwA = (await kwOf(A)).list.map((k) => k.p).sort();
+  const kwB = (await kwOf(B)).list.map((k) => k.p).sort();
+  JSON.stringify(kwA) === JSON.stringify(["from-a", "from-b", "reaction"]) && JSON.stringify(kwA) === JSON.stringify(kwB)
+    ? ok("a keyword added on each device between syncs: both survive, on both (" + kwA.join(", ") + ")")
+    : fail(`keywords after concurrent adds: A=${kwA} B=${kwB}`);
+  await editKw(B, { drop: "reaction" });
+  await editKw(A, { set: { commentLimit: 12 } });
+  await settle(B, A);
+  const kwA2 = await kwOf(A);
+  const kwB2 = await kwOf(B);
+  !kwA2.list.some((k) => k.p === "reaction") && kwA2.list.length === 2 && kwB2.commentLimit === 12 && kwA2.commentLimit === 12
+    ? ok("a keyword deleted on B is deleted on A; A's comment limit reaches B")
+    : fail(`keyword delete / commentLimit: A=${JSON.stringify(kwA2)} B=${JSON.stringify(kwB2)}`);
+
+  // ---- never-block list: same ----
+  await A.send({ type: "ALLOW_CHANNEL", id: "@keep-a" });
+  await B.send({ type: "ALLOW_CHANNEL", id: "@keep-b" });
+  await settle(A, B);
+  const alOf = async (d) => Object.keys((await d.send({ type: "GET_BLOCKLIST" })).allowlist || {}).sort();
+  const alA = await alOf(A);
+  JSON.stringify(alA) === JSON.stringify(["@keep-a", "@keep-b"]) && JSON.stringify(alA) === JSON.stringify(await alOf(B))
+    ? ok("a never-block entry added on each device: both survive, on both")
+    : fail(`allowlist: A=${alA} B=${await alOf(B)}`);
+  await A.send({ type: "DISALLOW_CHANNEL", id: "@keep-b" });
+  await settle(A, B);
+  JSON.stringify(await alOf(B)) === JSON.stringify(["@keep-a"])
+    ? ok("removing a never-block entry on A removes it on B")
+    : fail("allowlist removal didn't travel: " + (await alOf(B)));
+
+  // ---- agreement is stable: nothing to push means no push ----
+  // A merge that never quite matches what the server holds (a field one side
+  // normalises and the other doesn't) pushes on every cycle — every 3 minutes
+  // per device, forever, each push another history copy.
+  await new Promise((r) => setTimeout(r, 5000)); // let the debounced pushes land
+  await settle(A, B);
+  const versionOnDisk = () => JSON.parse(readFileSync(join(dir, "data/users", USER, "state.json"), "utf8")).version;
+  const vBefore = versionOnDisk();
+  await settle(A, B);
+  const vAfter = versionOnDisk();
+  vAfter === vBefore
+    ? ok(`once both devices agree, more syncing pushes nothing (still v${vAfter})`)
+    : fail(`idle syncing kept pushing: v${vBefore} → v${vAfter}`);
+
+  // ---- the server's history, and restoring from it ----
+  const beforeWipe = Object.keys(await A.list()).sort();
+  await A.send({ type: "DELETE_DATA", channels: "all", videos: "all" });
+  await settle(A, B);
+  Object.keys(await B.list()).length === 0
+    ? ok("delete everything on A empties B too (the case history exists for)")
+    : fail("wipe didn't travel: " + Object.keys(await B.list()));
+  // The pushes after the wipe were kept too (empty); the copy to restore is
+  // the newest one that still has channels — what a user would pick.
+  const hist = await B.send({ type: "SYNC_HISTORY" });
+  const items = (hist && hist.ok && hist.items) || [];
+  const pick = items.findIndex((it) => it.channels > 0);
+  pick >= 0 && items[pick].channels === beforeWipe.length && items.every((it, i) => !i || items[i - 1].name > it.name)
+    ? ok(`the server lists ${items.length} earlier copies, newest first; the last one before the wipe has all ${beforeWipe.length} channels`)
+    : fail("history: " + JSON.stringify(hist).slice(0, 300));
+
+  await B.p.locator(".page-tab[data-page='sync']").click();
+  await B.p.locator("#sync-history").click();
+  await B.p.locator("#modal:not([hidden]) .history-list li").first().waitFor({ timeout: 5000 });
+  await B.p.locator("#modal:not([hidden]) .history-list li").nth(Math.max(0, pick)).click();
+  await B.p.locator("#modal-confirm").click(); // Preview
+  await B.p.locator("#modal:not([hidden]) ul.plan:not(.history-list)").waitFor({ timeout: 5000 });
+  const previewText = await B.p.locator("#modal-body").innerText();
+  await B.p.locator("#modal-confirm").click(); // Import
+  await B.p.waitForTimeout(1000);
+  await settle(B, A);
+  const restoredA = Object.keys(await A.list()).sort();
+  const restoredB = Object.keys(await B.list()).sort();
+  /server's copy from/.test(previewText) &&
+  JSON.stringify(restoredB) === JSON.stringify(beforeWipe) &&
+  JSON.stringify(restoredA) === JSON.stringify(beforeWipe)
+    ? ok(`restoring that copy on B brings all ${beforeWipe.length} channels back on both devices, past A's tombstones`)
+    : fail(`restore: preview=${JSON.stringify(previewText.slice(0, 120))} A=${restoredA} B=${restoredB} want=${beforeWipe}`);
+
 } catch (e) {
   fail(e.stack || String(e));
 } finally {
+  await A?.ctx.close().catch(() => {});
+  await B?.ctx.close().catch(() => {});
   server.kill();
   if (process.exitCode) console.log("server log:\n" + serverLog.slice(-1500));
 }

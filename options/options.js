@@ -2151,8 +2151,92 @@ const sync = {
   status: $("sync-status"),
   actions: $("sync-actions"),
   now: $("sync-now"),
+  history: $("sync-history"),
   disconnect: $("sync-disconnect")
 };
+
+// The server keeps the copy each push replaces (server/xrntube-sync.py →
+// history). Restoring one is an import, not a rollback: entries come back
+// with fresh timestamps, so they beat the tombstones every other device holds
+// for them, and nothing added since is removed. Writing the old copy back to
+// the server would lose to those tombstones on the next sync.
+async function restoreFromServerHistory() {
+  const res = await send({ type: MSG.SYNC_HISTORY });
+  if (!res || !res.ok) {
+    const why =
+      res && res.status === 404
+        ? "this server keeps no history — update server/xrntube-sync.py on it."
+        : (res && res.error) || "unknown error";
+    toast("Couldn't list the server's copies: " + why, { error: true, ms: 8000 });
+    return;
+  }
+  if (!res.items.length) {
+    await openModal({
+      title: "No earlier copies yet",
+      body: "The server keeps one each time a device pushes a change, so there will be some after the next edit.",
+      confirmLabel: "Close",
+      noCancel: true
+    });
+    return;
+  }
+  const when = (it) => (it.updated ? new Date(it.updated).toLocaleString() : it.name);
+  let picked = res.items[0].name;
+  const list = h(
+    "ul",
+    { class: "plan history-list" },
+    res.items.map((it, i) => {
+      const radio = h("input", { type: "radio", name: "sync-history", value: it.name, checked: i === 0 });
+      const choose = () => {
+        radio.checked = true;
+        picked = it.name;
+      };
+      return h(
+        "li",
+        { onclick: choose },
+        radio,
+        h(
+          "div",
+          null,
+          h("div", { class: "plan-title", text: when(it) }),
+          h("div", {
+            class: "plan-sub",
+            text: [
+              plural(it.channels || 0, "channel"),
+              plural(it.videos || 0, "video"),
+              plural(it.keywords || 0, "keyword"),
+              `${(it.allowlist || 0).toLocaleString()} never-block`,
+              `version ${it.version}`
+            ].join(" · ")
+          })
+        )
+      );
+    })
+  );
+  const go = await openModal({
+    title: "Restore an earlier copy",
+    body: [
+      "Each copy is the whole list as it stood at that time. Restoring adds back what it has and this list doesn't — nothing added since is removed. You'll see what it contains before anything changes.",
+      list
+    ],
+    confirmLabel: "Preview"
+  });
+  if (!go) return;
+  const item = await send({ type: MSG.SYNC_HISTORY_GET, name: picked });
+  if (!item || !item.ok) {
+    toast("Couldn't fetch that copy: " + ((item && item.error) || "unknown error"), { error: true });
+    return;
+  }
+  let plan;
+  try {
+    plan = buildImportPlan(item.data);
+  } catch (err) {
+    toast("That copy can't be read: " + err.message, { error: true });
+    return;
+  }
+  const meta = res.items.find((it) => it.name === picked);
+  plan.source = `the server's copy from ${meta ? when(meta) : picked}`;
+  await previewAndImport(plan);
+}
 
 async function renderSyncStatus() {
   const s = await send({ type: MSG.GET_SYNC_STATUS });
@@ -2233,6 +2317,15 @@ function initSync() {
     if (res && res.ok === false && res.error) toast("Sync failed: " + res.error, { error: true });
     await renderSyncStatus();
     refresh();
+  });
+
+  sync.history.addEventListener("click", async () => {
+    sync.history.disabled = true;
+    try {
+      await restoreFromServerHistory();
+    } finally {
+      sync.history.disabled = false;
+    }
   });
 
   sync.disconnect.addEventListener("click", async () => {

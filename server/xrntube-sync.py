@@ -10,8 +10,17 @@ calendar password is the sync password).
     PUT  /state            needs If-Match: "<version>" (or "*" to overwrite)
                            200 with the new ETag, or 412 if someone else wrote
                            first — re-read, merge, try again
+    GET  /history          the earlier copies kept, newest first:
+                           {"items": [{name, version, updated, channels, videos,
+                           keywords, allowlist}]}
+    GET  /history/<name>   one of them, as the document GET /state would give
     GET  /download/<file>  a file from <data>/downloads (the extension's .zip)
     GET  /health           200 "ok", no login (for monitoring)
+
+Every write keeps the copy it replaces, gzipped, under <data>/users/<user>/
+history: the newest --keep-recent of them, plus the newest of each of the
+last --keep-days days. A "Delete everything" on one device reaches all of
+them within a sync, so this is what gets the list back.
 
 Any path may carry the mount prefix (/xrntube/state), so it works whether or
 not the proxy strips it. Responses allow any origin (CORS): the browser
@@ -26,10 +35,11 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bcrypt
@@ -99,6 +109,92 @@ def write_state(user, doc):
     os.replace(tmp, path)
 
 
+# ---- history ---------------------------------------------------------------
+# One file per kept copy, named by when that copy was written, so names sort
+# chronologically: 20261016T141503Z-v00000042.json.gz. index.json beside them
+# holds each one's counts, so listing doesn't decompress a few MB per request.
+HISTORY_NAME = re.compile(r"\d{8}T\d{6}Z-v\d{8}\.json\.gz")
+
+
+def history_dir(user):
+    return os.path.join(args.data, "users", user, "history")
+
+
+def read_index(d):
+    try:
+        with open(os.path.join(d, "index.json"), encoding="utf-8") as f:
+            index = json.load(f)
+        return index if isinstance(index, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def archive(user, doc):
+    """Keep `doc`, the copy a write is about to replace. Caller holds `lock`."""
+    if not doc.get("version"):
+        return  # nothing was ever written
+    try:
+        written = datetime.fromisoformat(doc["updated"])
+    except (KeyError, TypeError, ValueError):
+        written = datetime.now(timezone.utc)
+    d = history_dir(user)
+    os.makedirs(d, exist_ok=True)
+    name = f"{written.astimezone(timezone.utc):%Y%m%dT%H%M%SZ}-v{doc['version']:08d}.json.gz"
+    tmp = os.path.join(d, name + ".tmp")
+    with gzip.open(tmp, "wt", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, separators=(",", ":"))
+    os.replace(tmp, os.path.join(d, name))
+
+    data = doc.get("data") or {}
+
+    def count(v):
+        return len(v) if isinstance(v, (dict, list)) else 0
+
+    index = read_index(d)
+    index[name] = {
+        "version": doc["version"],
+        "updated": written.isoformat(),
+        "channels": count(data.get("channels")),
+        "videos": count(data.get("videos")),
+        "keywords": count((data.get("keywords") or {}).get("list")),
+        "allowlist": count((data.get("allowlist") or {}).get("list")),
+    }
+    names = prune(d)
+    index = {n: meta for n, meta in index.items() if n in names}
+    tmp = os.path.join(d, "index.json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(index, f)
+    os.replace(tmp, os.path.join(d, "index.json"))
+
+
+def prune(d):
+    """Drop what the retention rule doesn't keep; return the names left."""
+    names = sorted(n for n in os.listdir(d) if HISTORY_NAME.fullmatch(n))
+    keep = set(names[-args.keep_recent:]) if args.keep_recent > 0 else set()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=args.keep_days)).strftime("%Y%m%d")
+    newest_of_day = {}
+    for n in names:  # ascending, so the last one seen per day is its newest
+        if n[:8] >= cutoff:
+            newest_of_day[n[:8]] = n
+    keep |= set(newest_of_day.values())
+    for n in names:
+        if n not in keep:
+            try:
+                os.remove(os.path.join(d, n))
+            except OSError:
+                pass
+    return keep
+
+
+def list_history(user):
+    d = history_dir(user)
+    if not os.path.isdir(d):
+        return []
+    index = read_index(d)
+    names = sorted((n for n in os.listdir(d) if HISTORY_NAME.fullmatch(n)), reverse=True)
+    return [{"name": n, **index.get(n, {})} for n in names]
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "xrntube-sync/1"
 
@@ -157,6 +253,18 @@ class Handler(BaseHTTPRequestHandler):
                 doc = read_state(user)
             body = json.dumps(doc.get("data") or {}, ensure_ascii=False, separators=(",", ":"))
             return self.send(200, body, "application/json; charset=utf-8", {"ETag": f'"{doc["version"]}"'})
+        if path == "/history":
+            with lock:
+                items = list_history(user)
+            return self.send(200, json.dumps({"items": items}), "application/json; charset=utf-8")
+        if path.startswith("/history/"):
+            name = os.path.basename(path[len("/history/"):])
+            file = os.path.join(history_dir(user), name)
+            if HISTORY_NAME.fullmatch(name) and os.path.isfile(file):
+                with gzip.open(file, "rt", encoding="utf-8") as f:
+                    doc = json.load(f)
+                body = json.dumps(doc.get("data") or {}, ensure_ascii=False, separators=(",", ":"))
+                return self.send(200, body, "application/json; charset=utf-8")
         if path.startswith("/download/"):
             name = os.path.basename(path[len("/download/"):])
             file = os.path.join(args.data, "downloads", name)
@@ -199,6 +307,10 @@ class Handler(BaseHTTPRequestHandler):
             if want != "*" and want.strip('"') != str(cur["version"]):
                 return self.send(412, "changed since you read it", headers={"ETag": f'"{cur["version"]}"'})
             version = cur["version"] + 1
+            try:
+                archive(user, cur)
+            except OSError as e:  # a full disk must not stop sync itself
+                sys.stderr.write(f"history: could not keep v{cur['version']} for {user}: {e}\n")
             write_state(user, {"version": version, "updated": datetime.now(timezone.utc).isoformat(), "data": data})
         self.send(200, '{"ok":true}', "application/json", {"ETag": f'"{version}"'})
 
@@ -210,6 +322,8 @@ def main():
     p.add_argument("--port", type=int, default=5233)
     p.add_argument("--data", required=True, help="where the documents live")
     p.add_argument("--users", required=True, help="htpasswd file with bcrypt hashes")
+    p.add_argument("--keep-recent", type=int, default=40, help="earlier copies kept regardless of age")
+    p.add_argument("--keep-days", type=int, default=30, help="days for which the day's newest copy is kept")
     args = p.parse_args()
     args.data = os.path.expanduser(args.data)
     args.users = os.path.expanduser(args.users)

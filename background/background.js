@@ -1407,6 +1407,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse(await self.XrnTube.serverSync.syncNow());
         break;
       }
+      case MSG.SYNC_HISTORY: {
+        sendResponse(await self.XrnTube.serverSync.history());
+        break;
+      }
+      case MSG.SYNC_HISTORY_GET: {
+        sendResponse(await self.XrnTube.serverSync.historyItem(msg.name));
+        break;
+      }
       default:
         break;
     }
@@ -1539,8 +1547,18 @@ loadSweep().then((s) => {
 // The homepage/Shorts network redirects are toggle-gated in rebuildDnrRules,
 // so a settings change has to rebuild the DNR rule set. (content.js watches
 // bt_settings itself for its own behaviours.)
+//
+// Settings, keywords and the never-block list are written straight to
+// chrome.storage.sync by whichever page edits them, never through
+// broadcastUpdate(), so this is where the server sync hears about them. A
+// change the sync cycle itself wrote lands here too; the cycle it schedules
+// finds nothing to push.
 chrome.storage.onChanged.addListener(async (changes, area) => {
-  if (area === "sync" && changes[SETTINGS_KEY]) {
+  if (area !== "sync") return;
+  if (changes[SETTINGS_KEY] || changes[KEYWORDS_KEY] || changes[ALLOWLIST_KEY]) {
+    self.XrnTube.serverSync.onLocalChange();
+  }
+  if (changes[SETTINGS_KEY]) {
     await rebuildDnrRules(await loadAll());
   }
 });
