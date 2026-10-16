@@ -840,6 +840,12 @@
       if (e.source !== window) return;
       const d = e.data;
       if (!d) return;
+      // content.js started after our "hello" went out and asks again; the
+      // popup's health line reads "the early filter is running" off this.
+      if (d.__xrntube === "ping") {
+        window.postMessage({ __xrntube: "hello" }, location.origin);
+        return;
+      }
       if (d.__xrntube === "config") {
         const was = active;
         active = !!d.active;
@@ -889,7 +895,8 @@
   });
 
   // content.js may come up before or after this file, so announce rather than
-  // assume. It replies with a "config", and posts one again whenever the
-  // blocklist or filters change.
+  // assume (and answer its "ping", for when it comes up after). It replies
+  // with a "config", and posts one again whenever the blocklist or filters
+  // change.
   window.postMessage({ __xrntube: "hello" }, location.origin);
 })();

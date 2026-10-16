@@ -1305,6 +1305,7 @@
       return;
     }
     if (d.__xrntube !== "judge" || !Array.isArray(d.items)) return;
+    pageHookPresent = true; // a judge is proof too, if the hello was missed
     const blocked = [];
     for (let i = 0; i < d.items.length; i += 1) {
       let reason = null;
@@ -1326,6 +1327,7 @@
     // fully-blocked feed means extra continuation fetches before the loop is
     // broken (measured: 2 instead of 0).
     if (blocked.length) notePageSuppressed(blocked.length);
+    health.early += blocked.length;
     // ...and one response is one round, for the "this search is only ever
     // going to page in blocked videos" check (noteJudgedRound).
     noteJudgedRound(d.items, blocked);
@@ -1333,6 +1335,11 @@
       window.postMessage({ __xrntube: "verdict", id: d.id, blocked }, location.origin);
     } catch {}
   });
+  // page-hook.js announces itself once, at document_start; if it got there
+  // before this listener existed, ask again.
+  try {
+    window.postMessage({ __xrntube: "ping" }, location.origin);
+  } catch {}
 
   // Resolve a channel key seen in the DOM ("UC…" or "@handle") to a blocked
   // entry, matching the storage key, a scraped @handle, or a scraped UC id.
@@ -1709,6 +1716,7 @@
       const shelf = findShelfAncestor(el);
       dbg("removed", el.tagName.toLowerCase(), "—", reason);
       notePageSuppressed(1);
+      health.dom += 1;
       noteLayer0Miss();
       el.remove();
       if (shelf) scheduleShelfPrune(shelf);
@@ -2166,10 +2174,11 @@
     return p === "/results" || p === "/" || p.startsWith("/feed/") || !!normalizeChannelKey(p) || LEGACY_CHANNEL_PATH_RE.test(p);
   }
   function noteLayer0Miss() {
-    if (layer0Warned || !pageHookPresent) return;
+    if (!pageHookPresent) return;
     if (Date.now() - pageStartedAt < LAYER0_GRACE_MS) return;
     if (!onLayer0Surface()) return;
-    if ((layer0Misses += 1) < LAYER0_WARN_AT) return;
+    // Counted past the warning too: the popup shows this page's number.
+    if ((layer0Misses += 1) < LAYER0_WARN_AT || layer0Warned) return;
     layer0Warned = true;
     console.warn(
       "[XrnTube] The JSON filter let " + layer0Misses + " tiles through on " + location.pathname +
@@ -2178,6 +2187,25 @@
         "matches no renderers; candidates climbing with removed at 0 means their byline paths moved. " +
         "See docs/fragility.md."
     );
+  }
+
+  // ---------- this page's health, for the popup ----------
+  // The console warning above is invisible on a phone, where there is no
+  // console — so the same evidence is kept per page view and the popup shows
+  // it (GET_PAGE_HEALTH). `early`: tiles layer 0 took out of YouTube's JSON;
+  // `dom`: tiles the DOM scrub removed after they rendered. Reset when a
+  // navigation starts, before the next page's responses arrive.
+  const health = { early: 0, dom: 0 };
+  function pageHealth() {
+    return {
+      hook: pageHookPresent,
+      surface: onLayer0Surface(),
+      blocklist: blockIndex.channels.size + blockIndex.videos.size,
+      early: health.early,
+      dom: health.dom,
+      late: layer0Misses,
+      degraded: pageHookPresent && layer0Misses >= LAYER0_WARN_AT
+    };
   }
 
   function resetPageSuppressed() {
@@ -3019,6 +3047,8 @@
       checkCurrentPageAndRedirect();
     } else if (msg.type === MSG.GET_PAGE_TARGET) {
       sendResponse(getCurrentPageTarget());
+    } else if (msg.type === MSG.GET_PAGE_HEALTH) {
+      sendResponse(pageHealth());
     } else if (msg.type === MSG.SHOW_TOAST) {
       showToast(msg.text);
     }
@@ -3040,6 +3070,8 @@
   window.addEventListener("yt-navigate-start", (e) => {
     const endpoint = e.detail?.endpoint;
     const webUrl = endpoint?.commandMetadata?.webCommandMetadata?.url || "";
+    health.early = 0;
+    health.dom = 0;
 
     // Lift the continuation block as the navigation STARTS, not when it
     // finishes. The new page's `/next` (or `/browse`) goes out while it is in

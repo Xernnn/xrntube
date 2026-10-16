@@ -133,6 +133,18 @@ header h1 {
 .block-btn.secondary { background: var(--neutral-btn); color: #fff; }
 .block-btn.secondary:hover { background: var(--neutral-btn-hover); }
 
+/* One line on this tab's blocking (popup.js → renderHealth). Quiet when all
+   is well; the accent colour only when the early filter looks broken. */
+.health {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--ink-3);
+}
+.health.warn {
+  color: var(--accent);
+}
+
 .stats {
   display: flex;
   justify-content: space-between;

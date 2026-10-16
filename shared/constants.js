@@ -74,6 +74,9 @@ self.XrnTube.MSG = {
   // through its ordinary import preview.
   SYNC_HISTORY: "SYNC_HISTORY",
   SYNC_HISTORY_GET: "SYNC_HISTORY_GET",
+  // Content script → popup: how the layers are doing on this tab — what the
+  // JSON layer removed, and how much the DOM scrub had to catch after it.
+  GET_PAGE_HEALTH: "GET_PAGE_HEALTH",
   // Channel allow-list ("never block these"): a hard override that wins over
   // every block path — a collaborator block, a title-keyword / duration
   // filter, an age rule. ALLOW_CHANNEL adds a key ("UC…" or "@handle"),

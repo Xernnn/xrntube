@@ -90,6 +90,12 @@ dropdown) exposes `state()`, `why('<selector>' | element)` (runs
 `extractInfo` + reports each channel key's index resolution + the
 `blockReason` verdict), and `enable()` / `disable()`.
 
+Without debug mode, the popup's **health line** is the one diagnostic on
+every tab, phone included: how many tiles this page view lost before they
+appeared (layer 0) and just after (the DOM scrub), or a ⚠ when page-hook.js
+never answered or `noteLayer0Miss()` crossed its threshold. See
+[architecture.md](architecture.md) → `popup/`.
+
 ## Recently-removed undo log
 
 `chrome.storage.local` key `bt_recent_unblocks` (not synced) — newest-first,

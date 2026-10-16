@@ -12,6 +12,7 @@ import { chromium } from "playwright";
 //   - content.js answered the hook's "hello" with a config
 //   - the window.fetch hook fired on a real /youtubei/v1/search continuation,
 //     the rule table matched live renderer shapes, and something was removed
+//   - the popup's health line (GET_PAGE_HEALTH) reports exactly that
 //
 // Needs `?bt-debug`, which is what exposes window.__btDataLayer at all.
 
@@ -106,6 +107,16 @@ const tiles = await p.evaluate(() =>
     (t) => t.isConnected && getComputedStyle(t).display !== "none" && /\/@mkbhd\b/i.test(t.innerHTML)
   ).length
 );
+// What the popup's health line reads (GET_PAGE_HEALTH): the same evidence,
+// asked of the content script the way the popup asks it.
+const health = await ext.evaluate(async () => {
+  const [tab] = await chrome.tabs.query({ url: "*://www.youtube.com/results*" });
+  return tab ? chrome.tabs.sendMessage(tab.id, { type: "GET_PAGE_HEALTH" }, { frameId: 0 }) : null;
+});
+console.log("   GET_PAGE_HEALTH:", JSON.stringify(health));
+health && health.hook && health.early > 0 && !health.degraded
+  ? ok(`the popup's health line sees the early filter working (${health.early} removed before render, ${health.dom} after)`)
+  : fail("page health: " + JSON.stringify(health));
 await p.close();
 
 if (!stats) {

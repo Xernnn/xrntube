@@ -97,6 +97,33 @@ function channelControls(channel) {
   return btnGroup;
 }
 
+// One line on how blocking is going on this tab. The early filter (layer 0,
+// page-hook.js) is the part that breaks silently when YouTube renames a
+// field: the DOM scrub still removes everything, just after it appears. On a
+// phone there is no console to read the content script's warning in, so this
+// is where that shows.
+function renderHealth(hp) {
+  const el = document.getElementById("page-health");
+  if (!hp || !hp.blocklist) return; // nothing blocked → nothing to report
+  let text;
+  let warn = false;
+  if (!hp.hook) {
+    warn = true;
+    text = "⚠ The early filter isn't running on this tab, so blocked videos show for a moment before they go. Reload the tab; if it stays, YouTube changed something.";
+  } else if (hp.degraded) {
+    warn = true;
+    text = `⚠ ${hp.late} tiles got past the early filter on this page. They were still removed, a moment late — YouTube may have changed something.`;
+  } else {
+    const total = hp.early + hp.dom;
+    if (!total) text = "Nothing blocked on this page.";
+    else if (!hp.dom) text = `${total} removed on this page, all before they appeared.`;
+    else text = `${total} removed on this page — ${hp.early} before they appeared, ${hp.dom} just after.`;
+  }
+  el.textContent = text;
+  el.classList.toggle("warn", warn);
+  el.hidden = false;
+}
+
 async function init() {
   const [blocklist, tab] = await Promise.all([refreshCounts(), getActiveTab()]);
 
@@ -105,6 +132,11 @@ async function init() {
     document.getElementById("no-target").hidden = false;
     return;
   }
+
+  // Asked of the top frame only: an embed's content script doesn't answer.
+  chrome.tabs
+    .sendMessage(tab.id, { type: MSG.GET_PAGE_HEALTH }, { frameId: 0 })
+    .then(renderHealth, () => {});
 
   let target;
   try {
