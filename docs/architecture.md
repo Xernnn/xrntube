@@ -91,8 +91,9 @@ Every blocked entry also carries `updated_at` (bumped on every mutation,
 stamped from `syncedNow()` — `Date.now()` plus the sync server's clock
 offset), and `removeEntry()` writes a **tombstone** to `chrome.storage.local`
 (`bt_tombstones`, `{ "channel:<key>"|"video:<id>": deletedAtMs }`, pruned
-after `TOMBSTONE_TTL_MS`); both exist so the sync merge can do
-last-write-wins without a stale device resurrecting a delete.
+after `TOMBSTONE_TTL_MS` — a year: a device that syncs again after the TTL no
+longer sees the deletion and pushes the entry back); both exist so the sync
+merge can do last-write-wins without a stale device resurrecting a delete.
 
 **Duplicates fold.** One channel can be stored twice — blocked once as
 `@foo`, once as its `UC…` — and only a lookup (or an import) pairs the two.
@@ -125,15 +126,43 @@ password live in `chrome.storage.local` `bt_sync` (never in sync storage). It
 exposes `self.XrnTube.serverSync` with `init(host)` / `onLocalChange()`
 (debounced push, from `broadcastUpdate()`) / `onPoll()` (the `bt-sync-poll`
 alarm, every `SYNC.POLL_PERIOD_MIN`) / `configure({ url, user, password })`
-(or `null` to disconnect) / `syncNow()` / `status()`. The one `cycle()`:
-GET the document → per-entry LWW merge on `updated_at` with tombstones
-(keywords and the allow-list are whole-object LWW on their `ts`) → apply
+(or `null` to disconnect) / `syncNow()` / `status()` / `history()` /
+`historyItem(name)`. The one `cycle()`: GET the document → merge → apply
 locally via `host.applyMergedState()` (then `broadcastUpdate(…, { fromSync:
 true })`, so it doesn't loop into another push) → PUT if the merge differs from
 the remote, with `If-Match` set to the version it read. A **412** means
 another device wrote in between: the cycle simply runs again on the newer
 copy. The server's `Date` header sets the clock offset. It never touches
 blocklist storage directly — only through `host`.
+
+Two merges. **Channels and videos**: per-entry LWW on `updated_at` with
+tombstones. **Keywords, the never-block list and the settings** (`bt_settings`,
+the "What gets hidden" switches) have no tombstones, so they merge three ways
+against `bt_sync_base` — what this device and the server agreed on at the end
+of the last cycle: in the base and gone from one side means deleted there,
+not in the base means added. Item by item for keywords and never-block keys,
+switch by switch for settings, value by value for the keyword bounds
+(`durMinSec`, `durMaxSec`, `commentLimit`). No base — a device's first sync,
+a reconnect, or a server whose version went *backwards* (reset or restored) —
+means nothing counts as deleted: lists union, and settings take the server's
+set whole, so a newly connected device adopts the others' switches. Settings,
+keywords and the allow-list are written straight to `chrome.storage.sync` by
+whoever edits them; background.js's `storage.onChanged` is what calls
+`onLocalChange()` for them.
+
+**A merge must converge.** The push decision compares the merged document with
+the server's; anything one device normalises differently from the server
+(ordering, a defaulted field) differs on every cycle, and each device pushes
+every 3 minutes forever. List order therefore follows the server, with this
+device's own additions in front — keeping each device's own order was exactly
+that loop. `serversync-test` asserts that a second round of syncing pushes
+nothing.
+
+`history()` / `historyItem()` read the server's kept copies
+(`GET /history`, `GET /history/<name>`). There is no "roll back": the options
+page restores a copy through its import preview, which re-adds entries with
+fresh `updated_at` and clears their tombstones. Writing an old copy back to
+the server would lose to every device's newer tombstones on their next sync.
 
 ## `content/page-hook.js`
 
@@ -228,12 +257,49 @@ continuation also loads comments — the surface is declared exhausted:
 `postHookConfig()` sends `exhausted: true`, the hook's `stripContinuations()`
 takes `continuationItemRenderer` / `continuations` out of every further
 response, and `curbRunawayFeed()` puts up the notice without waiting for the
-sentinel to be in range. The flag is lifted again at
-`yt-navigate-start` — not at `-finish` — because the next page's `/next`
-goes out while the navigation is in flight, and a watch page's `/next` also
-carries the "load more comments" continuation; `resetPageSuppressed()`
-clears it on a fresh page view too. Both tell the hook. Without this a search page — tall on its own, so its
-sentinel sits out of range — kept fetching "until one gets through".
+sentinel to be in range. Without this a search page — tall on its own, so
+its sentinel sits out of range — kept fetching "until one gets through".
+
+The per-page state — the flag, the rounds, `blockedOnPage`, the popup's
+health counts, the notices — is reset by `startPageView()` when a
+navigation **starts** (`yt-navigate-start`; `state-navigatestart` on
+m.youtube.com, which never fires `yt-navigate-*`), and tells the hook if the
+flag was set. Not at `-finish`: the next page's first response arrives
+between the two. A reset at finish lifted the flag too late (a watch page's
+`/next` carries the "load more comments" continuation, so it could be cut),
+and wiped what the new page's first response had already counted —
+measured: a search reached from a channel page used up its three rounds on
+that response, had its continuation cut, and then lost the flag and the
+tally to the reset, so the feed stopped with nothing saying so. The one
+count that *does* start over when the page has rendered
+(`pageViewRendered()`, at `yt-navigate-finish` / `state-navigateend`) is
+`suppressedOnPage`, the curb's trigger: a first page that came back mostly
+blocked is short with its sentinel in range, and YouTube fetching page two
+is right. Counting the first page there stopped a search for a blocked
+channel's name after two results (`datalayer-live-test` caught it: its
+continuation never fired).
+
+The notice (`<bt-blocked-notice>`, built by `feedNotice()`) goes where the
+next tiles would have appeared, in the feed **on screen**: YouTube keeps
+the pages you came from in the DOM, hidden, so a document-wide
+`querySelector` for "the sentinel" or "the feed" can return the hidden
+page's. `activeSentinels()` / `activeFeedList()` / `activeNotice()` filter
+to rendered elements, and `FEED_LIST_SEL` names the phone's lists
+(`ytm-section-list-renderer > lazy-list`, `ytm-rich-grid-renderer >
+.rich-grid-renderer-contents`) as well as the desktop's. It comes in two
+kinds. `kind="stop"` is ours — the curb or the round counter stopped the
+feed — and carries the load-bearing `min-height`. `kind="end"` is
+`noteFeedEnd()`: the feed on screen has had no sentinel for a moment
+(`FEED_END_GRACE_MS` after the page view starts, then `FEED_END_STABLE_MS`
+of no sentinel) and something on it was blocked, so YouTube has stopped by
+itself — a search that ran out, a channel's last video, or a phone feed
+after one fully-blocked batch, which on m.youtube.com ends the feed with no
+further request. That one is a single line, no `min-height`, and goes away
+if a sentinel comes back, and only appears on `onLayer0Surface()` pages. A
+feed nothing was taken from gets neither. The curb never touches a sentinel
+inside `ytd-comments` or an engagement panel (`NOT_A_FEED_SEL`): on a watch
+page the document's first sentinel is the comments' one, and enough blocked
+related videos let the curb stop the comments loading.
 
 It also beats the DOM at channel identity: a `browseEndpoint` usually carries
 `browseId` (`UC…`) **and** `canonicalBaseUrl` (`/@handle`) together, so a
@@ -391,7 +457,10 @@ per call for exactly that reason. The groups and what they gate:
   `shortsChannelTab`.
 - **Home page and navigation** — `redirectHomepage` (the `/` → Subscriptions
   bounce: `DNR_RULE_ID_HOME` plus the nav guards), `logoToSubscriptions`
-  (`retargetLogo()`).
+  (page-hook.js swaps the logo's endpoint in `ytInitialData` for the
+  Subscriptions one, so a click goes there in one in-app hop; `retargetLogo()`
+  here only fixes the href, for middle-click, and the nav guard's reload is
+  the fallback if the swap missed).
 - **Left sidebar** — `sidebarHome` / `sidebarShorts` (matched by link, not
   label), `sidebarExplore`, `sidebarMoreFromYouTube`, `sidebarReportHistory`,
   `sidebarFooter`.
@@ -452,6 +521,25 @@ cheap because posts are rare — run in the hot per-mutation path
 (`scheduleFlush` / the `MutationObserver` callback via `sweep()`) —
 don't add a new document-wide scan there without routing it through the
 throttle.
+
+**Comment columns** (`commentsTwoColumn`) are the one thing with observers
+of its own, and they watch one element, not the document.
+`syncCommentColumns()` (in `runExtras()`) attaches to the comment list,
+marks it `[bt-cols]`, and `layoutCommentColumns()` positions each
+`ytd-comment-thread-renderer` absolutely: a thread goes into whichever
+column is shorter when it first appears and stays in that column (a
+`WeakMap`, cleared when the list empties for the next video), so a batch
+that loads fills in under both columns and nothing already on screen moves.
+A thread that grows pushes down only its own column. The positions are CSS
+custom properties (`--bt-x`, `--bt-y`, `--bt-cols-h` for the list's
+`padding-top`, which keeps the sentinel and the cap notice below both
+columns), so they are inert the moment the rule is gone. The list's
+`MutationObserver` places a new batch before it paints; a `ResizeObserver`
+on each thread re-lays out after one grows. This replaced CSS
+`column-count: 2`, which balances the whole list: every batch moved the
+split point, and the top of the right column slid into the bottom of the
+left. Until the list is attached (≤ one throttle tick), a plain two-column
+grid stands in, which never moves a thread either.
 
 `SAFE_LANDING_URL` (`https://www.youtube.com/feed/subscriptions`) lives in
 `shared/constants.js`. It used to be declared separately in
@@ -514,6 +602,16 @@ Anything already blocked shows its status with an **Unblock** button rather
 than a dead label, and `findChannelKey()` recognises a channel stored under
 its *other* identity (key, `handle` or `ucid`) — without it a channel blocked
 as `@foo` was offered for blocking again on a page that names it by `UC…`.
+
+**The health line** (`renderHealth()`) asks the top frame for
+`GET_PAGE_HEALTH`: whether page-hook.js answered (`hook` — its "hello", a
+reply to content.js's "ping" when content.js started second, or any "judge"),
+how many tiles layer 0 removed on this page view (`early`), how many the DOM
+scrub removed after they rendered (`dom`), and `layer0Misses` past the grace
+period (`late`, `degraded` at `LAYER0_WARN_AT`). The counters reset on
+`yt-navigate-start`, before the next page's responses arrive. It exists
+because `noteLayer0Miss()`'s warning goes to a console a phone doesn't have;
+`datalayer-live-test` asserts what it reports.
 
 ## `options/`
 
@@ -677,7 +775,7 @@ parses a URL or bare ID), the "only block videos older than N days" control
 ## `shared/constants.js`
 
 Holds the message-type enum, the storage keys (`STORAGE.BLOCKLIST_KEY`,
-`TOMBSTONE_KEY` / `TOMBSTONE_TTL_MS`, `SYNC_KEY`), the sync timing block
+`TOMBSTONE_KEY` / `TOMBSTONE_TTL_MS`, `SYNC_KEY`, `SYNC_BASE_KEY`), the sync timing block
 (`SYNC.*` — poll period, push debounce), and the feature-toggle
 contract — `SETTINGS_KEY` = `bt_settings`, `SETTING_GROUPS` (the two-level
 toggle tree), `DEFAULT_SETTINGS` (39 leaf booleans derived from the tree —
@@ -715,14 +813,16 @@ also be listed in the MAIN entry.
 One layer: the user's server, through `server-sync.js` (see that section and
 [sync-server.md](sync-server.md)). `chrome.storage.sync` still carries the
 small records — `bt_settings`, `bt_keywords`, `bt_allowlist` — between
-Chrome profiles on one Google account, and the server merge carries keywords
-and the allow-list too (whole-object LWW on their `ts`); the blocklist itself
-is local and travels only through the server.
+Chrome profiles on one Google account, and the server merge carries all
+three too (three-way, against `bt_sync_base`); the blocklist itself is local
+and travels only through the server.
 
-Merge is per-entry last-write-wins on `updated_at` with tombstones. It is
-intentionally simple — conflicts are rare for one person with a few devices,
-and the semantics are forgiving (re-adding an already-blocked entry is a
-no-op; the worst case is a resurrected unblock, which the tombstone TTL
-bounds). If a genuinely
+The blocklist merges per entry, last-write-wins on `updated_at` with
+tombstones. It is intentionally simple — conflicts are rare for one person
+with a few devices, and the semantics are forgiving (re-adding an
+already-blocked entry is a no-op; the worst case is a resurrected unblock,
+which the year-long tombstone TTL bounds). The server keeps the copy every
+write replaces, which is the way back from a mistake that synced
+everywhere. If a genuinely
 robust multi-writer story is ever needed, that's a CRDT/vector-clock
 rewrite, not a tweak here.

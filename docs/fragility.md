@@ -115,7 +115,23 @@ it names.
   layer 0 races YouTube for the first paint and deliberately loses sometimes;
   only what arrives afterwards, through the fetches it definitely hooks,
   counts as evidence. Measured: 0 warnings with the rule table healthy, one
-  warning with it neutered.
+  warning with it neutered. The same counts reach the popup's health line
+  (`GET_PAGE_HEALTH`), because a phone has no console to read the warning in:
+  "⚠ N tiles got past the early filter" there is this check firing. And
+  `npm run test:canary` (a weekly systemd timer once installed) runs
+  `datalayer-live-test` and four other selector-heavy files on this machine,
+  with a desktop notification when they fail.
+- **The logo's click target is a JSON field.** `logoToSubscriptions` works by
+  swapping `topbar.desktopTopbarRenderer.logo.topbarLogoRenderer.endpoint`
+  (desktop) and `topbar.mobileTopbarRenderer.topbarLogo.topbarLogoRenderer
+  .endpoint` (m.youtube.com) in `ytInitialData` for a `FEsubscriptions`
+  browse endpoint — the anchor's href is not what a click follows, and the
+  mobile logo is a `<button>` with no href at all. If YouTube moves either
+  path, the logo quietly goes back to "home, then a reload into
+  Subscriptions" (the nav guard's fallback) with nothing failing; the
+  "no document load" assertions in `settings-test` and `mobile-test` are what
+  notice. A late switch on desktop patches the rendered
+  `ytd-topbar-logo-renderer`'s `data` instead; mobile has no such property.
 - **The tag list is not the whole surface, and the gaps cluster on search and
   channel pages.** Nine renderer families reached `RENDERER_SELECTOR` late
   precisely because they appear nowhere else: `ytd-universal-watch-card-renderer`
@@ -208,6 +224,25 @@ it names.
   re-created from the next one. Thresholds and reset behaviour are pinned in
   `datalayer-test` (offline, lifted from content.js); `feedloop-test` checks
   the live outcome and reports which brake stopped the page.
+- **YouTube keeps the pages you came from in the DOM, hidden.** Desktop parks
+  them in `ytd-page-manager` with `[hidden]`; the page you were on before is
+  usually *earlier* in document order than the one on screen. So a
+  document-wide `querySelector` for "the sentinel" or "the feed list" quietly
+  returns the hidden page's: arriving at a search from a channel's Videos
+  tab, the curb measured the channel grid's sentinel, removed it, and put the
+  stop notice inside the hidden channel page — the search stopped with
+  nothing on screen. Anything that means "the feed" has to filter to rendered
+  elements (`activeSentinels()` / `activeFeedList()`), and anything it
+  removes has to stay inside that page, because the hidden ones are what Back
+  restores. `feedloop-test` case 5 is this path.
+- **m.youtube.com never fires `yt-navigate-start` / `yt-navigate-finish`.**
+  It fires `state-navigatestart` / `state-navigateend`. Per-page state that
+  only resets on the `yt-` events never resets on a phone: an exhausted
+  search kept the hook cutting every continuation on every page after it
+  until a reload. The phone's feed lists are different elements too
+  (`lazy-list`, `.rich-grid-renderer-contents`) — a desktop-only selector
+  list for "where the notice goes" found nothing there, and the feed stopped
+  blank (`feedloop-test` case 8).
 - **A lockup buries its byline three levels below where the scan stops.**
   `collectChannelRefs()` walks `MAX_SCAN_DEPTH = 10` levels into each
   BYLINE_FIELDS subtree, and a `lockupViewModel`'s channel sits at

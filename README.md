@@ -87,6 +87,20 @@ password are never in the package — you type them into the Sync page.
 On the phone, YouTube's mobile site has no mouse hover, so the 🚫 button on
 each tile is always shown; tap it to block.
 
+**Checking it on the phone.** The test suite runs the mobile site in
+emulation, so a real phone is worth a two-minute look after installing or
+updating:
+
+1. Search for a channel you've blocked: its videos shouldn't appear at all,
+   not even for a moment.
+2. Open the popup on that search page. The grey line should say things were
+   removed "before they appeared". A **⚠** line means the early filter isn't
+   running on the phone (see Troubleshooting).
+3. Tap the YouTube logo: it should open Subscriptions without passing through
+   the home feed.
+4. Tap 🚫 on a tile → **Block channel**: the tile goes, and after the next
+   sync the channel is blocked on your other devices too.
+
 **Updating**: `git pull`, then hit **Reload** on the extension in
 `chrome://extensions`. Refresh any YouTube tab you already had open — content
 scripts only attach at page load. On the phone, load the new zip.
@@ -312,7 +326,7 @@ flips its whole row.
 | group | switches |
 |---|---|
 | **Shorts** | shelves and tiles · the full-screen player · the Shorts tab on channels |
-| **Home page and navigation** | skip the home feed (goes to Subscriptions) · point the logo at Subscriptions |
+| **Home page and navigation** | skip the home feed (goes to Subscriptions) · point the logo at Subscriptions (a click goes straight there, no stop at the home feed) |
 | **Left sidebar** | Home · Shorts · Explore · More from YouTube · Report history · the small-print footer |
 | **Top bar** | Create (+) · Notifications bell · voice search · search autocomplete · account avatar until hovered |
 | **AI features** | the “Ask” button beside the search box and its section under a description · the AI summary card in search results · auto-generated chapters (chapters the creator wrote stay) |
@@ -345,12 +359,23 @@ it:
    it.
 
 After that it's automatic: a change pushes within seconds and other devices
-pull every few minutes. Merging is last-write-wins per entry with deletions
-remembered, so a stale device can't bring back something you unblocked, and
-two devices saving at the same moment both keep their changes. Keywords and
-the never-block list travel too. The password is stored only on that device.
-**Disconnect this device** stops syncing there without touching your
-blocklist.
+pull every few minutes. Merging is per entry with deletions remembered (for a
+year), so a stale device can't bring back something you unblocked, and two
+devices saving at the same moment both keep their changes. Keywords, the
+never-block list and your **What gets hidden** switches travel too, each item
+on its own: a keyword added on the phone and another added on the laptop
+both survive, and a switch flipped on one device flips on the other. When a
+new device connects, it takes the switches the others already use. The
+password is stored only on that device. **Disconnect this device** stops
+syncing there without touching your blocklist.
+
+**Undoing a mistake that synced.** A deletion reaches every device within a
+few minutes — including *Delete everything*. The server keeps the copy each
+change replaced (the last 40, plus one a day for a month), and options →
+**Sync** → **Restore an earlier copy…** lists them with their dates and
+counts. Picking one shows the usual import preview; importing brings back
+what that copy has and your list doesn't, on every device. Nothing you added
+since is removed.
 
 ---
 
@@ -390,14 +415,26 @@ carries, how each resolves against the blocklist, and the verdict.
 
 **"A search stopped loading more results."** If several pages of results in a
 row are entirely blocked, XrnTube stops the page asking for more and says so
-where the next batch would have gone. Without that, YouTube keeps fetching
-page after page looking for something to show — which is what pins a CPU core
-and makes the tab crawl. Reload the search to start it over, or narrow the
-query.
+in a line where the next batch would have gone ("XrnTube stopped loading
+more…"). Without that, YouTube keeps fetching page after page looking for
+something to show — which is what pins a CPU core and makes the tab crawl.
+Reload the search to start it over, or narrow the query. When YouTube itself
+has nothing more to send and some of what it sent was blocked, the line says
+"Nothing more to load" instead. Either way, there is nothing left to wait
+for.
 
 **Nothing at all is being removed.** Reload the extension from the browser's
 extensions page and refresh the YouTube tab; content scripts only attach at
 page load.
+
+**What the popup's grey line means.** On a YouTube tab the popup says how
+many things it removed on this page — "before they appeared" (taken out of
+YouTube's data before the page was drawn) or "just after" (removed from the
+page a moment later). A few "just after" on the first screen is normal. A
+**⚠** line means the early filter isn't working on this page: everything is
+still removed, but blocked videos flash up first. That usually means YouTube
+changed something; reloading the tab is worth one try, and on the developer
+side `npm run test:canary` checks the same thing against live YouTube.
 
 ---
 
@@ -412,8 +449,11 @@ page load.
   before the column is built, so a blocked channel does stay out of it. The one
   consequence you can see: the 🚫 menu on a related tile offers "Block this
   video" only, because there is no channel there to name.
-- **Mobile (`m.youtube.com`) is unverified.** Selectors for it are included but
-  have never been tested against a real device.
+- **Mobile (`m.youtube.com`) is tested in emulation only.** The suite runs it
+  as a phone (`mobile-test`: a phone's user agent, screen and touch), not on a
+  real phone browser. On the phone itself, the popup's health line (below) is
+  the check: on a search page with a blocked channel it should say tiles were
+  removed "before they appeared".
 - **Third-party embeds are opt-in**, and an embed can only be blanked from the
   inside — the `<iframe>` itself can't be removed from a page we don't run on.
 - **Network-level redirects are capped** at ~800 videos and ~3000 channels
@@ -437,6 +477,7 @@ background/background.js    the blocklist store, DNR rules, the sub-count sweep,
 background/server-sync.js   sync with your own server
 server/xrntube-sync.py      that server (one Python file)
 scripts/package.mjs         builds dist/xrntube-<version>.zip for a phone
+scripts/canary.mjs          the weekly live-YouTube check (and its timer)
 content/content.js          pre-paint CSS, DOM scrubbing, hover UI, nav guards
 content/content.css         the hover block button
 popup/                      quick-block UI for the current page
@@ -452,6 +493,8 @@ npm run check      # syntax-check every script + parse the manifest
 npm run test:fast  # the tests that need no YouTube (~20s)
 npm test           # full e2e suite (needs npm install once, and network)
 npm run package    # dist/xrntube-<version>.zip
+npm run test:canary                    # five live tests; notifies the desktop on failure
+node scripts/canary.mjs --install      # …weekly, as a systemd user timer (--uninstall removes it)
 ```
 
 Start at [docs/architecture.md](docs/architecture.md) for how the four
