@@ -81,6 +81,27 @@ await yt1.close();
 href === "/" ? ok('logo href left as "/" when toggle off') : fail("logo href = " + href);
 await setToggle("logoToSubscriptions", true);
 
+// --- 4b. logoToSubscriptions on -> a logo click goes to Subscriptions in ONE
+// in-app hop. The old href-only version also ended on /feed/subscriptions,
+// but by starting toward home and reloading the page — so the assertion that
+// matters is "no document load", not the final URL.
+const yt1b = await ctx.newPage();
+await yt1b.goto("https://www.youtube.com/results?search_query=mkbhd", { waitUntil: "domcontentloaded" });
+await yt1b.waitForTimeout(5000);
+const logoHref = await yt1b.locator("ytd-masthead a#logo").first().getAttribute("href");
+const docLoads = [];
+yt1b.on("request", (r) => {
+  if (r.resourceType() === "document" && r.frame() === yt1b.mainFrame()) docLoads.push(r.url());
+});
+await yt1b.evaluate(() => (window.__btSamePage = 1));
+await yt1b.locator("ytd-masthead a#logo").first().click();
+await yt1b.waitForTimeout(4000);
+const samePage = await yt1b.evaluate(() => window.__btSamePage === 1).catch(() => false);
+/\/feed\/subscriptions/.test(yt1b.url()) && samePage && docLoads.length === 0
+  ? ok(`logo click → Subscriptions in one in-app hop (href ${logoHref}, no reload)`)
+  : fail(`logo click: url=${yt1b.url()} samePage=${samePage} docLoads=${JSON.stringify(docLoads)} href=${logoHref}`);
+await yt1b.close();
+
 // --- 5. removeShorts off -> Shorts shelves survive on a search page ---
 await setToggle(["shortsFeedTiles", "shortsPlayer", "shortsChannelTab"], false);
 const yt2 = await ctx.newPage();

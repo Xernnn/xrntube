@@ -1089,11 +1089,13 @@
   }
 
   // ---------- point the masthead YouTube logo at Subscriptions ----------
-  // The logo normally routes to the home feed, which we redirect anyway — but
-  // that's a bounce (and a flash). Rewrite the anchor's href so a middle-click
-  // / open-in-new-tab lands right, and let the yt-navigate-start handler below
-  // catch the SPA click. Scoped to the masthead so it never touches the guide's
-  // own Home link (already removed by scrubGuide).
+  // The click itself is retargeted in page-hook.js, by swapping the logo's
+  // endpoint in YouTube's JSON — the only thing a click actually follows.
+  // This is the backstop for when that misses: the href, so a middle-click /
+  // open-in-new-tab lands right, while the yt-navigate-start handler below
+  // turns a plain click that still heads home into a reload. Scoped to the
+  // masthead so it never touches the guide's own Home link (already removed
+  // by scrubGuide).
   function retargetLogo(root) {
     if (!settings.logoToSubscriptions) return;
     const bar = root.querySelector
@@ -1257,7 +1259,9 @@
           exhausted: feedExhausted,
           // Only the JSON says which chapters YouTube generated (see
           // page-hook.js), so this switch is applied there, not here.
-          hideAutoChapters: !!settings.hideAutoChapters
+          hideAutoChapters: !!settings.hideAutoChapters,
+          // The logo's click target lives in the JSON too (see page-hook.js).
+          logoToSubscriptions: !!settings.logoToSubscriptions
         },
         location.origin
       );
@@ -2518,6 +2522,9 @@
     staticInstantHideCSS = buildStaticCSS();
     // rebuild the whole stylesheet (static + blocklist halves)
     updateInstantHideBlocklistCSS(lastAppliedChannels, lastAppliedVideos);
+    // The hook carries switches too (hideAutoChapters, logoToSubscriptions);
+    // without this it only heard them when the blocklist or keywords changed.
+    postHookConfig();
     if (settingsLoaded) runExtras(); // a live toggle change — re-apply now
   }
   // ---------- title-keyword filters (chrome.storage.sync: bt_keywords) ----------
@@ -3051,8 +3058,10 @@
       return;
     }
 
-    // The masthead logo (and anything else) routing to the home feed — send
-    // it straight to Subscriptions with no bounce. "FEwhat_to_watch" is the
+    // Anything still routing to the home feed — send it to Subscriptions
+    // before the home feed loads. With logoToSubscriptions on, the logo itself
+    // no longer gets here (page-hook.js rewrote its endpoint); this is the
+    // fallback for when that rewrite missed. "FEwhat_to_watch" is the
     // home-feed browseId; webUrl is "/" for the logo.
     if (
       (settings.redirectHomepage || settings.logoToSubscriptions) &&

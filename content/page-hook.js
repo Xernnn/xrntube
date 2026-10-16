@@ -153,6 +153,54 @@
     return n;
   }
 
+  // ---------- the top-bar logo, pointed at Subscriptions ----------
+  //
+  // The `logoToSubscriptions` switch. YouTube routes a logo click through the
+  // endpoint in the data, not the anchor's href (the mobile logo is a
+  // <button> with no href at all), so rewriting the href only fixed
+  // middle-click: a plain click still went to the home feed, and the nav
+  // guard then reloaded the page into Subscriptions. Swapping the endpoint
+  // makes YouTube's own router go there in one in-app hop — measured live on
+  // www and m.youtube.com: no document load, no home-feed request.
+  //
+  // The top bar is built once per page load, from ytInitialData. A switch
+  // that arrives after that is too late for the data, so on desktop the
+  // rendered element's own `data` is patched instead (Polymer re-renders the
+  // href from it). Mobile's logo has no such property; there the nav guard's
+  // bounce remains the fallback.
+  let logoToSubscriptions = false;
+  const SUBSCRIPTIONS_ENDPOINT = {
+    commandMetadata: {
+      webCommandMetadata: {
+        url: "/feed/subscriptions",
+        webPageType: "WEB_PAGE_TYPE_BROWSE",
+        rootVe: 96368,
+        apiUrl: "/youtubei/v1/browse"
+      }
+    },
+    browseEndpoint: { browseId: "FEsubscriptions" }
+  };
+  const toSubscriptions = (endpoint) => ({ clickTrackingParams: endpoint.clickTrackingParams, ...SUBSCRIPTIONS_ENDPOINT });
+
+  function retargetLogoIn(data) {
+    if (!logoToSubscriptions || !data || !data.topbar) return;
+    const tb = data.topbar;
+    for (const logo of [
+      tb.desktopTopbarRenderer && tb.desktopTopbarRenderer.logo && tb.desktopTopbarRenderer.logo.topbarLogoRenderer,
+      tb.mobileTopbarRenderer && tb.mobileTopbarRenderer.topbarLogo && tb.mobileTopbarRenderer.topbarLogo.topbarLogoRenderer
+    ]) {
+      if (logo && logo.endpoint) logo.endpoint = toSubscriptions(logo.endpoint);
+    }
+  }
+
+  function retargetRenderedLogo() {
+    for (const el of document.querySelectorAll("ytd-topbar-logo-renderer")) {
+      const d = el.data;
+      const browseId = d && d.endpoint && d.endpoint.browseEndpoint && d.endpoint.browseEndpoint.browseId;
+      if (browseId && browseId !== "FEsubscriptions") el.data = { ...d, endpoint: toSubscriptions(d.endpoint) };
+    }
+  }
+
   // ---------- reading YouTube's JSON ----------
 
   // YouTube writes the same string a dozen ways depending on the renderer's
@@ -767,6 +815,11 @@
       set(v) {
         rawInitialData = v;
         stripAutoChaptersFrom(v, "ytInitialData");
+        try {
+          retargetLogoIn(v);
+        } catch (e) {
+          dbg("logo retarget threw", e);
+        }
         if (!active || !v || typeof v !== "object") return;
         const target = v;
         filterData(target, "ytInitialData").then((n) => {
@@ -797,6 +850,16 @@
         // Same late chance as the blocklist below, for a switch that arrives
         // after ytInitialData was written.
         if (!chaptersWas && hideAutoChapters && rawInitialData) stripAutoChaptersFrom(rawInitialData, "ytInitialData (late)");
+        const logoWas = logoToSubscriptions;
+        logoToSubscriptions = !!d.logoToSubscriptions;
+        if (!logoWas && logoToSubscriptions) {
+          try {
+            retargetLogoIn(rawInitialData);
+            retargetRenderedLogo();
+          } catch (e) {
+            dbg("logo retarget threw", e);
+          }
+        }
         // A blocklist that arrives after ytInitialData was written still gets
         // a shot at it, as long as Polymer hasn't read it yet.
         if (!was && active && rawInitialData) {
@@ -817,6 +880,13 @@
     },
     false
   );
+
+  // The one gap the two calls above leave: a switch that lands after YouTube
+  // read ytInitialData but before it built the top bar. Patching again once
+  // each page view has rendered closes it, at the cost of one querySelectorAll.
+  window.addEventListener("yt-navigate-finish", () => {
+    if (logoToSubscriptions) retargetRenderedLogo();
+  });
 
   // content.js may come up before or after this file, so announce rather than
   // assume. It replies with a "config", and posts one again whenever the

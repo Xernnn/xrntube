@@ -5,6 +5,7 @@ import { chromium, devices } from "playwright";
 //   - a blocked channel's videos leave mobile search, its page redirects
 //   - the popup's target on a mobile watch page names the channel and title
 //   - the tile 🚫 button shows without hover, and tapping it blocks
+//   - tapping the logo goes to Subscriptions without a reload
 
 const EXT_PATH = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const phone = devices["Pixel 7"];
@@ -168,6 +169,25 @@ if (!picked) {
     ? ok(`tapping 🚫 → ${picked.trim()} blocks it and removes the tile (${keys[0]})`)
     : fail(`tap-to-block: keys=${JSON.stringify(keys)}`);
 }
+
+// ---- 6. tapping the logo goes to Subscriptions, without a reload ----
+// The mobile logo is a <button> with no href; only the endpoint in the
+// page's JSON decides where it goes (page-hook.js rewrites it).
+await p.goto("https://m.youtube.com/results?search_query=mkbhd", { waitUntil: "domcontentloaded" });
+await p.waitForTimeout(5000);
+const docLoads = [];
+const onReq = (r) => {
+  if (r.resourceType() === "document" && r.frame() === p.mainFrame()) docLoads.push(r.url());
+};
+p.on("request", onReq);
+await p.evaluate(() => (window.__btSamePage = 1));
+await p.tap("ytm-home-logo .mobile-topbar-header-endpoint");
+await p.waitForTimeout(4000);
+p.off("request", onReq);
+const samePage = await p.evaluate(() => window.__btSamePage === 1).catch(() => false);
+/\/feed\/subscriptions/.test(p.url()) && samePage && docLoads.length === 0
+  ? ok("tapping the logo → Subscriptions in one in-app hop (no reload)")
+  : fail(`logo tap: url=${p.url()} samePage=${samePage} docLoads=${JSON.stringify(docLoads)}`);
 
 errs.length === 0 ? ok("no page errors") : fail("page errors: " + errs.slice(0, 2).join(" | "));
 await ctx.close();
