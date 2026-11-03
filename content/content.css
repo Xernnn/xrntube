@@ -1,87 +1,84 @@
-/* Anchored to the tile's bottom-right corner rather than a top corner over
-   the thumbnail: YouTube's tile layouts put the thumbnail either along the
-   full top (grid tiles) or the full left/height (compact/horizontal tiles
-   in search and the sidebar) — bottom-right lands in the metadata area
-   either way, so it's never covered by the thumbnail's mouseover video
-   preview (which visually paints over anything sitting on the thumbnail
-   itself, regardless of z-index) and stays clear of YouTube's own 3-dot
-   menu button, which sits near the top of that metadata area. */
-.bt-block-btn {
-  position: absolute;
-  bottom: 4px;
-  right: 4px;
-  z-index: 2147483647;
-  width: 22px;
-  height: 22px;
-  line-height: 22px;
-  text-align: center;
-  font-size: 13px;
-  border-radius: 50%;
-  background: rgba(15, 15, 15, 0.75);
-  color: #fff;
+/* XrnTube's rows inside YouTube's own ⋮ menu (content.js, "XrnTube's
+   options, inside YouTube's own ⋮ menu"). The popup around them is
+   YouTube's, so the rows take its colours rather than naming any:
+   `color: inherit` follows the light or dark theme, and the separator and
+   hover tint are mixed from that same colour. Row height and icon inset are
+   read off YouTube's own first row (--bt-row-h / --bt-row-inset, set by
+   matchNativeRows()); the fallbacks and the type sizes are what was measured
+   live: 36px / 14px on the desktop dropdown, 48px / 16px in the phone's
+   bottom sheet, a 24px icon and a 12px gap. */
+bt-tile-menu {
+  display: block;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  color: inherit;
+}
+
+bt-tile-menu .bt-menu-row {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 360px;
+  min-height: var(--bt-row-h, 36px);
+  padding: 0 12px 0 var(--bt-row-inset, 16px);
+  font: 400 14px/20px "Roboto", "Arial", sans-serif;
+  color: inherit;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-  user-select: none;
 }
 
-*:hover > .bt-block-btn,
-.bt-block-btn:hover {
-  opacity: 1;
+bt-tile-menu .bt-menu-row:hover,
+bt-tile-menu .bt-menu-row:focus-visible {
+  background: color-mix(in srgb, currentColor 10%, transparent);
 }
 
-/* A touchscreen has no hover, so the button would never appear: always show
-   it there, a little larger so a fingertip can hit it.
-
-   Always shown, its page-wide z-index also put it on top of YouTube's own
-   overlays: a tile scrolled under the sticky watch-page player still showed
-   its 🚫 there, a stray second button over the video.
-   `isolation` keeps the z-index inside the tile it belongs to. */
-@media (hover: none) {
-  [data-bt-btn] {
-    isolation: isolate;
-  }
-  .bt-block-btn {
-    opacity: 0.85;
-    width: 28px;
-    height: 28px;
-    line-height: 28px;
-    font-size: 15px;
-  }
-  .bt-block-menu {
-    bottom: 34px;
-  }
+bt-tile-menu .bt-menu-row svg {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
 }
 
-.bt-block-menu {
-  position: absolute;
-  bottom: 28px;
-  right: 4px;
-  z-index: 2147483647;
+bt-tile-menu .bt-menu-text {
   display: flex;
   flex-direction: column;
-  background: #1f1f1f;
-  border: 1px solid #3a3a3a;
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-  overflow: hidden;
-  min-width: 180px;
+  min-width: 0;
+  padding: 6px 0;
 }
 
-.bt-block-menu button {
-  all: unset;
-  display: block;
-  padding: 8px 12px;
-  font-size: 12.5px;
-  color: #f1f1f1;
-  cursor: pointer;
-  white-space: nowrap;
+bt-tile-menu .bt-menu-text,
+bt-tile-menu .bt-menu-sub {
   overflow: hidden;
+  white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.bt-block-menu button:hover {
-  background: #3a3a3a;
+bt-tile-menu .bt-menu-sub {
+  font-size: 12px;
+  line-height: 16px;
+  opacity: 0.7;
+}
+
+/* The phone's bottom sheet: taller rows, larger text, the 12px inset its own
+   rows have, and room under the last one before the sheet's edge. */
+bt-tile-menu[data-kind="sheet"] {
+  padding-bottom: 8px;
+}
+
+bt-tile-menu[data-kind="sheet"] .bt-menu-row {
+  max-width: none;
+  min-height: var(--bt-row-h, 48px);
+  padding: 0 12px 0 var(--bt-row-inset, 12px);
+  font-size: 16px;
+  line-height: 22px;
+}
+
+bt-tile-menu[data-kind="sheet"] .bt-menu-sub {
+  font-size: 13px;
+  line-height: 18px;
 }
 
 /* NOTE: the #secondary removal + #primary reflow used to live here. They're

@@ -15,6 +15,9 @@ calendar password is the sync password).
                            keywords, allowlist}]}
     GET  /history/<name>   one of them, as the document GET /state would give
     GET  /download/<file>  a file from <data>/downloads (the extension's .zip)
+    GET  /update/<file>    a file from <data>/update, no login: updates.xml and
+                           the signed .crx it names, which a browser's own
+                           extension updater fetches (it can't send a login)
     GET  /health           200 "ok", no login (for monitoring)
 
 Every write keeps the copy it replaces, gzipped, under <data>/users/<user>/
@@ -114,6 +117,8 @@ def write_state(user, doc):
 # chronologically: 20261016T141503Z-v00000042.json.gz. index.json beside them
 # holds each one's counts, so listing doesn't decompress a few MB per request.
 HISTORY_NAME = re.compile(r"\d{8}T\d{6}Z-v\d{8}\.json\.gz")
+# What /update/ may serve: a plain file name, no path, no leading dot.
+UPDATE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.(?:xml|crx)")
 
 
 def history_dir(user):
@@ -245,6 +250,25 @@ class Handler(BaseHTTPRequestHandler):
         path = self.route()
         if path == "/health":
             return self.send(200, "ok")
+        if path.startswith("/update/"):
+            # Public on purpose, and only these two kinds of file: what
+            # scripts/package.mjs --release puts there is the extension's own
+            # code, the same for every user.
+            name = path[len("/update/"):]
+            file = os.path.join(args.data, "update", name)
+            if UPDATE_NAME.fullmatch(name) and os.path.isfile(file):
+                with open(file, "rb") as f:
+                    data = f.read()
+                if name.endswith(".xml"):
+                    return self.send(200, data, "application/xml; charset=utf-8")
+                self.send_response(200)  # sent as is, never gzipped
+                self.send_header("Content-Type", "application/x-chrome-extension")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            return self.send(404, "not found")
         user = self.login()
         if not user:
             return
@@ -328,6 +352,7 @@ def main():
     args.data = os.path.expanduser(args.data)
     args.users = os.path.expanduser(args.users)
     os.makedirs(os.path.join(args.data, "downloads"), exist_ok=True)
+    os.makedirs(os.path.join(args.data, "update"), exist_ok=True)
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     sys.stderr.write(f"xrntube-sync on http://{args.host}:{args.port}, data in {args.data}\n")
     srv.serve_forever()

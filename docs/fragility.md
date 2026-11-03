@@ -81,13 +81,10 @@ it names.
   links — no `/@handle`, no `/channel/UC…`. The channel appears solely as text
   and as `aria-label="Go to channel <Name>"`, i.e. a *display name*, and two
   channels can share one; matching on it would block the wrong channel, which
-  is the one outcome this codebase refuses (see "Right-click to block"). So a
-  blocked channel's videos are unblockable there by key. It does not bite by
-  default — `removeRelated` is on and `#secondary` is removed outright — but
-  turn related videos back on and the leak is total. The only honest fix would
-  be resolving each tile's videoId through the cached `RESOLVE_VIDEO_CHANNEL`
-  oEmbed lookup, which is ~20 requests per watch page; not worth it unless
-  someone actually runs with related videos showing.
+  is the one outcome this codebase refuses (see "Right-click to block"). So
+  the DOM layer cannot block a related video by channel at all; layer 0 does
+  it from the `/next` JSON — see "The watch page's related column names no
+  channel in the DOM" below.
 - `RENDERER_SELECTOR`, `CHANNEL_CARD_TAGS`, `BYLINE_SEL`, `SHELF_SELECTOR`,
   `SHELF_HEADER_SEL` and `findScopeForCurrentPage()` in `content/content.js`
   hard-code YouTube's current custom-element tag names (`ytd-*` desktop,
@@ -110,13 +107,15 @@ it names.
   other test in the suite would still pass with layer 0 completely dead —
   but that runs here, not on the machine where YouTube renames a field next
   month. So `noteLayer0Miss()` in content.js counts the tiles the DOM scrub
-  removes on a surface layer 0 claims to cover and `console.warn`s once past
-  `LAYER0_WARN_AT` (10). It waits `LAYER0_GRACE_MS` (10s) first, because
+  removes on a surface layer 0 claims to cover and logs a `console.info` once
+  past `LAYER0_WARN_AT` (10) — info, not a warning, because an extension's
+  warnings land in its Errors list on the extensions page, and nothing is
+  unblocked when this fires. It waits `LAYER0_GRACE_MS` (10s) first, because
   layer 0 races YouTube for the first paint and deliberately loses sometimes;
   only what arrives afterwards, through the fetches it definitely hooks,
-  counts as evidence. Measured: 0 warnings with the rule table healthy, one
-  warning with it neutered. The same counts reach the popup's health line
-  (`GET_PAGE_HEALTH`), because a phone has no console to read the warning in:
+  counts as evidence. Measured: no note with the rule table healthy, one with
+  it neutered. The same counts reach the popup's health line
+  (`GET_PAGE_HEALTH`), because a phone has no console to read the note in:
   "⚠ N tiles got past the early filter" there is this check firing. And
   `npm run test:canary` (a weekly systemd timer once installed) runs
   `datalayer-live-test` and four other selector-heavy files on this machine,
@@ -272,7 +271,8 @@ it names.
   live: a rail of 26 `yt-lockup-view-model`s, two anchors each, both
   `/watch?v=…`, and the uploader rendered as plain text — so `tileChannels()`
   finds nothing, no channel block of any kind can touch a related video, and
-  the hover menu can only offer "Block this video". Reading the name and
+  the ⋮ menu's "Block channel" row there comes from `hookUploaders` (the
+  uploader layer 0 read for that video id), not the DOM. Reading the name and
   matching it against the blocklist is exactly the "never guess a channel"
   trap, so the fix is upstream: `page-hook.js` hooks `/youtubei/v1/next`,
   where the byline's `browseEndpoint` still exists. **This makes layer 0
@@ -288,6 +288,34 @@ it names.
   in the sidebar, check the network panel for which endpoint carries the rail
   now, that it is in `HOOKED`, and that `lockupViewModel`'s byline paths still
   resolve, before looking anywhere in the DOM layer.
+- **XrnTube's ⋮ rows ride on YouTube's popup markup.** They need three
+  things to hold (content.js, "XrnTube's options, inside YouTube's own ⋮
+  menu"): `MENU_TRIGGER_SEL` recognising the tile's ⋮ (`ytd-menu-renderer
+  #button`, the lockup's `.ytLockupMetadataViewModelMenuButton`, the phone's
+  `ytm-bottom-sheet-renderer`); `openTileMenuHost()` finding the open popup
+  (`ytd-popup-container tp-yt-iron-dropdown` holding `ytd-menu-popup-renderer`
+  or `yt-list-view-model`, or `bottom-sheet-container #content-wrapper`); and
+  the popup growing to fit them (an `iron-resize` refit on the desktop, the
+  sheet's inline `max-height` raised on the phone). If the rows stop
+  appearing, one of the first two moved; if they appear cut off under a
+  scrollbar or below the screen, the third did; if they show up in a menu
+  that isn't a tile's, the close detection (`tendTileMenu()`) is reading a
+  popup that no longer stops rendering when it closes. `tilemenu-test` and
+  `mobile-test` cover each.
+- **The phone has its own markup for every switch.** Each `STATIC_CSS_PARTS`
+  rule was written against the desktop's, so on m.youtube.com the related
+  videos, Share / Save / Report and the Home / Shorts tabs all stayed with
+  their switches on. The phone's are: the related list in
+  `.related-items-container` under the watch results (hidden, not removed —
+  the comments teaser and the description are sibling sections), the action
+  row's `button-view-model`s in `ytm-slim-video-action-bar-renderer` (Report
+  sits there directly, so it goes with `actionMore`), and the bottom bar's
+  `ytm-pivot-bar-item-renderer`s, which have no link and say what they are
+  only by class (`pivot-w2w` is Home, `pivot-shorts`, `pivot-create`). Those
+  tabs are `role="tab"` too, so the channel-tab scrub skips
+  `ytm-pivot-bar-renderer`: it once emptied the Shorts tab and left a blank
+  half-width button. A new switch needs both sets; `mobile-test` checks the
+  ones above.
 - **The relative date has a new shape, and a date that doesn't parse
   disables age rules silently.** YouTube moved tiles to "3d ago", "2w ago",
   "7y ago" (one letter, no space) alongside "3 days ago" and "4 wk ago" — even

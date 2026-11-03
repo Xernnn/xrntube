@@ -370,7 +370,7 @@ hydrated, behaves exactly as an unscoped scan would.
 The scoping exists because the rest of a tile names channels that are **not**
 the uploader. A search result carries a description snippet and YouTube
 linkifies the `@mentions` in it, so an unscoped scan deleted a video for
-*talking about* a blocked channel and offered that channel in the hover block
+*talking about* a blocked channel and offered that channel in the tile's block
 menu as though it had uploaded it. That is the same false positive
 `comments-test` guards against for comments ("a comment that only *mentions*
 them survives"), and the same class the "never guess a channel" invariant

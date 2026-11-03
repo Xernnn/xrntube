@@ -1030,7 +1030,9 @@ async function stopSweep() {
 }
 
 function kickSweep() {
-  if (!sweepLoop) sweepLoop = runSweep().finally(() => (sweepLoop = null));
+  // A failed step (storage, most likely) ends this run; the alarm or the next
+  // wake picks the queue up again.
+  if (!sweepLoop) sweepLoop = runSweep().catch(() => {}).finally(() => (sweepLoop = null));
 }
 
 async function runSweep() {
@@ -1081,342 +1083,355 @@ async function runSweep() {
 // ---------- message handling ----------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
-    switch (msg.type) {
-      case MSG.GET_BLOCKLIST: {
-        const state = await loadAll();
-        sendResponse({ channels: state.channels, videos: state.videos, allowlist: (await getAllowlist()).list });
-        break;
-      }
-      case MSG.ALLOW_CHANNEL:
-      case MSG.DISALLOW_CHANNEL: {
-        await setAllowed(idsOf(msg), msg.type === MSG.ALLOW_CHANNEL, msg.note);
-        await broadcastUpdate(await loadAll());
-        sendResponse({ ok: true });
-        break;
-      }
-      case MSG.BLOCK_CHANNEL: {
-        const mode = msg.mode === CHANNEL_MODE.EXCEPT_WHITELIST ? CHANNEL_MODE.EXCEPT_WHITELIST : CHANNEL_MODE.FULL;
-        const state = await addEntry("channel", msg.id, msg.name, { mode, whitelist: {} });
-        await broadcastUpdate(state);
-        sendResponse({ ok: true });
-        enrichChannelIdentity(msg.id);
-        break;
-      }
-      case MSG.SET_CHANNEL_MODE: {
-        const mode = msg.mode === CHANNEL_MODE.EXCEPT_WHITELIST ? CHANNEL_MODE.EXCEPT_WHITELIST : CHANNEL_MODE.FULL;
-        const state = await mutateEntries("channel", idsOf(msg), (entry) => ({ ...entry, mode }));
-        await broadcastUpdate(state);
-        sendResponse({ ok: true });
-        break;
-      }
-      case MSG.WHITELIST_CHANNEL_VIDEO: {
-        const state = await mutateChannelEntry(msg.id, (entry) => ({
-          ...entry,
-          whitelist: { ...(entry.whitelist || {}), [msg.videoId]: msg.title || "" }
-        }));
-        await broadcastUpdate(state);
-        sendResponse({ ok: true });
-        break;
-      }
-      case MSG.UNWHITELIST_CHANNEL_VIDEO: {
-        const state = await mutateChannelEntry(msg.id, (entry) => {
-          const whitelist = { ...(entry.whitelist || {}) };
-          delete whitelist[msg.videoId];
-          return { ...entry, whitelist };
-        });
-        await broadcastUpdate(state);
-        sendResponse({ ok: true });
-        break;
-      }
-      case MSG.SET_ENTRY_HIDDEN: {
-        // Pure options-UI flag — the entry stays blocked. No need to re-scrub
-        // tabs, but broadcastUpdate keeps the flag flowing to the sync server / other
-        // devices and refreshes any open options page via storage.onChanged.
-        const kind = msg.kind === "video" ? "video" : "channel";
-        const state = await mutateEntries(kind, idsOf(msg), (entry) => ({ ...entry, hidden: !!msg.hidden }));
-        await broadcastUpdate(state);
-        sendResponse({ ok: true });
-        break;
-      }
-      case MSG.SET_CHANNEL_AGE_RULE: {
-        const days = Math.max(0, Math.floor(Number(msg.days) || 0));
-        const state = await mutateChannelEntry(msg.id, (entry) => ({
-          ...entry,
-          blockOlderThanDays: days
-        }));
-        await broadcastUpdate(state);
-        sendResponse({ ok: true, days });
-        break;
-      }
-      case MSG.FETCH_CHANNEL_SUBS: {
-        // Single channel (per-row chip). No broadcastUpdate — sub count /
-        // handle / name are cosmetic (content scripts and DNR don't need
-        // them), and the options page repaints from storage.onChanged. Doing
-        // a full broadcast + DNR rebuild per fetch is what made a big sweep
-        // crawl.
-        const info = await scrapeChannelInfo(msg.id);
-        if (info && info.rateLimited) {
-          sendResponse({ ok: false, rateLimited: true });
+    // A handler that throws still answers. Otherwise the caller waits on a
+    // port that closes empty and the worker logs an uncaught rejection — two
+    // entries in the extension's Errors list for one failure.
+    try {
+      switch (msg.type) {
+        case MSG.GET_BLOCKLIST: {
+          const state = await loadAll();
+          sendResponse({ channels: state.channels, videos: state.videos, allowlist: (await getAllowlist()).list });
           break;
         }
-        if (info && (info.subs != null || info.handle || info.name)) {
-          await applyChannelInfo({ [msg.id]: info });
-          sendResponse({ ok: true, subs: info.subs || null, handle: info.handle || null });
-        } else {
-          sendResponse({ ok: false });
+        case MSG.ALLOW_CHANNEL:
+        case MSG.DISALLOW_CHANNEL: {
+          await setAllowed(idsOf(msg), msg.type === MSG.ALLOW_CHANNEL, msg.note);
+          await broadcastUpdate(await loadAll());
+          sendResponse({ ok: true });
+          break;
         }
-        break;
-      }
-      case MSG.BULK_FETCH_CHANNEL_INFO: {
-        // A small lookup the caller waits for (tests, mostly). Anything big
-        // goes through START_SWEEP, which survives the caller going away.
-        const ids = Array.isArray(msg.ids) ? msg.ids.slice(0, 80) : [];
-        const { results, throttled } = await lookupChannels(ids);
-        const written = await applyChannelInfo(results);
-        sendResponse({ ok: true, got: Object.keys(results).length, written, rateLimited: throttled });
-        break;
-      }
-      case MSG.START_SWEEP: {
-        const s = await startSweep(Array.isArray(msg.ids) ? msg.ids : [], msg.label);
-        sendResponse({ ok: true, sweep: sweepStatus(s) });
-        break;
-      }
-      case MSG.STOP_SWEEP: {
-        sendResponse({ ok: true, sweep: sweepStatus(await stopSweep()) });
-        break;
-      }
-      case MSG.GET_SWEEP: {
-        sendResponse({ ok: true, sweep: sweepStatus(await loadSweep()) });
-        break;
-      }
-      case MSG.BLOCK_VIDEO: {
-        const state = await addEntry("video", msg.id, msg.title);
-        await broadcastUpdate(state);
-        sendResponse({ ok: true });
-        break;
-      }
-      case MSG.UNBLOCK_CHANNEL: {
-        const state = await removeEntry("channel", msg.id);
-        await broadcastUpdate(state);
-        sendResponse({ ok: true, undoTs: state.undoTs });
-        break;
-      }
-      case MSG.UNBLOCK_VIDEO: {
-        const state = await removeEntry("video", msg.id);
-        await broadcastUpdate(state);
-        sendResponse({ ok: true, undoTs: state.undoTs });
-        break;
-      }
-      case MSG.DELETE_DATA: {
-        const state = await deleteData(msg);
-        await broadcastUpdate(state);
-        sendResponse({ ok: true, undoTs: state.undoTs, removed: state.removed });
-        break;
-      }
-      case MSG.IMPORT_BLOCKLIST: {
-        // Merge everything in one store update — not addEntry per entry,
-        // which on a few-thousand-channel file is a few thousand writes.
-        const now = syncedNow();
-        const clearedTombs = [];
-        const added = { channels: 0, videos: 0 };
-        let enriched = 0;
-        let duplicates = 0;
-        let allowAdded = 0;
-        let folded = [];
-        await updateStore(async (state) => {
-          const { channels, videos } = state;
+        case MSG.BLOCK_CHANNEL: {
+          const mode = msg.mode === CHANNEL_MODE.EXCEPT_WHITELIST ? CHANNEL_MODE.EXCEPT_WHITELIST : CHANNEL_MODE.FULL;
+          const state = await addEntry("channel", msg.id, msg.name, { mode, whitelist: {} });
+          await broadcastUpdate(state);
+          sendResponse({ ok: true });
+          enrichChannelIdentity(msg.id);
+          break;
+        }
+        case MSG.SET_CHANNEL_MODE: {
+          const mode = msg.mode === CHANNEL_MODE.EXCEPT_WHITELIST ? CHANNEL_MODE.EXCEPT_WHITELIST : CHANNEL_MODE.FULL;
+          const state = await mutateEntries("channel", idsOf(msg), (entry) => ({ ...entry, mode }));
+          await broadcastUpdate(state);
+          sendResponse({ ok: true });
+          break;
+        }
+        case MSG.WHITELIST_CHANNEL_VIDEO: {
+          const state = await mutateChannelEntry(msg.id, (entry) => ({
+            ...entry,
+            whitelist: { ...(entry.whitelist || {}), [msg.videoId]: msg.title || "" }
+          }));
+          await broadcastUpdate(state);
+          sendResponse({ ok: true });
+          break;
+        }
+        case MSG.UNWHITELIST_CHANNEL_VIDEO: {
+          const state = await mutateChannelEntry(msg.id, (entry) => {
+            const whitelist = { ...(entry.whitelist || {}) };
+            delete whitelist[msg.videoId];
+            return { ...entry, whitelist };
+          });
+          await broadcastUpdate(state);
+          sendResponse({ ok: true });
+          break;
+        }
+        case MSG.SET_ENTRY_HIDDEN: {
+          // Pure options-UI flag — the entry stays blocked. No need to re-scrub
+          // tabs, but broadcastUpdate keeps the flag flowing to the sync server / other
+          // devices and refreshes any open options page via storage.onChanged.
+          const kind = msg.kind === "video" ? "video" : "channel";
+          const state = await mutateEntries(kind, idsOf(msg), (entry) => ({ ...entry, hidden: !!msg.hidden }));
+          await broadcastUpdate(state);
+          sendResponse({ ok: true });
+          break;
+        }
+        case MSG.SET_CHANNEL_AGE_RULE: {
+          const days = Math.max(0, Math.floor(Number(msg.days) || 0));
+          const state = await mutateChannelEntry(msg.id, (entry) => ({
+            ...entry,
+            blockOlderThanDays: days
+          }));
+          await broadcastUpdate(state);
+          sendResponse({ ok: true, days });
+          break;
+        }
+        case MSG.FETCH_CHANNEL_SUBS: {
+          // Single channel (per-row chip). No broadcastUpdate — sub count /
+          // handle / name are cosmetic (content scripts and DNR don't need
+          // them), and the options page repaints from storage.onChanged. Doing
+          // a full broadcast + DNR rebuild per fetch is what made a big sweep
+          // crawl.
+          const info = await scrapeChannelInfo(msg.id);
+          if (info && info.rateLimited) {
+            sendResponse({ ok: false, rateLimited: true });
+            break;
+          }
+          if (info && (info.subs != null || info.handle || info.name)) {
+            await applyChannelInfo({ [msg.id]: info });
+            sendResponse({ ok: true, subs: info.subs || null, handle: info.handle || null });
+          } else {
+            sendResponse({ ok: false });
+          }
+          break;
+        }
+        case MSG.BULK_FETCH_CHANNEL_INFO: {
+          // A small lookup the caller waits for (tests, mostly). Anything big
+          // goes through START_SWEEP, which survives the caller going away.
+          const ids = Array.isArray(msg.ids) ? msg.ids.slice(0, 80) : [];
+          const { results, throttled } = await lookupChannels(ids);
+          const written = await applyChannelInfo(results);
+          sendResponse({ ok: true, got: Object.keys(results).length, written, rateLimited: throttled });
+          break;
+        }
+        case MSG.START_SWEEP: {
+          const s = await startSweep(Array.isArray(msg.ids) ? msg.ids : [], msg.label);
+          sendResponse({ ok: true, sweep: sweepStatus(s) });
+          break;
+        }
+        case MSG.STOP_SWEEP: {
+          sendResponse({ ok: true, sweep: sweepStatus(await stopSweep()) });
+          break;
+        }
+        case MSG.GET_SWEEP: {
+          sendResponse({ ok: true, sweep: sweepStatus(await loadSweep()) });
+          break;
+        }
+        case MSG.BLOCK_VIDEO: {
+          const state = await addEntry("video", msg.id, msg.title);
+          await broadcastUpdate(state);
+          sendResponse({ ok: true });
+          break;
+        }
+        case MSG.UNBLOCK_CHANNEL: {
+          const state = await removeEntry("channel", msg.id);
+          await broadcastUpdate(state);
+          sendResponse({ ok: true, undoTs: state.undoTs });
+          break;
+        }
+        case MSG.UNBLOCK_VIDEO: {
+          const state = await removeEntry("video", msg.id);
+          await broadcastUpdate(state);
+          sendResponse({ ok: true, undoTs: state.undoTs });
+          break;
+        }
+        case MSG.DELETE_DATA: {
+          const state = await deleteData(msg);
+          await broadcastUpdate(state);
+          sendResponse({ ok: true, undoTs: state.undoTs, removed: state.removed });
+          break;
+        }
+        case MSG.IMPORT_BLOCKLIST: {
+          // Merge everything in one store update — not addEntry per entry,
+          // which on a few-thousand-channel file is a few thousand writes.
+          const now = syncedNow();
+          const clearedTombs = [];
+          const added = { channels: 0, videos: 0 };
+          let enriched = 0;
+          let duplicates = 0;
+          let allowAdded = 0;
+          let folded = [];
+          await updateStore(async (state) => {
+            const { channels, videos } = state;
 
-          // Every identity an existing entry answers to — its key, its scraped
-          // @handle, its scraped UC id — so an import naming a channel by the
-          // OTHER format lands on the entry that's already there instead of
-          // creating a second one. Handles compare lowercased, as everywhere.
-          const idKey = (k) => (String(k).startsWith("@") ? String(k).toLowerCase() : String(k));
-          const owner = new Map();
-          const indexEntry = (key, e) => {
-            owner.set(idKey(key), key);
-            if (e && e.handle) owner.set(idKey(e.handle), key);
-            if (e && e.ucid) owner.set(idKey(e.ucid), key);
-          };
-          for (const [key, e] of Object.entries(channels)) indexEntry(key, e);
-
-          for (const [id, entry] of Object.entries(msg.channels || {})) {
-            if (!entry || typeof entry !== "object") continue;
-            const existingKey = owner.get(idKey(id)) || (entry.handle && owner.get(idKey(entry.handle))) ||
-              (entry.ucid && owner.get(idKey(entry.ucid)));
-            if (existingKey) {
-              // Already blocked: its mode, whitelist and age rule stay as they
-              // are, but anything it doesn't know yet — the sub count, the
-              // other identity, a real name — comes in from the file. Skipping
-              // the entry outright is what made re-importing a backup unable to
-              // restore sub counts onto a list that already had the channels.
-              const cur = channels[existingKey];
-              const next = { ...cur };
-              if (entry.subs && !cur.subs) {
-                next.subs = String(entry.subs);
-                next.subsAt = Number(entry.subsAt) || now;
-                if (Number(entry.subsV) > 0) next.subsV = Number(entry.subsV);
-              }
-              const otherHandle = id.startsWith("@") ? id : entry.handle;
-              const otherUcid = id.startsWith("UC") ? id : entry.ucid;
-              if (otherHandle && !existingKey.startsWith("@") && !cur.handle) next.handle = String(otherHandle);
-              if (otherUcid && !existingKey.startsWith("UC") && !cur.ucid) next.ucid = String(otherUcid);
-              if (entry.name && (!cur.name || cur.name === existingKey || cur.name === cur.handle)) {
-                next.name = String(entry.name);
-              }
-              if (JSON.stringify(next) !== JSON.stringify(cur)) {
-                next.updated_at = now;
-                channels[existingKey] = next;
-                indexEntry(existingKey, next);
-                enriched++;
-              } else {
-                duplicates++;
-              }
-              continue;
-            }
-            // Preserve mode/whitelist from an exported blocklist — otherwise a
-            // re-imported EXCEPT_WHITELIST channel would silently revert to a
-            // full block and lose its exceptions.
-            added.channels++;
-            channels[id] = {
-              name: entry.name || "",
-              ts: Number(entry.ts) || now,
-              updated_at: now,
-              mode: entry.mode === CHANNEL_MODE.EXCEPT_WHITELIST ? CHANNEL_MODE.EXCEPT_WHITELIST : CHANNEL_MODE.FULL,
-              whitelist: entry.whitelist && typeof entry.whitelist === "object" ? entry.whitelist : {}
+            // Every identity an existing entry answers to — its key, its scraped
+            // @handle, its scraped UC id — so an import naming a channel by the
+            // OTHER format lands on the entry that's already there instead of
+            // creating a second one. Handles compare lowercased, as everywhere.
+            const idKey = (k) => (String(k).startsWith("@") ? String(k).toLowerCase() : String(k));
+            const owner = new Map();
+            const indexEntry = (key, e) => {
+              owner.set(idKey(key), key);
+              if (e && e.handle) owner.set(idKey(e.handle), key);
+              if (e && e.ucid) owner.set(idKey(e.ucid), key);
             };
-            // Carry across the optional per-entry extras if the export had them.
-            if (entry.hidden) channels[id].hidden = true;
-            if (Number(entry.blockOlderThanDays) > 0) {
-              channels[id].blockOlderThanDays = Math.floor(Number(entry.blockOlderThanDays));
-            }
-            if (entry.subs) channels[id].subs = String(entry.subs);
-            // The lookup's stamp travels with the entry even when the lookup
-            // found no number — otherwise every failed lookup in a backup came
-            // back as "never tried" and was fetched again on each restore.
-            // `subsV` says which scrape produced it; without it a re-imported
-            // export looks like it predates the current scrape and the whole
-            // list gets swept again for counts it already has.
-            if (Number(entry.subsAt) > 0 || entry.subs) channels[id].subsAt = Number(entry.subsAt) || now;
-            if (channels[id].subsAt && Number(entry.subsV) > 0) channels[id].subsV = Number(entry.subsV);
-            if (entry.handle) channels[id].handle = String(entry.handle);
-            if (entry.ucid) channels[id].ucid = String(entry.ucid);
-            // A channel the export already knew was gone stays gone — otherwise
-            // re-importing a backup puts every dead channel back in the
-            // auto-fetch queue, which is the loop the flag exists to end. A
-            // later successful scrape clears it (see applyChannelInfo).
-            if (entry.gone) channels[id].gone = true;
-            // ...and the same channel named twice in one file, once per format,
-            // is one entry.
-            indexEntry(id, channels[id]);
-            clearedTombs.push("channel:" + id);
-          }
-          for (const [id, entry] of Object.entries(msg.videos || {})) {
-            if (!entry || typeof entry !== "object") continue;
-            if (videos[id]) {
-              if (entry.title && !videos[id].title) {
-                videos[id] = { ...videos[id], title: String(entry.title), updated_at: now };
-                enriched++;
-              } else {
-                duplicates++;
+            for (const [key, e] of Object.entries(channels)) indexEntry(key, e);
+
+            for (const [id, entry] of Object.entries(msg.channels || {})) {
+              if (!entry || typeof entry !== "object") continue;
+              const existingKey = owner.get(idKey(id)) || (entry.handle && owner.get(idKey(entry.handle))) ||
+                (entry.ucid && owner.get(idKey(entry.ucid)));
+              if (existingKey) {
+                // Already blocked: its mode, whitelist and age rule stay as they
+                // are, but anything it doesn't know yet — the sub count, the
+                // other identity, a real name — comes in from the file. Skipping
+                // the entry outright is what made re-importing a backup unable to
+                // restore sub counts onto a list that already had the channels.
+                const cur = channels[existingKey];
+                const next = { ...cur };
+                if (entry.subs && !cur.subs) {
+                  next.subs = String(entry.subs);
+                  next.subsAt = Number(entry.subsAt) || now;
+                  if (Number(entry.subsV) > 0) next.subsV = Number(entry.subsV);
+                }
+                const otherHandle = id.startsWith("@") ? id : entry.handle;
+                const otherUcid = id.startsWith("UC") ? id : entry.ucid;
+                if (otherHandle && !existingKey.startsWith("@") && !cur.handle) next.handle = String(otherHandle);
+                if (otherUcid && !existingKey.startsWith("UC") && !cur.ucid) next.ucid = String(otherUcid);
+                if (entry.name && (!cur.name || cur.name === existingKey || cur.name === cur.handle)) {
+                  next.name = String(entry.name);
+                }
+                if (JSON.stringify(next) !== JSON.stringify(cur)) {
+                  next.updated_at = now;
+                  channels[existingKey] = next;
+                  indexEntry(existingKey, next);
+                  enriched++;
+                } else {
+                  duplicates++;
+                }
+                continue;
               }
-              continue;
+              // Preserve mode/whitelist from an exported blocklist — otherwise a
+              // re-imported EXCEPT_WHITELIST channel would silently revert to a
+              // full block and lose its exceptions.
+              added.channels++;
+              channels[id] = {
+                name: entry.name || "",
+                ts: Number(entry.ts) || now,
+                updated_at: now,
+                mode: entry.mode === CHANNEL_MODE.EXCEPT_WHITELIST ? CHANNEL_MODE.EXCEPT_WHITELIST : CHANNEL_MODE.FULL,
+                whitelist: entry.whitelist && typeof entry.whitelist === "object" ? entry.whitelist : {}
+              };
+              // Carry across the optional per-entry extras if the export had them.
+              if (entry.hidden) channels[id].hidden = true;
+              if (Number(entry.blockOlderThanDays) > 0) {
+                channels[id].blockOlderThanDays = Math.floor(Number(entry.blockOlderThanDays));
+              }
+              if (entry.subs) channels[id].subs = String(entry.subs);
+              // The lookup's stamp travels with the entry even when the lookup
+              // found no number — otherwise every failed lookup in a backup came
+              // back as "never tried" and was fetched again on each restore.
+              // `subsV` says which scrape produced it; without it a re-imported
+              // export looks like it predates the current scrape and the whole
+              // list gets swept again for counts it already has.
+              if (Number(entry.subsAt) > 0 || entry.subs) channels[id].subsAt = Number(entry.subsAt) || now;
+              if (channels[id].subsAt && Number(entry.subsV) > 0) channels[id].subsV = Number(entry.subsV);
+              if (entry.handle) channels[id].handle = String(entry.handle);
+              if (entry.ucid) channels[id].ucid = String(entry.ucid);
+              // A channel the export already knew was gone stays gone — otherwise
+              // re-importing a backup puts every dead channel back in the
+              // auto-fetch queue, which is the loop the flag exists to end. A
+              // later successful scrape clears it (see applyChannelInfo).
+              if (entry.gone) channels[id].gone = true;
+              // ...and the same channel named twice in one file, once per format,
+              // is one entry.
+              indexEntry(id, channels[id]);
+              clearedTombs.push("channel:" + id);
             }
-            added.videos++;
-            videos[id] = { title: entry.title || "", ts: Number(entry.ts) || now, updated_at: now };
-            if (entry.hidden) videos[id].hidden = true;
-            clearedTombs.push("video:" + id);
+            for (const [id, entry] of Object.entries(msg.videos || {})) {
+              if (!entry || typeof entry !== "object") continue;
+              if (videos[id]) {
+                if (entry.title && !videos[id].title) {
+                  videos[id] = { ...videos[id], title: String(entry.title), updated_at: now };
+                  enriched++;
+                } else {
+                  duplicates++;
+                }
+                continue;
+              }
+              added.videos++;
+              videos[id] = { title: entry.title || "", ts: Number(entry.ts) || now, updated_at: now };
+              if (entry.hidden) videos[id].hidden = true;
+              clearedTombs.push("video:" + id);
+            }
+
+            // A backup's never-block list, merged in one write.
+            if (msg.allowlist && typeof msg.allowlist === "object") {
+              const cur = await getAllowlist();
+              const list = { ...cur.list };
+              for (const [key, v] of Object.entries(msg.allowlist)) {
+                const norm = normAllowKey(key);
+                if (!norm || list[norm]) continue;
+                list[norm] = { note: (v && v.note) || "", ts: Number(v && v.ts) || Date.now() };
+                allowAdded++;
+              }
+              if (allowAdded) await chrome.storage.sync.set({ [ALLOWLIST_KEY]: { list, ts: Date.now() } }).catch(() => {});
+            }
+            folded = foldDuplicateChannels(channels);
+          });
+          await tombstoneAll("channel", folded);
+          if (clearedTombs.length) {
+            const tombs = await getTombstones();
+            let touched = false;
+            for (const k of clearedTombs) {
+              if (tombs[k] !== undefined) {
+                delete tombs[k];
+                touched = true;
+              }
+            }
+            if (touched) await setTombstones(tombs);
           }
 
-          // A backup's never-block list, merged in one write.
-          if (msg.allowlist && typeof msg.allowlist === "object") {
-            const cur = await getAllowlist();
-            const list = { ...cur.list };
-            for (const [key, v] of Object.entries(msg.allowlist)) {
-              const norm = normAllowKey(key);
-              if (!norm || list[norm]) continue;
-              list[norm] = { note: (v && v.note) || "", ts: Number(v && v.ts) || Date.now() };
-              allowAdded++;
-            }
-            if (allowAdded) await chrome.storage.sync.set({ [ALLOWLIST_KEY]: { list, ts: Date.now() } }).catch(() => {});
-          }
-          folded = foldDuplicateChannels(channels);
-        });
-        await tombstoneAll("channel", folded);
-        if (clearedTombs.length) {
-          const tombs = await getTombstones();
-          let touched = false;
-          for (const k of clearedTombs) {
-            if (tombs[k] !== undefined) {
-              delete tombs[k];
-              touched = true;
-            }
-          }
-          if (touched) await setTombstones(tombs);
+          const fresh = await loadAll();
+          await broadcastUpdate(fresh);
+          sendResponse({
+            ok: true,
+            // totals after the merge
+            channels: Object.keys(fresh.channels).length,
+            videos: Object.keys(fresh.videos).length,
+            // what this file changed
+            added,
+            enriched,
+            duplicates,
+            allowAdded,
+            folded: folded.length
+          });
+          break;
         }
-
-        const fresh = await loadAll();
-        await broadcastUpdate(fresh);
-        sendResponse({
-          ok: true,
-          // totals after the merge
-          channels: Object.keys(fresh.channels).length,
-          videos: Object.keys(fresh.videos).length,
-          // what this file changed
-          added,
-          enriched,
-          duplicates,
-          allowAdded,
-          folded: folded.length
-        });
-        break;
+        case MSG.RESOLVE_VIDEO_CHANNEL: {
+          sendResponse({ ok: true, channelKey: await resolveVideoChannel(msg.videoId) });
+          break;
+        }
+        case MSG.REBROADCAST_BLOCKLIST: {
+          await broadcastUpdate(await loadAll());
+          sendResponse({ ok: true });
+          break;
+        }
+        case MSG.GET_RECENT_UNBLOCKS: {
+          sendResponse({ ok: true, log: await getRecentUnblocks() });
+          break;
+        }
+        case MSG.RESTORE_UNBLOCK: {
+          const state = await restoreRecentUnblock(msg.ts != null ? { ts: msg.ts } : { index: msg.index });
+          await broadcastUpdate(state);
+          sendResponse({ ok: true });
+          break;
+        }
+        case MSG.CLEAR_RECENT_UNBLOCKS: {
+          await chrome.storage.local.set({ [RECENT_UNBLOCK_KEY]: [] });
+          sendResponse({ ok: true });
+          break;
+        }
+        case MSG.GET_SYNC_STATUS: {
+          sendResponse(await self.XrnTube.serverSync.status());
+          break;
+        }
+        case MSG.SET_SYNC_CONFIG: {
+          // msg.conn: { url, user, password } to connect, or null to disconnect.
+          sendResponse(await self.XrnTube.serverSync.configure(msg.conn || null));
+          break;
+        }
+        case MSG.SYNC_NOW: {
+          sendResponse(await self.XrnTube.serverSync.syncNow());
+          break;
+        }
+        case MSG.SYNC_HISTORY: {
+          sendResponse(await self.XrnTube.serverSync.history());
+          break;
+        }
+        case MSG.SYNC_HISTORY_GET: {
+          sendResponse(await self.XrnTube.serverSync.historyItem(msg.name));
+          break;
+        }
+        case MSG.CHECK_FOR_UPDATE: {
+          sendResponse(await checkForUpdate());
+          break;
+        }
+        default:
+          break;
       }
-      case MSG.RESOLVE_VIDEO_CHANNEL: {
-        sendResponse({ ok: true, channelKey: await resolveVideoChannel(msg.videoId) });
-        break;
-      }
-      case MSG.REBROADCAST_BLOCKLIST: {
-        await broadcastUpdate(await loadAll());
-        sendResponse({ ok: true });
-        break;
-      }
-      case MSG.GET_RECENT_UNBLOCKS: {
-        sendResponse({ ok: true, log: await getRecentUnblocks() });
-        break;
-      }
-      case MSG.RESTORE_UNBLOCK: {
-        const state = await restoreRecentUnblock(msg.ts != null ? { ts: msg.ts } : { index: msg.index });
-        await broadcastUpdate(state);
-        sendResponse({ ok: true });
-        break;
-      }
-      case MSG.CLEAR_RECENT_UNBLOCKS: {
-        await chrome.storage.local.set({ [RECENT_UNBLOCK_KEY]: [] });
-        sendResponse({ ok: true });
-        break;
-      }
-      case MSG.GET_SYNC_STATUS: {
-        sendResponse(await self.XrnTube.serverSync.status());
-        break;
-      }
-      case MSG.SET_SYNC_CONFIG: {
-        // msg.conn: { url, user, password } to connect, or null to disconnect.
-        sendResponse(await self.XrnTube.serverSync.configure(msg.conn || null));
-        break;
-      }
-      case MSG.SYNC_NOW: {
-        sendResponse(await self.XrnTube.serverSync.syncNow());
-        break;
-      }
-      case MSG.SYNC_HISTORY: {
-        sendResponse(await self.XrnTube.serverSync.history());
-        break;
-      }
-      case MSG.SYNC_HISTORY_GET: {
-        sendResponse(await self.XrnTube.serverSync.historyItem(msg.name));
-        break;
-      }
-      default:
-        break;
+    } catch (err) {
+      try {
+        sendResponse({ ok: false, error: String((err && err.message) || err) });
+      } catch {}
     }
   })();
   return true; // keep the message channel open for the async response
@@ -1428,6 +1443,7 @@ chrome.runtime.onStartup.addListener(async () => {
   const state = await loadAll();
   await rebuildDnrRules(state);
   self.XrnTube.serverSync.onPoll();
+  checkForUpdate();
 });
 chrome.runtime.onInstalled.addListener(async () => {
   const state = await loadAll();
@@ -1450,12 +1466,18 @@ const CTX_BLOCK_VIDEO = "bt-block-video";
 
 function setUpContextMenus() {
   if (!chrome.contextMenus) return;
-  chrome.contextMenus.removeAll(() => {
-    const common = { contexts: ["link", "page", "video"], documentUrlPatterns: ["*://*.youtube.com/*"] };
-    chrome.contextMenus.create({ id: CTX_BLOCK_CHANNEL, title: "XrnTube: block this channel", ...common });
-    chrome.contextMenus.create({ id: CTX_BLOCK_VIDEO, title: "XrnTube: block this video", ...common });
-    void chrome.runtime.lastError; // creating over an existing id is not fatal
-  });
+  // Every call gets a callback that reads lastError: one left unread is an
+  // "Unchecked runtime.lastError" in the Errors list (creating over an id that
+  // exists, or a phone browser with no context menu to add to).
+  const settle = () => void chrome.runtime.lastError;
+  try {
+    chrome.contextMenus.removeAll(() => {
+      settle();
+      const common = { contexts: ["link", "page", "video"], documentUrlPatterns: ["*://*.youtube.com/*"] };
+      chrome.contextMenus.create({ id: CTX_BLOCK_CHANNEL, title: "XrnTube: block this channel", ...common }, settle);
+      chrome.contextMenus.create({ id: CTX_BLOCK_VIDEO, title: "XrnTube: block this video", ...common }, settle);
+    });
+  } catch {}
 }
 
 // Same URL shapes the nav guard covers (see content.js) — a link can be any of
@@ -1538,7 +1560,69 @@ chrome.alarms.create(SYNC.POLL_ALARM, { periodInMinutes: SYNC.POLL_PERIOD_MIN })
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === SYNC.POLL_ALARM) self.XrnTube.serverSync.onPoll();
   if (alarm.name === SWEEP_ALARM) kickSweep();
+  if (alarm.name === UPDATE_ALARM) checkForUpdate();
 });
+
+// ---------- updating itself ----------
+// Nobody downloads a new version by hand. Installed from the signed .crx
+// (`npm run release`; the phone), the manifest carries an update_url on the
+// sync server and the browser fetches new versions from there on its own —
+// every few hours, or now through requestUpdateCheck(). Loaded unpacked (the
+// laptop, from the working copy) there is no update URL, but the browser
+// serves an unpacked extension's files straight from its folder, so a
+// manifest there naming another version means the folder has moved on.
+// Either way the new version applies at once, not at the next browser start.
+// Open YouTube tabs keep the old content script until they're reloaded, and
+// it says so when a block can't reach this worker.
+const UPDATE_ALARM = "bt-update-check";
+// The version this worker's code was installed at. Unpacked, that isn't
+// getManifest()'s: the browser keeps the worker code it registered when the
+// extension loaded and runs it again after a restart, while the manifest it
+// loads is the folder's. So after a release made with the browser closed, the
+// manifest names the new version and the old code goes on running.
+const WORKER_VERSION_KEY = "bt_worker_version";
+chrome.runtime.onUpdateAvailable.addListener(() => chrome.runtime.reload());
+// Fires once per install of this code, which the browser has just read from
+// the folder, so the manifest loaded now is this code's version.
+self.addEventListener("install", (e) => {
+  e.waitUntil(chrome.storage.local.set({ [WORKER_VERSION_KEY]: chrome.runtime.getManifest().version }));
+});
+
+async function checkForUpdate() {
+  const running = chrome.runtime.getManifest();
+  const { installType } = await chrome.management.getSelf();
+  if (installType === "development") {
+    const code = (await chrome.storage.local.get(WORKER_VERSION_KEY))[WORKER_VERSION_KEY] || running.version;
+    let onDisk = code;
+    try {
+      const res = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" });
+      onDisk = (await res.json()).version;
+    } catch {} // mid-edit; the next check reads it again
+    if (onDisk === code) return { status: "no_update", version: code, installType };
+    setTimeout(() => chrome.runtime.reload(), 250); // the reply reaches the caller first
+    return { status: "reloading", version: onDisk, installType };
+  }
+  if (!running.update_url) return { status: "no_update_url", version: running.version, installType };
+  // "update_available" (onUpdateAvailable follows once it's downloaded),
+  // "no_update", or "throttled" when asked too often.
+  const res = await chrome.runtime.requestUpdateCheck();
+  return { status: res.status, version: res.version || running.version, installType };
+}
+
+// Created only when missing: creating an alarm again restarts its period, and
+// this worker starts far more often than once an hour.
+chrome.alarms.get(UPDATE_ALARM).then((a) => {
+  if (!a) chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 60 });
+});
+// Reading one local file is cheap enough for every start of the worker, so
+// the laptop picks up a new version the next time anything wakes it. Not on
+// the start that installs this code (no active worker yet): that code is the
+// folder's, and its version isn't stored until the install event, after this.
+if (self.registration.active) {
+  chrome.management.getSelf().then((s) => {
+    if (s.installType === "development") checkForUpdate();
+  });
+}
 // Whatever woke the worker, an unfinished sweep carries on.
 loadSweep().then((s) => {
   if (s.queue.length) kickSweep();

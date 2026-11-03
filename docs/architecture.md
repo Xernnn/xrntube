@@ -1,12 +1,14 @@
 # Architecture
 
-How the four contexts fit together and what each one owns.
+How the five contexts fit together and what each one owns.
 
 Four contexts talk to each other exclusively through `chrome.runtime`
 messages defined in `shared/constants.js` (`XrnTube.MSG`) — there is no
 shared module system, so this file is the map of what messages exist and
 must be loaded via `<script>`/`importScripts` before any file that uses
-`self.XrnTube`.
+`self.XrnTube`. The fifth, `content/page-hook.js`, runs in the page's own
+(MAIN) world with no `chrome.*` at all, and talks to content.js over
+`window.postMessage` — see its section below.
 
 The background context is one MV3 service worker, `background.js`, which
 pulls in the other two plain scripts with
@@ -118,6 +120,36 @@ and any wake resumes an unfinished queue. `STOP_SWEEP` empties it,
 `BULK_FETCH_CHANNEL_INFO` stays as a small lookup the caller waits for (the
 tests use it), through the same `lookupChannels()`.
 
+**Updating itself** (`checkForUpdate()`) — nobody downloads a new version.
+`chrome.management.getSelf().installType` says which of two ways applies.
+Installed from the signed `.crx` (the phone), the manifest has an
+`update_url` on the sync server (`npm run release` writes it into the `.crx`
+only; see [sync-server.md](sync-server.md) → Updates), the browser polls it
+every few hours, and `requestUpdateCheck()` asks sooner. Loaded unpacked —
+`"development"`, the laptop running the working copy — there is no update
+URL, but the browser serves an unpacked extension's files straight from its
+folder, so `fetch(getURL("manifest.json"))` reads the folder as it is now: a
+version there other than the running code's means reload. The running
+code's version isn't `getManifest()`'s: Chromium registers the worker's code
+when the extension loads and runs that copy again after a browser restart,
+while the manifest it loads is the folder's — so a version that landed while
+the browser was closed shows in `getManifest()` with the old code running
+it. The worker's `install` event, once per install of its code, stores the
+version in `bt_worker_version`, and that is what the folder is compared
+with; the start that installs the code skips the check (no
+`self.registration.active` yet, and nothing stored until the event). That check runs on
+every start of the worker (one local file), on browser start and on the
+hourly `bt-update-check` alarm, which is created **only when missing** —
+creating an alarm again restarts its period, and a worker that starts more
+often than hourly would push it back forever. `onUpdateAvailable` reloads at
+once, so a downloaded version applies now rather than at the next browser
+start. Two catches: Chromium disables an unpacked extension that reloads
+while developer mode is off (`unsupportedDeveloperExtension`), which is fine
+because loading it by hand needs developer mode on; and open YouTube tabs
+keep the orphaned old content script until reloaded (it says so when a block
+can't reach the worker). Options → Sync → **Check now** sends
+`CHECK_FOR_UPDATE`.
+
 ## `background/server-sync.js`
 
 Sync with the user's own server (`server/xrntube-sync.py`; protocol and
@@ -188,10 +220,10 @@ before render.
 tile names its uploader in plain text** — measured live, a rail of 26
 `yt-lockup-view-model`s carrying exactly two anchors each, both
 `/watch?v=…`, and not one channel link on the page. `tileChannels()`
-therefore finds nothing, every channel block misses, and the hover menu can
-only offer "Block this video"; matching the visible name against a blocklist
-would be guessing a channel, which is the one thing this codebase never
-does. The first rail comes with `ytInitialData` and was already covered, but
+therefore finds nothing and every channel block misses (the ⋮ menu's channel
+row there comes from what this layer read, via `hookUploaders`); matching the
+visible name against a blocklist would be guessing a channel, which is the
+one thing this codebase never does. The first rail comes with `ytInitialData` and was already covered, but
 **every in-app hop from one video to the next fetches a fresh rail from
 `/next`** — so without it, blocked channels reappeared in the sidebar the
 moment you clicked anything. `/player` is still left alone deliberately: it
@@ -368,13 +400,18 @@ and does four jobs of its own:
    `ytd-reel-video-renderer` — YouTube's vertical Shorts feed keeps
    several mounted at once and just re-flags which is current, so a plain
    childList watch would miss it.
-2. **Hover-to-block UI**: injects a 🚫 button into unblocked tiles with a
-   menu listing "Block this video" plus, per distinct channel found in
-   that tile (a tile can list more than one via YouTube's
-   channel-collaboration feature — see `collectChannels()`), *two* entries:
-   a full "Block channel: X" and a softer "Block all videos from X (allow
-   some later)" — see [blocking-rules.md](blocking-rules.md) for what the difference
-   actually does.
+2. **Block rows in YouTube's ⋮ menu**: a click on a tile's own ⋮ is noted
+   on its way down (capture phase, `onTileMenuTap()`), and when YouTube's
+   popup opens, rows are added under its own: "Block this video" plus, per
+   distinct channel found in that tile (a tile can list more than one via
+   YouTube's channel-collaboration feature — see `collectChannels()`),
+   *two*: a full "Block channel: X" and a softer "Block all videos from X"
+   (its channel stays; allow some later) — see
+   [blocking-rules.md](blocking-rules.md) for what the difference actually
+   does. A related-column tile names its uploader only as text, so its
+   channel comes from `hookUploaders`: the uploader layer 0 read for that
+   video id, kept only when the item named exactly one channel. Details
+   under `content/content.css` below.
 3. **Navigation interception**: `declarativeNetRequest` (background.js)
    only catches exact blocked video IDs or exact channel *page* URLs
    belonging to a FULL-mode channel at the network layer — it cannot know
@@ -547,40 +584,73 @@ grid stands in, which never moves a thread either.
 there was no shared module system to hold one copy — which stopped being
 true once `constants.js` was loaded by both.
 
-## `content/content.css`
+## `content/content.css` and the ⋮ menu rows
 
-The manifest's only stylesheet, and it covers **just the hover UI** — the
-🚫 `.bt-block-btn` and its `.bt-block-menu`. The button is anchored
-bottom-right of a tile on purpose: YouTube's thumbnail sits along the full
-top (grid tiles) or the full left (compact/search/sidebar tiles), so
-bottom-right lands in the metadata area either way, clear of both the
-mouseover video preview (which paints over anything on the thumbnail at any
-z-index) and YouTube's own 3-dot menu.
+The manifest's only stylesheet, and it covers **just XrnTube's rows in
+YouTube's ⋮ menu** (`<bt-tile-menu>` and its `.bt-menu-row`s). Everything
+else that was once here — the `#secondary` removal, the `#primary` reflow —
+lives in content.js's `<style id="bt-instant-hide">`, because it is
+toggle-driven and a static stylesheet cannot be switched off. **A new rule
+belongs here only if it should apply unconditionally, forever.**
 
-Everything else that was once here — the `#secondary` removal, the
-`#primary` reflow — now lives in content.js's `<style id="bt-instant-hide">`,
-because it is toggle-driven and a static stylesheet cannot be switched off.
-**A new rule belongs here only if it should apply unconditionally, forever.**
+Tiles used to carry a 🚫 button of their own beside YouTube's ⋮: two menus
+per video, and on a phone, with no hover to hide it, both always on screen.
+Now there is no button of ours at all. `onTileMenuTap()` listens for clicks
+in the capture phase, so it runs before YouTube's handler opens anything; a
+click inside `MENU_TRIGGER_SEL` within a tile (`MENU_TILE_SEL`) records that
+tile and its `extractInfo()`. A `*-rich-item-renderer` cell is lifted to the
+wrapper, since that is what removing the tile has to remove. `tendTileMenu()`
+then polls (50ms) for up to `MENU_OPEN_WAIT_MS` until YouTube's popup is up
+and adds the rows; it is never ours, and comes in four shapes, all measured
+live:
 
-On a touch screen (`@media (hover: none)`) the button is always shown, a
-little larger — there is no hover to reveal it, so without this every 🚫 on
-m.youtube.com was there but invisible. Always shown, its page-wide z-index
-also drew it over YouTube's sticky watch-page player for a tile scrolled
-underneath, so there each host (`[data-bt-btn]`) gets `isolation: isolate`,
-which keeps the z-index inside its own tile.
+| where | popup | rows go |
+|---|---|---|
+| desktop, `ytd-video-renderer` (search), the playlist panel | `ytd-popup-container > tp-yt-iron-dropdown > ytd-menu-popup-renderer` | after `#items`, inside the renderer |
+| desktop, every lockup (related column, channel tabs, home grid) | `… tp-yt-iron-dropdown > yt-sheet-view-model … yt-list-view-model` | after the list |
+| phone, `ytm-*` tiles | `bottom-sheet-container > bottom-sheet-layout` | into `#content-wrapper`'s content |
+| phone, lockups | `bottom-sheet-container > yt-sheet-view-model > bottom-sheet-layout` | the same |
 
-One button per tile means one per grid cell: `*-rich-item-renderer` wraps
-the real tile, and both are in `RENDERER_SELECTOR`. `injectBlockButton()`
-gives the button to the wrapper (removing it removes the whole cell) and
-none to the tile inside it. On a phone, a button on each showed two XrnTube
-menus per video on channel tabs and the other rich-grid feeds.
+Two traps, both from the popup having sized itself before our rows existed:
+
+- **The dropdown clips them.** iron-fit gave `ytd-menu-popup-renderer` an
+  inline `max-height` from its content at open time (160px for three rows),
+  and the lockup sheet's dropdown simply has that height. Rows appended
+  after that sit under the edge. An `iron-resize` event on the
+  `tp-yt-iron-dropdown` makes it refit around them.
+- **The phone's sheet writes its content height into an inline
+  `max-height`** on `#content-wrapper` (96px for two rows) and is anchored to
+  the bottom, so added rows are cut off below the screen. That max-height is
+  raised to the new `scrollHeight`, capped at 70% of the viewport; the
+  sheet, anchored at `bottom: 0`, grows upward.
+
+And one from desktop reusing **one dropdown for every menu on the page**,
+the watch page's own "…" included. Rows left in it after it closed turned
+up in the next menu it showed, so once placed they are tended (250ms) until
+the popup stops rendering and are then removed. A click anywhere outside
+YouTube's popups drops a pending tap too, or a menu opened within the wait
+would have received a tile's rows. If the popup re-renders and drops them
+while still open, they are put back.
+
+Picking a row closes the popup (Escape on the dropdown, with a click outside
+it as the fallback; the sheet's own close button on a phone) and then
+`blockAndRemove()`. The rows take their colours from the popup (`color:
+inherit`, separators and hover mixed from `currentColor`), so they follow
+the light and dark themes. Their height and icon inset are read off
+YouTube's first row (`matchNativeRows()`): 36px on the dropdown, 40px on
+the lockup sheet, 48px on the phone. `tilemenu-test` (desktop) and
+`mobile-test` (phone) guard all of the above.
+
+A tile with no ⋮ of its own gets no rows: a search result's channel card,
+or a channel's Playlists tab on the desktop. The toolbar popup and
+right-click cover those.
 
 ## `popup/`
 
 Quick-block UI for the tab you're currently on. Asks the
 content script for `GET_PAGE_TARGET` (current video + the channels found
 in scope) and renders both block-mode buttons per channel (see [Channel
-block modes](blocking-rules.md)), same as the hover menu. It renders **one row per
+block modes](blocking-rules.md)), same as the ⋮ menu rows. It renders **one row per
 returned channel**, which is why `getCurrentPageTarget(withAliases)` splits:
 the nav guard passes `true` and wants every identity format it can find (more
 chances to match however an entry is keyed), the popup passes nothing and
@@ -596,7 +666,19 @@ On **m.youtube.com** (a phone browser) the owner is the icon link in
 `ytm-slim-video-action-bar-renderer` and the scope is
 `ytm-slim-video-metadata-section-renderer`; the tab title stays a bare
 "YouTube" for a while there, so the title falls back to
-`h2.slim-video-information-title` (`mobile-test` guards both).
+`h2.slim-video-information-title`, or `yt-video-metadata-view-model h2` in
+the view-model layout YouTube began rolling out there in October 2026
+(`mobile-test` guards both). That rollout moved the "1mo ago" line too, into
+`yt-video-subtitle-view-model`, which `AGE_SCOPE_SELECTORS` lists next to the
+old `.slim-video-information-subtitle` as the fallback for when the page has
+no `datePublished` meta to read first.
+
+A phone browser may also open the popup **as a tab of its own**, which is
+then the active tab, with the YouTube page behind it. `getActiveTab()`
+therefore falls back to the most recently used YouTube tab when the active
+tab isn't YouTube and `chrome.tabs.getCurrent()` says the popup is in a
+tab. A real popup has no tab of its own, so the desktop is unaffected
+(`popup-test`).
 
 Anything already blocked shows its status with an **Unblock** button rather
 than a dead label, and `findChannelKey()` recognises a channel stored under
@@ -610,7 +692,7 @@ how many tiles layer 0 removed on this page view (`early`), how many the DOM
 scrub removed after they rendered (`dom`), and `layer0Misses` past the grace
 period (`late`, `degraded` at `LAYER0_WARN_AT`). The counters reset on
 `yt-navigate-start`, before the next page's responses arrive. It exists
-because `noteLayer0Miss()`'s warning goes to a console a phone doesn't have;
+because `noteLayer0Miss()`'s note goes to a console a phone doesn't have;
 `datalayer-live-test` asserts what it reports.
 
 ## `options/`
@@ -767,7 +849,10 @@ Connect / "Sync now" / "Disconnect this device", and a status block from
 `GET_SYNC_STATUS` (the server's host, the remote counts, last push and
 pull). An empty password on an already-connected device keeps the saved one.
 The options page never talks to the server itself — everything goes through
-`SET_SYNC_CONFIG` / `SYNC_NOW` to `server-sync.js`. Each EXCEPT_WHITELIST channel row expands into a panel
+`SET_SYNC_CONFIG` / `SYNC_NOW` to `server-sync.js`. Under it, the **Updates**
+card (`initUpdates()`): the running version, how this copy updates (unpacked
+from a folder, from the `update_url`'s host, or neither), and **Check now** →
+`CHECK_FOR_UPDATE`, whose answer it puts in words; a reload closes the page. Each EXCEPT_WHITELIST channel row expands into a panel
 (`buildWhitelistSection()`) with the whitelist editor (`extractVideoId()`
 parses a URL or bare ID), the "only block videos older than N days" control
 (`buildAgeRule()` → `SET_CHANNEL_AGE_RULE`), and a flip-to-FULL button.

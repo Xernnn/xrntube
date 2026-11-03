@@ -1,87 +1,138 @@
-// Packs the extension into dist/xrntube-<version>.zip — what a phone browser
-// loads (Quetta's developer mode, or the Chrome Web Store upload). Only what
-// the browser runs goes in: no tests, server, docs or node_modules.
+// Packs the extension for a browser that doesn't load it from this folder.
 //
-//   node scripts/package.mjs                     build the zip
+//   node scripts/package.mjs                     dist/xrntube-<version>.zip, for
+//                                                a store upload or loading by hand
 //   node scripts/package.mjs --upload homeserver  …and copy it to the sync
-//                                                 server's downloads over ssh
+//                                                server's downloads over ssh
+//   node scripts/package.mjs --release           (npm run release) sign
+//       dist/xrntube-<version>.crx and publish it with dist/updates.xml on the
+//       sync server, where every browser that installed the .crx looks for new
+//       versions on its own. A version the server already has is bumped first.
 //
-// No zip tool needed: a plain PKZIP writer over node:zlib, with fixed file
-// times so the same source always gives the same bytes.
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "fs";
+// --release reads ~/.config/xrntube/release.json:
+//   { "server": "https://<host>/xrntube", "ssh": "<ssh-host>" }
+// ("ssh" may list several ways to the same server, tried in order — say the
+// tailnet, then the LAN) and signs with ~/.config/xrntube/xrntube.pem, made on the first release.
+// Neither belongs in the repo: the address never enters it, and the key is
+// what makes an update the same extension — lose it and every phone has to
+// install afresh under a new ID (with empty storage until sync refills it).
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from "fs";
 import { join, relative } from "path";
-import { deflateRawSync, crc32 } from "zlib";
+import { homedir } from "os";
 import { execFileSync } from "child_process";
+import { generateKeyPairSync, createPrivateKey } from "crypto";
+import { packageFiles, withUpdateUrl, zip, crx3, extensionId, updateManifest, compareVersions } from "./crx.mjs";
 
 const ROOT = new URL("..", import.meta.url).pathname;
-const INCLUDE = ["manifest.json", "background", "content", "shared", "popup", "options", "icons"];
-const { version } = JSON.parse(readFileSync(join(ROOT, "manifest.json"), "utf8"));
+const MANIFEST = join(ROOT, "manifest.json");
+const DIST = join(ROOT, "dist");
+const CONFIG_DIR = join(homedir(), ".config", "xrntube");
+const REMOTE_DIR = "xrntube-sync/data"; // the sync server's --data, from the ssh login's home
+const arg = (name) => process.argv.indexOf(name);
 
-const files = [];
-const walk = (p) => {
-  if (statSync(p).isDirectory()) for (const f of readdirSync(p).sort()) walk(join(p, f));
-  else files.push(p);
-};
-for (const entry of INCLUDE) walk(join(ROOT, entry));
+const version = () => JSON.parse(readFileSync(MANIFEST, "utf8")).version;
+mkdirSync(DIST, { recursive: true });
 
-const DOS_TIME = 0; // 00:00:00
-const DOS_DATE = (2026 - 1980) << 9 | 1 << 5 | 1; // 2026-01-01
-const locals = [];
-const central = [];
-let offset = 0;
-for (const file of files) {
-  const name = Buffer.from(relative(ROOT, file).split("\\").join("/"));
-  const data = readFileSync(file);
-  const packed = deflateRawSync(data, { level: 9 });
-  const crc = crc32(data);
-  const head = Buffer.alloc(30);
-  head.writeUInt32LE(0x04034b50, 0);
-  head.writeUInt16LE(20, 4); // version needed
-  head.writeUInt16LE(0x0800, 6); // UTF-8 names
-  head.writeUInt16LE(8, 8); // deflate
-  head.writeUInt16LE(DOS_TIME, 10);
-  head.writeUInt16LE(DOS_DATE, 12);
-  head.writeUInt32LE(crc, 14);
-  head.writeUInt32LE(packed.length, 18);
-  head.writeUInt32LE(data.length, 22);
-  head.writeUInt16LE(name.length, 26);
-  locals.push(head, name, packed);
-  const dir = Buffer.alloc(46);
-  dir.writeUInt32LE(0x02014b50, 0);
-  dir.writeUInt16LE(20, 4);
-  dir.writeUInt16LE(20, 6);
-  dir.writeUInt16LE(0x0800, 8);
-  dir.writeUInt16LE(8, 10);
-  dir.writeUInt16LE(DOS_TIME, 12);
-  dir.writeUInt16LE(DOS_DATE, 14);
-  dir.writeUInt32LE(crc, 16);
-  dir.writeUInt32LE(packed.length, 20);
-  dir.writeUInt32LE(data.length, 24);
-  dir.writeUInt16LE(name.length, 28);
-  dir.writeUInt32LE(offset, 42);
-  central.push(dir, name);
-  offset += head.length + name.length + packed.length;
+function buildZip() {
+  const out = join(DIST, `xrntube-${version()}.zip`);
+  const files = packageFiles(ROOT);
+  writeFileSync(out, zip(files));
+  console.log(`${relative(ROOT, out)}: ${files.length} files, ${Math.round(statSync(out).size / 1024)} KB`);
+  return out;
 }
-const centralBuf = Buffer.concat(central);
-const end = Buffer.alloc(22);
-end.writeUInt32LE(0x06054b50, 0);
-end.writeUInt16LE(files.length, 8);
-end.writeUInt16LE(files.length, 10);
-end.writeUInt32LE(centralBuf.length, 12);
-end.writeUInt32LE(offset, 16);
 
-mkdirSync(join(ROOT, "dist"), { recursive: true });
-const out = join(ROOT, "dist", `xrntube-${version}.zip`);
-writeFileSync(out, Buffer.concat([...locals, centralBuf, end]));
-console.log(`${relative(ROOT, out)}: ${files.length} files, ${Math.round(statSync(out).size / 1024)} KB`);
+const ssh = (host, command, input) => execFileSync("ssh", [host, command], { input, stdio: [input ? "pipe" : "ignore", "inherit", "inherit"] });
 
-const at = process.argv.indexOf("--upload");
-if (at > 0) {
-  const host = process.argv[at + 1];
-  if (!host) throw new Error("--upload needs an ssh host");
-  // Two names: the versioned file, and a stable one a phone can bookmark.
-  for (const name of [`xrntube-${version}.zip`, "xrntube.zip"]) {
-    execFileSync("ssh", [host, `cat > xrntube-sync/data/downloads/${name}`], { input: readFileSync(out) });
+if (arg("--release") > 0) {
+  await release();
+} else {
+  const out = buildZip();
+  const at = arg("--upload");
+  if (at > 0) {
+    const host = process.argv[at + 1];
+    if (!host) throw new Error("--upload needs an ssh host");
+    // Two names: the versioned file, and a stable one a phone can bookmark.
+    for (const name of [`xrntube-${version()}.zip`, "xrntube.zip"]) {
+      ssh(host, `cat > ${REMOTE_DIR}/downloads/${name}`, readFileSync(out));
+    }
+    console.log(`uploaded to ${host}: …/xrntube/download/xrntube-${version()}.zip and …/download/xrntube.zip`);
   }
-  console.log(`uploaded to ${host}: …/xrntube/download/xrntube-${version}.zip and …/download/xrntube.zip`);
+}
+
+async function release() {
+  const configFile = join(CONFIG_DIR, "release.json");
+  if (!existsSync(configFile)) {
+    console.error(`No ${configFile}. Create it with the sync server's public address and its ssh host:
+  { "server": "https://<host>/xrntube", "ssh": "<ssh-host>" }`);
+    process.exit(1);
+  }
+  const { server: rawServer, ssh: hosts } = JSON.parse(readFileSync(configFile, "utf8"));
+  const server = String(rawServer || "").replace(/\/+$/, "");
+  const tried = [].concat(hosts || []);
+  if (!/^https:\/\/[^/]+/.test(server) || !tried.length) throw new Error(`${configFile} needs "server" (https://…) and "ssh"`);
+  // Found before anything is bumped, so an unreachable server changes nothing.
+  const host = tried.find((h) => {
+    try {
+      execFileSync("ssh", ["-o", "ConnectTimeout=8", "-o", "BatchMode=yes", h, "true"], { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (!host) throw new Error(`no ssh host in ${configFile} answers: ${tried.join(", ")}`);
+  console.log(`publishing over ssh to ${host}`);
+
+  const keyFile = join(CONFIG_DIR, "xrntube.pem");
+  if (!existsSync(keyFile)) {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    writeFileSync(keyFile, privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
+    console.log(`made a signing key: ${keyFile} — back it up; updates need this exact key`);
+  }
+  const key = createPrivateKey(readFileSync(keyFile));
+  const id = extensionId(key);
+
+  // A browser only takes a version newer than the one it has, so publishing
+  // the same number twice would reach nobody. Bump past whatever is live.
+  const live = await liveVersion(server);
+  if (live && compareVersions(live, version()) >= 0) {
+    const parts = live.split(".");
+    parts[parts.length - 1] = String(Number(parts[parts.length - 1]) + 1);
+    const next = parts.join(".");
+    const text = readFileSync(MANIFEST, "utf8");
+    writeFileSync(MANIFEST, text.replace(/("version"\s*:\s*")[^"]*(")/, `$1${next}$2`));
+    console.log(`the server already has ${live}: manifest.json is now ${next}`);
+  }
+  const v = version();
+
+  buildZip();
+  const updateUrl = `${server}/update/updates.xml`;
+  const crx = crx3(zip(withUpdateUrl(packageFiles(ROOT), updateUrl)), key);
+  const crxName = `xrntube-${v}.crx`;
+  writeFileSync(join(DIST, crxName), crx);
+  const xml = updateManifest({ id, version: v, codebase: `${server}/update/${crxName}`, crx });
+  writeFileSync(join(DIST, "updates.xml"), xml);
+  console.log(`dist/${crxName}: ${Math.round(crx.length / 1024)} KB, extension ID ${id}`);
+
+  // The .crx files first and updates.xml last, each written beside its final
+  // name and moved into place, so a browser never reads a half-written file
+  // or a manifest pointing at a .crx that isn't there yet.
+  const put = (name, data) => ssh(host, `cat > ${REMOTE_DIR}/update/${name}.part && mv ${REMOTE_DIR}/update/${name}.part ${REMOTE_DIR}/update/${name}`, data);
+  ssh(host, `mkdir -p ${REMOTE_DIR}/update`);
+  put(crxName, crx);
+  put("xrntube.crx", crx); // the stable link a new install starts from
+  put("updates.xml", Buffer.from(xml));
+  ssh(host, `cd ${REMOTE_DIR}/update && for f in xrntube-*.crx; do [ "$f" = ${crxName} ] || rm -f "$f"; done`);
+
+  const now = await liveVersion(server);
+  if (now !== v) throw new Error(`uploaded, but ${updateUrl} says ${now || "nothing"} — is the server's /update/ route deployed?`);
+  console.log(`published ${v}. Browsers with the .crx pick it up within hours, or at once from options → Sync → Check now.
+First install on a new device: ${server}/update/xrntube.crx`);
+}
+
+async function liveVersion(server) {
+  const res = await fetch(`${server}/update/updates.xml`, { cache: "no-store" });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${server}/update/updates.xml answered ${res.status}`);
+  const m = /updatecheck[^>]*\sversion='([^']+)'/.exec(await res.text());
+  return m ? m[1] : null;
 }

@@ -74,6 +74,11 @@ self.XrnTube.MSG = {
   // through its ordinary import preview.
   SYNC_HISTORY: "SYNC_HISTORY",
   SYNC_HISTORY_GET: "SYNC_HISTORY_GET",
+  // Options → Sync → Check now: look for a new version immediately. Answers
+  // { status, version, installType } — status is the browser's own
+  // ("update_available" / "no_update" / "throttled"), or "reloading" for an
+  // unpacked install whose folder has a new version, or "no_update_url".
+  CHECK_FOR_UPDATE: "CHECK_FOR_UPDATE",
   // Content script → popup: how the layers are doing on this tab — what the
   // JSON layer removed, and how much the DOM scrub had to catch after it.
   GET_PAGE_HEALTH: "GET_PAGE_HEALTH",

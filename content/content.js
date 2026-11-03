@@ -316,14 +316,25 @@
   instantHideStyle.id = "bt-instant-hide";
   (document.documentElement || document).appendChild(instantHideStyle);
 
+  // A button in the phone's row under a video (Like, Share, Save, Report…).
+  // The newer row is bare button-view-models, the older one ytm-*-renderer
+  // wrappers; either way the label is on the <button> inside. Like and
+  // Dislike sit in their own view models and never match a label here.
+  const phoneAction = (labels) =>
+    `ytm-slim-video-action-bar-renderer :is(button-view-model, ytm-button-renderer, ytm-slim-metadata-button-renderer):has(:is(${ariaSel("", labels)}))`;
+
   // Static instant-hide rules — don't depend on the blocklist, but DO depend on
   // the feature toggles, so this is rebuilt whenever settings change. Each
   // block is emitted only if its toggle is on.
   const STATIC_CSS_PARTS = {
+    // The phone's guide is the bottom bar, whose items are bare tabs with no
+    // link — each says what it is only by its class (pivot-w2w is Home,
+    // "what to watch").
     sidebarHome: `
       ytd-mini-guide-entry-renderer:has(> a[href="/"]),
       ytd-guide-entry-renderer:has(> a[href="/"]),
       ytm-pivot-bar-item-renderer:has(a[href="/"]),
+      ytm-pivot-bar-item-renderer:has(> .pivot-w2w),
       ytm-guide-entry-renderer:has(a[href="/"])
         { display: none !important; }`,
     sidebarShorts: `
@@ -331,17 +342,24 @@
       ytd-guide-entry-renderer:has(> a[href="/shorts/"]),
       ytd-guide-entry-renderer:has(> a[title="Shorts" i]),
       ytm-pivot-bar-item-renderer:has(a[href="/shorts/"]),
+      ytm-pivot-bar-item-renderer:has(> .pivot-shorts),
       ytm-guide-entry-renderer:has(a[href="/shorts/"])
         { display: none !important; }`,
     sidebarReportHistory: `
       ytd-guide-entry-renderer:has(> a[title="Report history" i])
         { display: none !important; }`,
+    // On the phone, Create is a tab in the bottom bar and the bell sits in
+    // the top bar.
     mastheadCreate: `
-      ${ariaSel("ytd-masthead ", L.create)}
+      ${ariaSel("ytd-masthead ", L.create)},
+      ytm-pivot-bar-item-renderer:has(> .pivot-create),
+      ytm-pivot-bar-item-renderer:has(${ariaSel("", L.create)})
         { display: none !important; }`,
     mastheadNotifications: `
       ytd-masthead [aria-label*="notification" i],
-      ytd-notification-topbar-button-renderer
+      ytd-notification-topbar-button-renderer,
+      .mobile-topbar-header [aria-label*="notification" i],
+      ytm-notification-topbar-button-renderer
         { display: none !important; }`,
     hideVoiceSearch: `
       #voice-search-button,
@@ -435,7 +453,8 @@
          YouTube migrates it to a view model (as it did the "Ask" block just
          above), the successor tag has to be added here; nothing else in the
          rule would keep working on its own. */
-      ytd-video-description-infocards-section-renderer
+      ytd-video-description-infocards-section-renderer,
+      ytm-video-description-infocards-section-renderer
         { display: none !important; }`,
     // YouTube ships a working picture-in-picture button in every player and
     // hides it; this only un-hides it — the click, icon and tooltip are its
@@ -457,22 +476,31 @@
         opacity: 1 !important;
       }`,
     actionShare: `
-      ytd-watch-metadata #actions yt-button-view-model:has(:is(${ariaSel("", L.share)}))
+      ytd-watch-metadata #actions yt-button-view-model:has(:is(${ariaSel("", L.share)})),
+      ${phoneAction(L.share)}
         { display: none !important; }`,
     actionSave: `
-      ytd-watch-metadata #actions yt-button-view-model:has(:is(${ariaSel("", L.save)}))
+      ytd-watch-metadata #actions yt-button-view-model:has(:is(${ariaSel("", L.save)})),
+      ${phoneAction(L.save)}
         { display: none !important; }`,
     actionClip: `
-      ytd-watch-metadata #actions yt-button-view-model:has(:is(${ariaSel("", L.clip)}))
+      ytd-watch-metadata #actions yt-button-view-model:has(:is(${ariaSel("", L.clip)})),
+      ${phoneAction(L.clip)}
         { display: none !important; }`,
     actionThanks: `
-      ytd-watch-metadata #actions yt-button-view-model:has(:is(${ariaSel("", L.thanks)}))
+      ytd-watch-metadata #actions yt-button-view-model:has(:is(${ariaSel("", L.thanks)})),
+      ${phoneAction(L.thanks)}
         { display: none !important; }`,
     actionDownload: `
-      ytd-watch-metadata #actions ytd-download-button-renderer
+      ytd-watch-metadata #actions ytd-download-button-renderer,
+      ${phoneAction(L.download)}
         { display: none !important; }`,
+    // The phone has no overflow menu under a video: Report sits in the row
+    // itself, so it goes with this switch, the one that exists to take
+    // Report out of reach.
     actionMore: `
-      ytd-watch-metadata #actions yt-icon-button:has(:is(${ariaSel("", L.more)}))
+      ytd-watch-metadata #actions yt-icon-button:has(:is(${ariaSel("", L.more)})),
+      ${phoneAction([...L.more, ...L.report])}
         { display: none !important; }`,
     joinButton: `
       /* the legacy "Join" (channel membership) button, watch + channel page.
@@ -487,9 +515,16 @@
          text in scrubMembersOnly since its class is shared with other badges) */
       :is(${["ytd-rich-item-renderer", "ytd-video-renderer", "ytd-grid-video-renderer", "ytd-compact-video-renderer", "yt-lockup-view-model"].join(",")}):has(.badge-style-type-members-only)
         { display: none !important; }`,
+    // On the phone the related videos are a list under the video rather than
+    // a column beside it, and nothing needs reflowing once it's gone. Hidden,
+    // not removed: it is YouTube's own lazy-list, and the comments teaser and
+    // the description live in sibling sections that must stay.
     removeRelated: `
       #secondary, #secondary-inner,
       ytd-watch-next-secondary-results-renderer { display: none !important; }
+      ytm-single-column-watch-next-results-renderer .related-items-container,
+      ytm-single-column-watch-next-results-renderer ytm-item-section-renderer:has(> lazy-list > :is(ytm-video-with-context-renderer, ytm-compact-video-renderer, yt-lockup-view-model))
+        { display: none !important; }
       /* Reclaim the space the related column left (was content.css). Rather
          than going full-width — which on a wide screen makes a 16:9 player
          taller than the viewport, pushing the title below the fold — cap the
@@ -1326,6 +1361,7 @@
       let reason = null;
       try {
         reason = judgeHookItem(d.items[i]);
+        if (!reason) rememberHookUploader(d.items[i]);
       } catch {
         reason = null; // never let one odd renderer stall the response
       }
@@ -1393,7 +1429,7 @@
   // rest of a tile names channels that are NOT the uploader: a search result
   // carries a description snippet, and YouTube linkifies the @mentions in it.
   // Scanning the whole tile therefore deleted a video for *talking about* a
-  // blocked channel, and offered that channel in the hover block menu as
+  // blocked channel, and offered that channel in the tile's block menu as
   // though it were the uploader — the false-positive class that "never guess
   // a channel" exists to prevent. Upstream BlockTube can't hit this at all,
   // because its rules name one exact field per renderer
@@ -1577,110 +1613,339 @@
     }
     return reason;
   }
-  function injectBlockButton(el, info) {
-    if (el.dataset.btBtn === "1") return;
-    // A grid cell is `*-rich-item-renderer > <tile>`, and both tags are tiles
-    // here. The wrapper carries the button — removing it takes the whole cell
-    // — so the tile inside gets none. A button on each is how a phone (where
-    // every 🚫 is always shown) came to offer two XrnTube menus per video on
-    // channel tabs and the other rich-grid feeds.
-    if (el.parentElement && el.parentElement.closest("ytd-rich-item-renderer, ytm-rich-item-renderer")) return;
-    el.dataset.btBtn = "1";
-    if (!info.videoId && info.channels.size === 0) return;
+  // ---------- XrnTube's options, inside YouTube's own ⋮ menu ----------
+  // A tile used to carry a second button of ours, a 🚫 in its corner beside
+  // YouTube's ⋮ — two menus per video, and on a phone (no hover) both always
+  // showing. Now the block options are rows in YouTube's menu: a tap on a
+  // tile's ⋮ is noted on its way down (capture phase, before YouTube's own
+  // handler opens anything), and once YouTube's popup is up our rows are
+  // added under its own.
+  //
+  // The popup is never ours, and it comes in four shapes (all measured live):
+  //   desktop  ytd-popup-container > tp-yt-iron-dropdown > ytd-menu-popup-renderer
+  //              (search's ytd-video-renderer, the playlist panel)
+  //            ytd-popup-container > tp-yt-iron-dropdown > yt-sheet-view-model
+  //              (every lockup: the related column, channel tabs, the home grid)
+  //   phone    bottom-sheet-container > bottom-sheet-layout        (ytm-* tiles)
+  //            bottom-sheet-container > yt-sheet-view-model > …    (lockups)
+  // Both sized themselves when they opened, before our rows existed: the
+  // dropdown fits itself to its content (an `iron-resize` makes it refit,
+  // or the rows sit clipped under a scrollbar), and the sheet writes its
+  // content height into an inline max-height (which is raised by ours).
+  // And desktop reuses the one dropdown for every menu on the page — the
+  // watch page's own "…" included — so our rows go the moment it closes, or
+  // they would turn up in the next menu it shows.
+  const TILE_MENU_TAG = "bt-tile-menu";
+  const MENU_TRIGGER_SEL = [
+    "ytd-menu-renderer #button",
+    "ytd-menu-renderer #button-shape",
+    "ytd-menu-renderer .dropdown-trigger",
+    "ytm-menu-renderer",
+    "ytm-bottom-sheet-renderer",
+    ".ytLockupMetadataViewModelMenuButton",
+    ".yt-lockup-metadata-view-model-wiz__menu-button",
+    "[class*='shortsLockupViewModelHost'][class*='Menu']"
+  ].join(",");
+  const MENU_TILE_SEL = [RENDERER_SELECTOR, LOCKUP_SELECTOR, SHORTS_ITEM_SELECTOR].join(",");
+  const MENU_OPEN_WAIT_MS = 2000; // YouTube's popup renders a frame or two after the tap
+  let tileMenuFor = null; // { tile, info, at, sec, host } — the tile whose ⋮ was just tapped, and its rows
+  let tileMenuTimer = 0;
 
-    const btn = document.createElement("div");
-    btn.className = "bt-block-btn";
-    btn.title = "Block on XrnTube";
-    btn.textContent = "🚫";
-
-    const menu = document.createElement("div");
-    menu.className = "bt-block-menu";
-    menu.hidden = true;
-
-    // The tile is gone the instant you click, so every block here confirms on
-    // the page with an Undo — otherwise a misclick means a trip to the options
-    // page to find and delete it. Undo waits for the block to land first, or
-    // the unblock could run ahead of it and leave the entry in place.
-    const blockAndRemove = (blockMsg, unblockMsg, label) => {
-      const sent = chrome.runtime.sendMessage(blockMsg).catch(() => {});
-      const shelf = findShelfAncestor(el);
-      el.remove();
-      if (shelf) scheduleShelfPrune(shelf);
-      showToast(label, {
-        label: "Undo",
-        run: async () => {
-          await sent;
-          await chrome.runtime.sendMessage(unblockMsg).catch(() => {});
-          showToast("Unblocked — it'll be back the next time YouTube loads this list.");
-        }
-      });
-    };
-
-    if (info.videoId) {
-      const videoOpt = document.createElement("button");
-      videoOpt.textContent = "Block this video";
-      videoOpt.addEventListener("click", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        blockAndRemove(
-          { type: MSG.BLOCK_VIDEO, id: info.videoId, title: info.videoTitle },
-          { type: MSG.UNBLOCK_VIDEO, id: info.videoId },
-          "Video blocked."
-        );
-      });
-      menu.appendChild(videoOpt);
+  // The block rows only exist in the moment between a tap and the popup, so
+  // the uploader layer 0 read for a video is kept here: a tile in the watch
+  // page's related column names its uploader only as plain text (see
+  // page-hook.js on `/next`), so without this the menu there could offer
+  // "Block this video" alone. Only an item naming one channel counts — which
+  // of two collaborators uploaded a video is exactly the guess we never make.
+  const hookUploaders = new Map(); // videoId -> channel key
+  const HOOK_UPLOADERS_MAX = 3000;
+  function rememberHookUploader(it) {
+    if (!it || !it.videoId || it.isPlaylist) return;
+    let ucid = null;
+    let handle = null;
+    for (const ref of it.channelRefs || []) {
+      const key = normalizeChannelKey(ref);
+      if (!key) continue;
+      if (key.charAt(0) === "@") {
+        if (handle && handle !== key) return;
+        handle = key;
+      } else {
+        if (ucid && ucid !== key) return;
+        ucid = key;
+      }
     }
-    // Two entries per channel — a tile can list several via YouTube's
-    // channel-collaboration feature, and either block type can be applied to
-    // any one of them independently.
-    for (const [key, name] of info.channels) {
-      const fullOpt = document.createElement("button");
-      fullOpt.textContent = `Block channel${name ? ": " + name : ""}`;
-      fullOpt.addEventListener("click", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        blockAndRemove(
-          { type: MSG.BLOCK_CHANNEL, id: key, name, mode: CHANNEL_MODE.FULL },
-          { type: MSG.UNBLOCK_CHANNEL, id: key },
-          `Blocked ${name || key}.`
-        );
-      });
-      menu.appendChild(fullOpt);
+    const key = handle || ucid;
+    if (!key) return;
+    hookUploaders.delete(it.videoId);
+    hookUploaders.set(it.videoId, key);
+    if (hookUploaders.size > HOOK_UPLOADERS_MAX) hookUploaders.delete(hookUploaders.keys().next().value);
+  }
 
+  // False in a tab whose extension was updated or reloaded since it loaded:
+  // its content script stays on the page, cut off from everything else.
+  const extensionAlive = () => {
+    try {
+      return !!(chrome.runtime && chrome.runtime.id);
+    } catch {
+      return false;
+    }
+  };
+  // chrome.runtime.sendMessage without its two ways of putting errors in the
+  // extension's error list: an unchecked lastError (no receiver yet — a phone
+  // starts the service worker cold), and the "Extension context invalidated"
+  // a tab left open across an update or reload throws from every call. Either
+  // way the answer is undefined.
+  function sendToBackground(msg, done) {
+    try {
+      if (!extensionAlive()) {
+        if (done) done(undefined);
+        return;
+      }
+      chrome.runtime.sendMessage(msg, (res) => {
+        const failed = chrome.runtime.lastError;
+        if (done) done(failed ? undefined : res);
+      });
+    } catch {
+      if (done) done(undefined);
+    }
+  }
+  const askBackground = (msg) => new Promise((resolve) => sendToBackground(msg, resolve));
+
+  // The tile is gone the instant you pick a row, so every block here confirms
+  // on the page with an Undo — otherwise a mis-tap means a trip to the options
+  // page to find and delete it. Undo waits for the block to land first, or
+  // the unblock could run ahead of it and leave the entry in place.
+  function blockAndRemove(tile, blockMsg, unblockMsg, label) {
+    const sent = askBackground(blockMsg);
+    sent.then((res) => {
+      if (!res || res.ok === false) showToast("XrnTube couldn't save that block. Reload the page and try again.");
+    });
+    const shelf = findShelfAncestor(tile);
+    tile.remove();
+    if (shelf) scheduleShelfPrune(shelf);
+    showToast(label, {
+      label: "Undo",
+      run: async () => {
+        await sent;
+        await askBackground(unblockMsg);
+        showToast("Unblocked — it'll be back the next time YouTube loads this list.");
+      }
+    });
+  }
+
+  // The rows for one tile: the video, then both block modes for every channel
+  // it names (a tile can list several, via YouTube's channel collaborations,
+  // and either mode can be applied to any one of them).
+  function tileMenuRows(info) {
+    const rows = [];
+    if (info.videoId) {
+      rows.push({
+        text: "Block this video",
+        block: { type: MSG.BLOCK_VIDEO, id: info.videoId, title: info.videoTitle },
+        unblock: { type: MSG.UNBLOCK_VIDEO, id: info.videoId },
+        done: "Video blocked."
+      });
+    }
+    for (const [key, name] of info.channels) {
+      // A UC… id means nothing to read; a handle does.
+      const shown = name || (key.charAt(0) === "@" ? key : "");
+      rows.push({
+        text: shown ? `Block channel: ${shown}` : "Block this channel",
+        block: { type: MSG.BLOCK_CHANNEL, id: key, name, mode: CHANNEL_MODE.FULL },
+        unblock: { type: MSG.UNBLOCK_CHANNEL, id: key },
+        done: `Blocked ${name || key}.`
+      });
       // The softer mode: the channel itself stays reachable, only its videos
       // get blocked (with a whitelist manageable later from the options
       // page) — see CHANNEL_MODE.EXCEPT_WHITELIST in shared/constants.js.
-      const softOpt = document.createElement("button");
-      softOpt.textContent = `Block all videos from${name ? " " + name : " this channel"} (allow some later)`;
-      softOpt.addEventListener("click", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        blockAndRemove(
-          { type: MSG.BLOCK_CHANNEL, id: key, name, mode: CHANNEL_MODE.EXCEPT_WHITELIST },
-          { type: MSG.UNBLOCK_CHANNEL, id: key },
-          `Blocked videos from ${name || key}.`
-        );
+      rows.push({
+        text: `Block all videos from ${shown || "this channel"}`,
+        sub: "Their channel stays; allow some later",
+        block: { type: MSG.BLOCK_CHANNEL, id: key, name, mode: CHANNEL_MODE.EXCEPT_WHITELIST },
+        unblock: { type: MSG.UNBLOCK_CHANNEL, id: key },
+        done: `Blocked videos from ${name || key}.`
       });
-      menu.appendChild(softOpt);
     }
-
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      document.querySelectorAll(".bt-block-menu").forEach((m) => {
-        if (m !== menu) m.hidden = true;
-      });
-      menu.hidden = !menu.hidden;
-    });
-
-    document.addEventListener("click", () => {
-      menu.hidden = true;
-    });
-
-    el.style.position = el.style.position || "relative";
-    el.appendChild(btn);
-    el.appendChild(menu);
+    return rows;
   }
+
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  function blockIcon() {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute(
+      "d",
+      "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 1a8 8 0 0 1 6.32 12.9L7.1 5.68A7.96 7.96 0 0 1 12 4ZM4 12c0-1.85.63-3.55 1.68-4.9l11.22 11.22A8 8 0 0 1 4 12Z"
+    );
+    svg.appendChild(path);
+    return svg;
+  }
+
+  // YouTube's popup that is open right now, and where in it our rows go.
+  function openTileMenuHost() {
+    for (const dd of document.querySelectorAll("ytd-popup-container tp-yt-iron-dropdown")) {
+      if (!isRendered(dd)) continue;
+      const legacy = dd.querySelector("ytd-menu-popup-renderer");
+      if (legacy && isRendered(legacy) && legacy.querySelector("#items > *")) return { kind: "dropdown", host: legacy, overlay: dd };
+      const list = dd.querySelector("yt-list-view-model");
+      if (list && isRendered(list) && list.firstElementChild) return { kind: "dropdown", host: list.parentElement, overlay: dd };
+    }
+    for (const sheet of document.querySelectorAll("bottom-sheet-container")) {
+      const wrap = sheet.querySelector("#content-wrapper");
+      const host = wrap && (wrap.firstElementChild || wrap);
+      if (host && isRendered(host) && host.querySelector("button, a")) return { kind: "sheet", host, overlay: sheet, wrap };
+    }
+    return null;
+  }
+
+  function closeTileMenu(open) {
+    if (open.kind === "sheet") {
+      const close = open.overlay.querySelector("button.close-button, ytw-scrim button");
+      if (close) close.click();
+      return;
+    }
+    // YouTube's overlay manager closes the top overlay on Escape; a click
+    // outside it is the fallback.
+    open.overlay.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27, bubbles: true, composed: true }));
+    setTimeout(() => {
+      if (isRendered(open.overlay) && document.body) document.body.click();
+    }, 150);
+  }
+
+  // Each popup shape has its own row height and icon inset (36px rows on the
+  // dropdown, 40px on the lockup sheet, 48px on the phone), so read them off
+  // the first row YouTube put there instead of keeping a table per shape.
+  function matchNativeRows(sec, host) {
+    const row = host.querySelector("tp-yt-paper-item, yt-list-item-view-model, ytm-menu-item");
+    if (!row || !isRendered(row)) return;
+    const box = row.getBoundingClientRect();
+    if (box.height >= 32 && box.height <= 64) sec.style.setProperty("--bt-row-h", `${Math.round(box.height)}px`);
+    const icon = row.querySelector("yt-icon, c3-icon, .ytIconWrapperHost, svg");
+    if (icon && isRendered(icon)) {
+      const inset = icon.getBoundingClientRect().left - host.getBoundingClientRect().left;
+      if (inset >= 0 && inset <= 40) sec.style.setProperty("--bt-row-inset", `${Math.round(inset)}px`);
+    }
+  }
+
+  function addTileMenuRows(open, tile, info) {
+    const sec = document.createElement(TILE_MENU_TAG);
+    sec.dataset.kind = open.kind;
+    for (const r of tileMenuRows(info)) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "bt-menu-row";
+      b.title = r.sub ? `${r.text} — ${r.sub}` : r.text;
+      b.appendChild(blockIcon());
+      const text = document.createElement("span");
+      text.className = "bt-menu-text";
+      text.textContent = r.text;
+      if (r.sub) {
+        const sub = document.createElement("span");
+        sub.className = "bt-menu-sub";
+        sub.textContent = r.sub;
+        text.appendChild(sub);
+      }
+      b.appendChild(text);
+      b.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropTileMenu();
+        closeTileMenu(open);
+        // A block from here would go nowhere, and the tile coming back on the
+        // next load would be the first anyone heard of it.
+        if (!extensionAlive()) {
+          showToast("XrnTube was updated since this page loaded. Reload the page to block from it.");
+          return;
+        }
+        blockAndRemove(tile, r.block, r.unblock, r.done);
+      });
+      sec.appendChild(b);
+    }
+    matchNativeRows(sec, open.host);
+    open.host.appendChild(sec);
+    if (open.kind === "dropdown") {
+      open.overlay.dispatchEvent(new CustomEvent("iron-resize"));
+    } else if (open.wrap && open.wrap.style.maxHeight) {
+      const fits = Math.min(open.wrap.scrollHeight, Math.round(window.innerHeight * 0.7));
+      if (fits > open.wrap.clientHeight) open.wrap.style.maxHeight = `${fits}px`;
+    }
+    return sec;
+  }
+
+  // From the tap until the popup opens (or MENU_OPEN_WAIT_MS passes with
+  // none), the rows are pending; once placed, they're tended until the popup
+  // closes, and then removed. The same popup re-rendering and dropping them
+  // while still open gets them back — only the same one: on a phone, picking
+  // YouTube's "Save to playlist" swaps in a new sheet, and that is not a
+  // tile's menu.
+  function tendTileMenu() {
+    tileMenuTimer = 0;
+    const cur = tileMenuFor;
+    if (!cur) return;
+    let open = null;
+    if (cur.sec) {
+      if (cur.sec.isConnected && isRendered(cur.sec)) {
+        tileMenuTimer = setTimeout(tendTileMenu, 250);
+        return;
+      }
+      open = !cur.sec.isConnected && cur.tile.isConnected ? openTileMenuHost() : null;
+      cur.sec.remove();
+      cur.sec = null;
+      if (!open || open.host !== cur.host) {
+        tileMenuFor = null;
+        return;
+      }
+    } else if (performance.now() - cur.at > MENU_OPEN_WAIT_MS || !cur.tile.isConnected) {
+      tileMenuFor = null;
+      return;
+    } else {
+      open = openTileMenuHost();
+    }
+    if (open) {
+      cur.sec = addTileMenuRows(open, cur.tile, cur.info);
+      cur.host = open.host;
+    }
+    tileMenuTimer = setTimeout(tendTileMenu, cur.sec ? 250 : 50);
+  }
+
+  function dropTileMenu() {
+    if (tileMenuFor && tileMenuFor.sec) tileMenuFor.sec.remove();
+    for (const sec of document.querySelectorAll(TILE_MENU_TAG)) sec.remove();
+    tileMenuFor = null;
+    clearTimeout(tileMenuTimer);
+    tileMenuTimer = 0;
+  }
+
+  function onTileMenuTap(e) {
+    const t = e.target;
+    if (!t || !t.closest || t.closest(TILE_MENU_TAG)) return;
+    const trigger = t.closest(MENU_TRIGGER_SEL);
+    let tile = trigger && trigger.closest(MENU_TILE_SEL);
+    if (!tile) {
+      // Anything else outside YouTube's popups closes the one that's open,
+      // and so does picking one of YouTube's own items in it; neither may be
+      // where a pending tap's rows land.
+      const inPopup = t.closest("ytd-popup-container, bottom-sheet-container");
+      if (!inPopup || t.closest("[role='menuitem'], tp-yt-paper-item, yt-list-item-view-model, ytm-menu-item")) dropTileMenu();
+      return;
+    }
+    // A grid cell is `*-rich-item-renderer > <tile>`, and both tags are tiles
+    // here. The wrapper is what goes — removing it takes the whole cell.
+    const cell = tile.parentElement && tile.parentElement.closest("ytd-rich-item-renderer, ytm-rich-item-renderer");
+    if (cell) tile = cell;
+    dropTileMenu();
+    const info = extractInfo(tile);
+    if (info && info.videoId && !info.channels.size && !info.isPlaylist) {
+      const key = hookUploaders.get(info.videoId);
+      if (key) info.channels.set(key, "");
+    }
+    if (!info || (!info.videoId && !info.channels.size)) return;
+    tileMenuFor = { tile, info, at: performance.now(), sec: null };
+    tendTileMenu();
+  }
+  document.addEventListener("click", onTileMenuTap, true);
 
   // A tile counts as "members only" if it carries a badge whose text is
   // exactly the localised "Members only" phrase — covers the new `badge-shape`
@@ -1762,7 +2027,6 @@
         delete el.dataset.btPending;
         el.dataset.btChecked = "1";
       }
-      if (info) injectBlockButton(el, info);
     }
   }
 
@@ -2104,7 +2368,11 @@
     if (settings.shortsChannelTab) addAll(L.shorts);
     if (settings.membershipTab) addAll([...L.membership, ...L.membersOnly]);
     if (!wanted.size) return;
+    // The phone's bottom bar is tabs too (role="tab", labelled "Shorts"), and
+    // emptying its Shorts tab left a blank half-width button there. That one
+    // belongs to the sidebar switches, which hide the whole item.
     root.querySelectorAll(CHANNEL_TAB_SEL).forEach((t) => {
+      if (t.closest("ytm-pivot-bar-renderer")) return;
       if (t.isConnected && wanted.has((t.textContent || "").trim().toLowerCase())) t.remove();
     });
 
@@ -2308,7 +2576,10 @@
     // Counted past the warning too: the popup shows this page's number.
     if ((layer0Misses += 1) < LAYER0_WARN_AT || layer0Warned) return;
     layer0Warned = true;
-    console.warn(
+    // Info, not a warning: an extension's warnings land in its Errors list on
+    // the extensions page, and nothing here is broken — the DOM scrub caught
+    // every one. The popup's health line is where this shows on a phone.
+    console.info(
       "[XrnTube] The JSON filter let " + layer0Misses + " tiles through on " + location.pathname +
         " — the DOM scrub caught them, so nothing is unblocked, but layer 0 looks degraded. " +
         "Reload with ?bt-debug and check window.__btDataLayer: candidates at 0 means the rule table " +
@@ -2798,6 +3069,8 @@
   }
 
   chrome.storage.sync.get({ [SETTINGS_KEY]: null, [KEYWORDS_KEY]: null }, (res) => {
+    // A failed read still has to start the scrubs, on the defaults.
+    if (chrome.runtime.lastError || !res) res = {};
     applyKeywords(res[KEYWORDS_KEY]);
     applySettings(res[SETTINGS_KEY]);
     settingsLoaded = true;
@@ -2861,16 +3134,26 @@
     );
   }
 
-  chrome.runtime.sendMessage({ type: MSG.GET_BLOCKLIST }, (res) => {
-    if (!res) return;
-    applyBlocklist(res.channels, res.videos, res.allowlist);
-    blocklistLoaded = true;
-    // catch anything YouTube already inserted before the blocklist arrived
-    sweep(document.documentElement);
-    scrubOwnChannelPage(document.documentElement);
-    // and catch a fresh/direct load landing straight on a blocked video/playlist
-    checkCurrentPageAndRedirect();
-  });
+  // Asked for until it comes. A first request that failed (the service
+  // worker not up yet, as on a phone that starts it cold) used to leave the
+  // tab with no blocklist for good: every layer that needs one quietly off,
+  // until a reload.
+  function loadBlocklist(attempt) {
+    sendToBackground({ type: MSG.GET_BLOCKLIST }, (res) => {
+      if (!res || !res.channels) {
+        if (attempt < 6) setTimeout(() => loadBlocklist(attempt + 1), 250 * 2 ** attempt);
+        return;
+      }
+      applyBlocklist(res.channels, res.videos, res.allowlist);
+      blocklistLoaded = true;
+      // catch anything YouTube already inserted before the blocklist arrived
+      sweep(document.documentElement);
+      scrubOwnChannelPage(document.documentElement);
+      // and catch a fresh/direct load landing straight on a blocked video/playlist
+      checkCurrentPageAndRedirect();
+    });
+  }
+  loadBlocklist(0);
 
   // The container that represents "whose page is this" — scoped narrowly so we
   // never pick up unrelated channels (e.g. from sidebar recommendations, or
@@ -3015,8 +3298,12 @@
       videoId = vm[1];
       videoTitle = document.title.replace(/ - YouTube$/, "").trim();
       // m.youtube.com leaves the tab title at a bare "YouTube" for a while.
+      // Its title is either the older slim heading or, since Oct 2026, the
+      // view model's.
       if (!videoTitle || videoTitle === "YouTube") {
-        const h = document.querySelector("ytd-watch-metadata h1, h2.slim-video-information-title");
+        const h = document.querySelector(
+          "ytd-watch-metadata h1, h2.slim-video-information-title, yt-video-metadata-view-model h2"
+        );
         videoTitle = h ? h.textContent.trim() : "";
       }
     }
@@ -3100,8 +3387,8 @@
   function resolveChannelForVideo(videoId) {
     if (videoChannelAsked.has(videoId)) return;
     videoChannelAsked.set(videoId, null);
-    chrome.runtime.sendMessage({ type: MSG.RESOLVE_VIDEO_CHANNEL, videoId }, (res) => {
-      if (chrome.runtime.lastError || !res || !res.channelKey) return;
+    sendToBackground({ type: MSG.RESOLVE_VIDEO_CHANNEL, videoId }, (res) => {
+      if (!res || !res.channelKey) return;
       videoChannelAsked.set(videoId, res.channelKey);
       // The page may have moved on while we were waiting.
       const still =
@@ -3122,7 +3409,7 @@
   // stylesheet (or ours) can affect it, and so it can't match any of our own
   // scrub selectors.
   //
-  // `action` ({ label, run }) adds one button — the hover menu's Undo. The
+  // `action` ({ label, run }) adds one button — the ⋮ menu's Undo. The
   // banner itself stays click-through; only the button takes the pointer.
   let toastEl = null;
   let toastTimer = 0;
@@ -3207,7 +3494,8 @@
     "#info-container",
     "ytd-watch-metadata",
     "#above-the-fold",
-    ".slim-video-information-subtitle" // m.youtube.com: "1.9M views · 3 weeks ago"
+    ".slim-video-information-subtitle", // m.youtube.com: "1.9M views · 3 weeks ago"
+    "yt-video-subtitle-view-model" // …and its view-model successor: "@chan 44K likes 2M views 1mo ago"
   ];
   function currentPageAgeDays() {
     const meta = document.querySelector(

@@ -6,7 +6,7 @@ import { chromium } from "playwright";
 // The answer used to be "every channel link anywhere inside it", which is
 // wrong on exactly the two surfaces that matter: a search result carries a
 // description snippet whose @mentions YouTube linkifies, so a video got
-// deleted for *talking about* a blocked channel, and the hover block menu
+// deleted for *talking about* a blocked channel, and the tile's block menu
 // offered that channel as though it were the uploader. Upstream BlockTube
 // can't hit this because its rules name one exact field per renderer
 // (`shortBylineText.runs.navigationEndpoint.browseEndpoint.browseId`); we do

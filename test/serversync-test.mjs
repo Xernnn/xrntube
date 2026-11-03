@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from "child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { chromium } from "playwright";
@@ -16,6 +16,7 @@ import { chromium } from "playwright";
 //     devices each changing a different one keep both, a deletion travels
 //   - the server keeps earlier copies, and restoring one through the options
 //     page brings back what a "delete everything" took, on both devices
+//   - /update/ hands out the update files without a login, and nothing else
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -75,6 +76,35 @@ try {
   bad && bad.ok === false && /refused/.test(bad.error || "")
     ? ok("a wrong password is refused with a readable error")
     : fail("wrong password: " + JSON.stringify(bad));
+
+  // ---- /update/ is public, and only for the update files ----
+  // A browser's extension updater fetches these and can't send a login.
+  mkdirSync(join(dir, "data", "update"), { recursive: true });
+  const crxBytes = Buffer.from("Cr24 not really a crx, but bytes that must arrive untouched ".repeat(40));
+  writeFileSync(join(dir, "data", "update", "updates.xml"), "<gupdate version='9.9.9'/>");
+  writeFileSync(join(dir, "data", "update", "xrntube-9.9.9.crx"), crxBytes);
+  writeFileSync(join(dir, "data", "update", "notes.txt"), "not served");
+  writeFileSync(join(dir, "data", "downloads", "xrntube.zip"), "zip");
+  const xmlRes = await fetch(`${URL_}/update/updates.xml`);
+  const crxRes = await fetch(`${URL_}/update/xrntube-9.9.9.crx`, { headers: { "Accept-Encoding": "gzip" } });
+  const crxBody = Buffer.from(await crxRes.arrayBuffer());
+  const refused = await Promise.all(
+    ["/update/notes.txt", "/update/.updates.xml", "/update/%2e%2e%2fdownloads%2fxrntube.zip", "/update/missing.crx"].map((p) =>
+      fetch(URL_ + p).then((r) => r.status)
+    )
+  );
+  const zipNoLogin = (await fetch(`${URL_}/download/xrntube.zip`)).status;
+  xmlRes.status === 200 &&
+  /xml/.test(xmlRes.headers.get("content-type")) &&
+  (await xmlRes.text()) === "<gupdate version='9.9.9'/>" &&
+  crxRes.status === 200 &&
+  crxRes.headers.get("content-type") === "application/x-chrome-extension" &&
+  !crxRes.headers.get("content-encoding") &&
+  crxBody.equals(crxBytes) &&
+  refused.every((s) => s === 404) &&
+  zipNoLogin === 401
+    ? ok("/update/ serves updates.xml and the .crx without a login (the .crx never gzipped), nothing else there, and /download/ still needs one")
+    : fail(`/update/: xml ${xmlRes.status} ${xmlRes.headers.get("content-type")}, crx ${crxRes.status} ${crxRes.headers.get("content-type")} ${crxRes.headers.get("content-encoding")} same=${crxBody.equals(crxBytes)}, refused ${refused}, /download/ without login ${zipNoLogin}`);
 
   // ---- A pushes, B pulls ----
   await A.send({ type: "IMPORT_BLOCKLIST", channels: { "@alpha": stamped("Alpha"), "@beta": stamped("Beta") }, videos: { aaaaaaaaaaa: { title: "v" } } });

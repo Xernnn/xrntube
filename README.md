@@ -70,22 +70,39 @@ afterwards.
 
 **2b. On your phone (Quetta or another Chromium browser with extensions)**
 
-1. On the computer: `npm run package` builds `dist/xrntube-<version>.zip`.
-   If you run the sync server, `node scripts/package.mjs --upload <ssh-host>`
-   also puts it at `https://<your-server>/xrntube/download/xrntube.zip`.
-2. On the phone, open that link and log in, or copy the zip over.
-3. In Quetta: menu → **Extensions** → turn on **Developer mode** → load the
-   zip (unzip it first if the browser asks for a folder).
-4. Open the extension's options → **Sync** and connect it to your server, so
+The phone installs a signed `.crx` from your sync server once, and from then
+on fetches every new version from there by itself.
+
+1. On the computer, once: create `~/.config/xrntube/release.json` with your
+   server's public address and its ssh host —
+   `{ "server": "https://<your-server>/xrntube", "ssh": "<ssh-host>" }` (or a
+   list of ssh hosts, tried in order, if there's more than one way in) —
+   then `npm run release`. That signs `dist/xrntube-<version>.crx` and puts it
+   at `https://<your-server>/xrntube/update/xrntube.crx`. The first release
+   also makes the signing key, `~/.config/xrntube/xrntube.pem`: **back it
+   up**. Every update has to be signed with that key, and without it the
+   phone has to install afresh under a new extension ID.
+2. On the phone, open that link in Quetta → **Download anyway** → **OK** to
+   add it. (Quetta's Extensions page also takes the file: **from
+   .zip/.crx/.user.js**.) If Quetta may not post notifications, Android can
+   call it "not responding" a few seconds after the download — its download
+   service needs one. Tap **Wait**, or allow Quetta notifications first.
+   Updates later don't go through downloads and don't hit this.
+3. Open the extension's options → **Sync** and connect it to your server, so
    it picks up your list.
+
+Options → **Sync** → **Updates** shows the version and where it updates
+from; **Check now** looks straight away instead of waiting the few hours the
+browser takes on its own. A copy loaded from a `.zip` (`npm run package`) also
+works, but is unpacked and never updates.
 
 If your browser only installs from a store, publish the zip to the Chrome Web
 Store as **Unlisted** (one-time $5 developer fee): only someone with the link
 can find it, and updates arrive automatically. Your server's address and
 password are never in the package — you type them into the Sync page.
 
-On the phone, YouTube's mobile site has no mouse hover, so the 🚫 button on
-each tile is always shown; tap it to block.
+On the phone, tap a tile's ⋮: XrnTube's block options are at the bottom of
+the sheet YouTube opens, under its own.
 
 **Checking it on the phone.** The test suite runs the mobile site in
 emulation, so a real phone is worth a two-minute look after installing or
@@ -98,12 +115,22 @@ updating:
    running on the phone (see Troubleshooting).
 3. Tap the YouTube logo: it should open Subscriptions without passing through
    the home feed.
-4. Tap 🚫 on a tile → **Block channel**: the tile goes, and after the next
+4. Tap a tile's ⋮ → **Block channel**: the tile goes, and after the next
    sync the channel is blocked on your other devices too.
+5. Open a video: nothing should be listed under it (the related videos are
+   one of the switches in **What gets hidden**), and no Share / Save /
+   Report buttons.
 
-**Updating**: `git pull`, then hit **Reload** on the extension in
-`chrome://extensions`. Refresh any YouTube tab you already had open — content
-scripts only attach at page load. On the phone, load the new zip.
+**Updating** happens by itself. A copy loaded unpacked from a folder reloads
+itself when that folder's `manifest.json` names a new version (after a
+`git pull`, or `npm run release`, which bumps it), the next time anything
+wakes it or within the hour — also when the browser was closed at the time.
+The phone's `.crx` takes each version `npm run release` publishes. Either
+way, refresh any YouTube tab you already had open — content scripts only
+attach at page load. Edits that don't change the version still need
+**Reload** in `chrome://extensions` (restarting the browser isn't enough: it
+keeps the background code it had), and so does a copy loaded before 2.1.0,
+once, since that one has nothing to update itself with.
 
 ---
 
@@ -113,7 +140,7 @@ Three ways, all equivalent:
 
 | where | how |
 |---|---|
-| **On a tile** | Hover any video/playlist tile → a 🚫 button appears in its bottom-right corner → pick *Block this video*, *Block channel: X*, or *Block all videos from X*. A banner confirms it, with an **Undo** |
+| **On a tile** | Click the tile's ⋮ (YouTube's own menu) → XrnTube's options are at the bottom, under YouTube's: *Block this video*, *Block channel: X*, *Block all videos from X*. A banner confirms it, with an **Undo**. A tile with no ⋮ (a channel card in search) is blocked from the popup or by right-click |
 | **Right-click** | Right-click a video or channel link (or anywhere on a watch page) → **XrnTube: block this channel** / **block this video** |
 | **Toolbar popup** | On a video or channel page, click the 🚫 toolbar icon — it lists the video and every channel it found, with both block modes per channel (and an **Unblock** button for anything already blocked) |
 | **Options page** | Paste into the **Block something** box at the top of the Blocklist tab — `@handles`, `UC…` IDs, channel links, video links, several at once |
@@ -336,7 +363,9 @@ flips its whole row.
 
 Removing the related-videos column also widens the player to use the freed
 space, but only as far as keeping the player *and* the title on screen without
-scrolling.
+scrolling. On the phone the same switches cover its own layout: the related
+list under the video, Share / Save / Report in the row under it (the phone has
+Report there instead of behind a "…"), and Home and Shorts in the bottom bar.
 
 Blocking channels and videos is not a switch — it's the point of the
 extension. Some changes need a page refresh.
@@ -392,7 +421,8 @@ since is removed.
 Nothing is sent anywhere else. There is no analytics, no account, and no
 remote config. The only outbound requests are to youtube.com (pages you were
 visiting anyway, plus the channel-info scrape) and, if you set it up, to your
-own sync server.
+own sync server, which is also where a browser that installed the `.crx`
+looks for new versions.
 
 ---
 
@@ -427,6 +457,11 @@ for.
 extensions page and refresh the YouTube tab; content scripts only attach at
 page load.
 
+**After an update, blocking from a tile says to reload the page.** A YouTube
+tab that was open while the extension updated itself (or was reloaded by
+hand) keeps the old script, which can no longer save anything. Reload the
+tab.
+
 **What the popup's grey line means.** On a YouTube tab the popup says how
 many things it removed on this page — "before they appeared" (taken out of
 YouTube's data before the page was drawn) or "just after" (removed from the
@@ -446,9 +481,8 @@ side `npm run test:canary` checks the same thing against live YouTube.
 - **Related-videos tiles name no channel in the page** — they carry a video
   link and a display name, nothing else, and matching on a display name would
   block the wrong channel. They are filtered out of YouTube's own data instead,
-  before the column is built, so a blocked channel does stay out of it. The one
-  consequence you can see: the 🚫 menu on a related tile offers "Block this
-  video" only, because there is no channel there to name.
+  before the column is built, so a blocked channel does stay out of it, and a
+  related tile's ⋮ still offers its channel, read from that same data.
 - **Mobile (`m.youtube.com`) is tested in emulation only.** The suite runs it
   as a phone (`mobile-test`: a phone's user agent, screen and touch), not on a
   real phone browser. On the phone itself, the popup's health line (below) is
@@ -476,13 +510,16 @@ manifest.json
 background/background.js    the blocklist store, DNR rules, the sub-count sweep, messages
 background/server-sync.js   sync with your own server
 server/xrntube-sync.py      that server (one Python file)
-scripts/package.mjs         builds dist/xrntube-<version>.zip for a phone
+scripts/package.mjs         builds the zip; `--release` signs the .crx and publishes it for self-updates
+scripts/crx.mjs             the zip and CRX3 writers, the extension ID, updates.xml
 scripts/canary.mjs          the weekly live-YouTube check (and its timer)
-content/content.js          pre-paint CSS, DOM scrubbing, hover UI, nav guards
-content/content.css         the hover block button
+content/page-hook.js        runs in the page itself: filters YouTube's data before it renders
+content/content.js          pre-paint CSS, DOM scrubbing, the ⋮ menu rows, nav guards
+content/content.css         XrnTube's rows in YouTube's ⋮ menu
 popup/                      quick-block UI for the current page
 options/                    blocklist manager, filters, settings, sync setup
 shared/constants.js         message types + storage config shared everywhere
+shared/block-logic.js       the one blocking verdict, used by the DOM scrub and the data filter
 test/                       end-to-end suite — real Chromium against live YouTube
 docs/                       architecture, blocking rules, known fragility
 package.json                dev tooling only (Playwright); no build step
@@ -493,10 +530,11 @@ npm run check      # syntax-check every script + parse the manifest
 npm run test:fast  # the tests that need no YouTube (~20s)
 npm test           # full e2e suite (needs npm install once, and network)
 npm run package    # dist/xrntube-<version>.zip
+npm run release    # sign dist/xrntube-<version>.crx and publish it; installed copies update themselves
 npm run test:canary                    # five live tests; notifies the desktop on failure
 node scripts/canary.mjs --install      # …weekly, as a systemd user timer (--uninstall removes it)
 ```
 
-Start at [docs/architecture.md](docs/architecture.md) for how the four
+Start at [docs/architecture.md](docs/architecture.md) for how the five
 contexts fit together; the rest of [docs/](docs/) has the detail, and
 [test/README.md](test/README.md) covers the suite.

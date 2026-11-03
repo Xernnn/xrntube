@@ -2344,6 +2344,48 @@ function initSync() {
 
 initSync();
 
+// ---------- updates ----------
+// How this copy gets new versions (background.js → updating itself), and a
+// button that looks now. An installType of "development" is an unpacked load.
+const UPDATE_RESULT = {
+  reloading: (r) => `Version ${r.version} is in the folder: reloading. This page closes — open it again.`,
+  update_available: (r) => `Version ${r.version} found: installing. This page closes when it's in — open it again.`,
+  no_update: () => "Up to date.",
+  throttled: () => "The browser checked a moment ago and won't again yet. Try in a few minutes; it also checks on its own.",
+  no_update_url: () => "This copy has no update address to check."
+};
+
+async function initUpdates() {
+  const blurb = $("update-blurb");
+  const result = $("update-result");
+  const button = $("update-check");
+  const { version, update_url: updateUrl } = chrome.runtime.getManifest();
+  const { installType } = await chrome.management.getSelf();
+  if (installType === "development") {
+    blurb.textContent =
+      `Version ${version}, loaded unpacked from a folder. It reloads itself when that folder gets a new ` +
+      "version (npm run release, or a pull). A copy loaded from a .zip never does: install the .crx from " +
+      "your server's /xrntube/update/xrntube.crx instead, and it keeps itself up to date.";
+  } else if (updateUrl) {
+    blurb.textContent =
+      `Version ${version}, installed from ${new URL(updateUrl).host}. New versions install themselves: ` +
+      "the browser looks every few hours, and Check now looks straight away.";
+  } else {
+    blurb.textContent = `Version ${version}. New versions come from wherever it was installed.`;
+  }
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    result.hidden = false;
+    result.textContent = "Checking…";
+    const res = await send({ type: MSG.CHECK_FOR_UPDATE }).catch((e) => ({ error: String((e && e.message) || e) }));
+    button.disabled = false;
+    const say = res && UPDATE_RESULT[res.status];
+    result.textContent = say ? say(res) : "Couldn't check: " + ((res && res.error) || "no answer");
+  });
+}
+
+initUpdates();
+
 // ---------- title keywords, length, comment limit ----------
 // How many top-level comment threads a watch page keeps. 0 means no cap.
 // Also applied to a stored record that predates the setting, so "off" is

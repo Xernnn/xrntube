@@ -69,16 +69,27 @@ thing you right-clicked is often not visibly affected.
 opened from Playwright, but the part that can actually be wrong is working
 out *what* was clicked.
 
-## Hover-menu Undo
+## ⋮-menu Undo
 
-A block from a tile's 🚫 menu (`injectBlockButton()` → `blockAndRemove()`)
-removes the tile at once and then calls `showToast(label, { label: "Undo",
-run })` — the same `<bt-toast>` banner the right-click block uses, which
-stays click-through except for its one button. Undo **awaits the block's own
-message first**: the background handles messages concurrently, so an unblock
-sent before the block's write lands finds nothing to remove and the block
-then completes on its own. The tile itself does not come back until YouTube
-renders that list again; the second toast says so.
+A block from XrnTube's rows in a tile's ⋮ menu (`addTileMenuRows()` →
+`blockAndRemove()`) removes the tile at once and then calls
+`showToast(label, { label: "Undo", run })` — the same `<bt-toast>` banner the
+right-click block uses, which stays click-through except for its one button.
+Undo **awaits the block's own message first**: the background handles
+messages concurrently, so an unblock sent before the block's write lands
+finds nothing to remove and the block then completes on its own. The tile
+itself does not come back until YouTube renders that list again; the second
+toast says so.
+
+Two failures say so rather than looking like success. A block the background
+didn't confirm (`{ ok: true }`) gets a "couldn't save that block" toast. And
+a tab whose extension was updated or reloaded after it loaded keeps its old
+content script, cut off from the background (`chrome.runtime.id` is gone):
+there a row says to reload the page instead of removing a tile that would
+come back on the next load. Every content-script message goes through
+`sendToBackground()`, which reads `lastError` and catches the "Extension
+context invalidated" throw, so neither case puts an error in the extension's
+Errors list.
 
 ## Debug mode
 

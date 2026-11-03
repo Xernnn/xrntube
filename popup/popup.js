@@ -1,8 +1,18 @@
 const { MSG, CHANNEL_MODE } = self.XrnTube;
 
+const isYouTubeUrl = (url) => !!url && /:\/\/(www|m)\.youtube\.com\//.test(url);
+
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab;
+  if (tab && isYouTubeUrl(tab.url)) return tab;
+  // A phone browser can open this popup as a tab of its own, which is then the
+  // active tab, and the YouTube page you came from is behind it. In a real
+  // popup getCurrent() has no tab, and the active one is the answer.
+  const own = chrome.tabs.getCurrent ? await chrome.tabs.getCurrent() : null;
+  if (!own) return tab;
+  const youtube = await chrome.tabs.query({ url: ["*://www.youtube.com/*", "*://m.youtube.com/*"] });
+  youtube.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+  return youtube[0] || tab;
 }
 
 // The blocklist key this channel is stored under, by any identity it has —
@@ -127,8 +137,7 @@ function renderHealth(hp) {
 async function init() {
   const [blocklist, tab] = await Promise.all([refreshCounts(), getActiveTab()]);
 
-  const isYouTube = tab?.url && /:\/\/(www|m)\.youtube\.com\//.test(tab.url);
-  if (!isYouTube) {
+  if (!isYouTubeUrl(tab?.url)) {
     document.getElementById("no-target").hidden = false;
     return;
   }

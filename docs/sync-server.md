@@ -18,6 +18,7 @@ builds: `{ v, channels, videos, tombstones, keywords, allowlist, settings }`.
 | `GET /history` | the earlier copies kept, newest first: `{ items: [{ name, version, updated, channels, videos, keywords, allowlist }] }` |
 | `GET /history/<name>` | one of them, as `GET /state` would have returned it then |
 | `GET /download/<file>` | a file from `<data>/downloads` — the packed extension, for a phone to fetch |
+| `GET /update/<file>` | **no login**: `updates.xml` or a `.crx` from `<data>/update` — what a browser's own extension updater polls (see below) |
 | `GET /health` | `ok`, no login (for monitoring) |
 
 Every path also works under the mount prefix (`/xrntube/state`), so it doesn't
@@ -100,6 +101,39 @@ must say "Funnel on" afterwards.
 Then on each device: options → **Sync** → the address including the mount
 (`https://<host>/xrntube`), the user name, the password → **Connect**.
 
-To hand the phone the extension: `node scripts/package.mjs --upload <ssh-host>`
-copies `dist/xrntube-<version>.zip` to the server's `downloads/` (as itself and
-as `xrntube.zip`), served at `https://<host>/xrntube/download/xrntube.zip`.
+## Updates
+
+The phone runs the extension from a signed `.crx` whose manifest has an
+`update_url` of `https://<host>/xrntube/update/updates.xml`; the browser polls
+that every few hours (sooner from options → Sync → **Check now**) and
+installs whatever newer version it names. That poll carries no login — a
+browser's extension updater can't send one — so `/update/` is the one public
+path, and it serves only `*.xml` and `*.crx` files: the extension's own code,
+the same for every user. No blocklist ever goes there.
+
+`npm run release` (`scripts/package.mjs --release`) publishes a version:
+
+1. reads `~/.config/xrntube/release.json` — `{ "server": "https://<host>/xrntube",
+   "ssh": "<ssh-host>" }`, where `"ssh"` may be a list tried in order (the
+   tailnet, then the LAN), the first that answers being used — and the
+   signing key `~/.config/xrntube/xrntube.pem` (made on the first release;
+   neither is in the repo);
+2. asks the server which version is live and, if it isn't older than
+   `manifest.json`'s, bumps `manifest.json`'s last number past it — a browser
+   only takes a higher version;
+3. signs `dist/xrntube-<version>.crx` (the zip plus that `update_url`) and
+   writes `dist/updates.xml`;
+4. over ssh, puts the `.crx` (as itself and as `xrntube.crx`, the link a new
+   install starts from) into `<data>/update/`, then `updates.xml`, each moved
+   into place whole, and removes older `.crx` files;
+5. reads `updates.xml` back through the public address to confirm.
+
+**The key is the extension's identity.** Its ID is derived from the key, and
+a browser only accepts an update signed by the key it installed. Lose it and
+every device has to install a new `.crx` under a new ID — whose storage starts
+empty until sync refills it, and whose Sync login has to be typed again.
+
+The zip (`npm run package`, or `--upload <ssh-host>` to put it in
+`downloads/`, served at `https://<host>/xrntube/download/xrntube.zip`) has no
+`update_url` — the Chrome Web Store refuses one — and a browser loads it
+unpacked, so it never updates.

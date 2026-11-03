@@ -4,7 +4,9 @@ import { chromium, devices } from "playwright";
 // agent, viewport and touch, no hover. Covers what the desktop suite can't:
 //   - a blocked channel's videos leave mobile search, its page redirects
 //   - the popup's target on a mobile watch page names the channel and title
-//   - the tile 🚫 button shows without hover, and tapping it blocks
+//   - the block rows sit in YouTube's own ⋮ sheet, and tapping one blocks
+//   - the related videos, the video's action row and the bottom bar follow
+//     the same switches as on the desktop
 //   - tapping the logo goes to Subscriptions without a reload
 
 const EXT_PATH = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
@@ -78,96 +80,115 @@ target.videoId === "adQyLViK_ZU" && target.videoTitle && target.videoTitle !== "
   ? ok(`popup target on a mobile watch page: "${target.videoTitle.slice(0, 40)}…" by ${target.channels[0].key}`)
   : fail("mobile popup target: " + JSON.stringify(target));
 
-// ---- 3. one 🚫 per tile ----
-// A channel's Videos tab is a rich grid: every cell is
-// `ytm-rich-item-renderer > ytm-compact-video-renderer`, both of them tiles,
-// and each used to get a button — two XrnTube menus per video.
+// ---- 3. XrnTube's rows live in YouTube's ⋮ sheet, once ----
+// There is no button of ours on a tile any more: a tap on YouTube's own ⋮
+// adds the block rows to the bottom sheet it opens. A channel's Videos tab
+// is a rich grid, every cell `ytm-rich-item-renderer > ytm-compact-video-
+// renderer` (both tiles), which once got two XrnTube menus per video.
+const tapMenu = async (nth) => {
+  const found = await p.evaluate((n) => {
+    document.querySelectorAll("[data-bt-test]").forEach((e) => e.removeAttribute("data-bt-test"));
+    const tiles = "ytm-video-with-context-renderer, ytm-rich-item-renderer, yt-lockup-view-model, ytm-compact-video-renderer";
+    const b = [...document.querySelectorAll("ytm-bottom-sheet-renderer button, .ytLockupMetadataViewModelMenuButton button")].filter(
+      (x) => x.closest(tiles) && x.getBoundingClientRect().top > 120
+    )[n];
+    if (!b) return false;
+    b.scrollIntoView({ block: "center" });
+    b.setAttribute("data-bt-test", "menu");
+    b.closest(tiles).setAttribute("data-bt-test", "tile");
+    return true;
+  }, nth);
+  if (!found) return null;
+  await p.waitForTimeout(400);
+  await p.tap('[data-bt-test="menu"]');
+  await p.waitForTimeout(1500);
+  return p.evaluate(() => {
+    const shown = [...document.querySelectorAll("bt-tile-menu")].filter((s) => s.getClientRects().length);
+    const rows = shown.flatMap((s) =>
+      [...s.querySelectorAll(".bt-menu-row")].map((r) => {
+        const b = r.getBoundingClientRect();
+        const hit = document.elementFromPoint(b.left + 30, b.top + b.height / 2);
+        return { text: r.querySelector(".bt-menu-text").firstChild.textContent, reachable: !!hit && r.contains(hit) };
+      })
+    );
+    return { menus: shown.length, inSheet: shown.every((s) => !!s.closest("bottom-sheet-container")), rows };
+  });
+};
+const closeSheet = () => p.evaluate(() => document.querySelector("bottom-sheet-container button.close-button, bottom-sheet-container ytw-scrim button")?.click());
+
 await p.goto("https://m.youtube.com/@veritasium/videos", { waitUntil: "domcontentloaded" });
 await p.waitForTimeout(7000);
-const grid = await p.evaluate(() => {
-  const hosts = [...document.querySelectorAll(".bt-block-btn")].map((b) => b.parentElement);
-  return { buttons: hosts.length, nested: hosts.filter((h) => hosts.some((o) => o !== h && o.contains(h))).length };
-});
-grid.buttons >= 5 && grid.nested === 0
-  ? ok(`rich grid: one 🚫 per cell (${grid.buttons} buttons, none inside another tile's)`)
-  : fail("rich grid buttons: " + JSON.stringify(grid));
+const oldButtons = await p.evaluate(() => document.querySelectorAll(".bt-block-btn, .bt-block-menu").length);
+oldButtons === 0 ? ok("no button of ours on the tiles — YouTube's ⋮ is the only one") : fail(`${oldButtons} 🚫 buttons still on the page`);
+const grid = await tapMenu(2);
+grid && grid.menus === 1 && grid.inSheet && grid.rows.some((r) => r.text === "Block this video") && grid.rows.every((r) => r.reachable)
+  ? ok(`rich grid: one set of XrnTube rows in YouTube's sheet (${grid.rows.map((r) => r.text).join(" / ")})`)
+  : fail("rich grid ⋮ sheet: " + JSON.stringify(grid));
+await closeSheet();
+await p.waitForTimeout(800);
+const leftover = await p.evaluate(() => document.querySelectorAll("bt-tile-menu").length);
+leftover === 0 ? ok("closing the sheet takes our rows with it") : fail(`${leftover} row group(s) left after the sheet closed`);
 
-// ---- 4. a 🚫 never draws over YouTube's own overlays ----
-// Every button is always shown on a touch screen, and its page-wide z-index
-// put the one of a tile scrolled under the sticky watch-page player on top
-// of the video. Scroll a button right under the player and hit-test it: a
-// button is rightly on top exactly where, without it, its own tile is. (Not
-// on the rich grid above: there the old twin buttons covered for each other.)
+// ---- 4. the watch page and the bottom bar follow the switches ----
+// Every one of these is on by default and was written for the desktop's
+// markup only, so on a phone the related videos, Share / Save / Report and
+// the Home and Shorts tabs all stayed.
 await p.goto("https://m.youtube.com/watch?v=adQyLViK_ZU", { waitUntil: "domcontentloaded" });
 await p.waitForTimeout(8000);
-const overlay = await p.evaluate(async () => {
-  const pinned = (e) => {
-    for (let n = e; n; n = n.parentElement) if (/fixed|sticky/.test(getComputedStyle(n).position)) return n;
-    return null;
+await p.evaluate(() => window.scrollBy(0, 1500));
+await p.waitForTimeout(2000);
+const watch = await p.evaluate(() => {
+  const vis = (e) => e.getClientRects().length > 0;
+  const labels = [...document.querySelectorAll("ytm-slim-video-action-bar-renderer button")].filter(vis).map((b) => (b.getAttribute("aria-label") || "").toLowerCase());
+  return {
+    related: [...document.querySelectorAll("ytm-single-column-watch-next-results-renderer :is(ytm-video-with-context-renderer, yt-lockup-view-model)")].filter(vis).length,
+    teaser: [...document.querySelectorAll("comments-entry-point-teaser-view-model, ytm-comments-entry-point-header-renderer")].some(vis),
+    like: labels.some((l) => l.startsWith("like this video")),
+    leftover: labels.filter((l) => ["share", "save to playlist", "save", "report"].includes(l))
   };
-  const player = pinned(document.elementFromPoint(innerWidth / 2, 150));
-  if (!player) return { player: false };
-  const pr = player.getBoundingClientRect();
-  const playerMid = (pr.top + pr.bottom) / 2;
-  const mid = (b) => (b.getBoundingClientRect().top + b.getBoundingClientRect().bottom) / 2;
-  const btns = [...document.querySelectorAll(".bt-block-btn")];
-  const target = btns.find((b) => mid(b) > pr.bottom + 50);
-  if (!target) return { player: true, target: false };
-  window.scrollBy(0, mid(target) - playerMid);
-  await new Promise((r) => setTimeout(r, 500));
-  let covered = 0;
-  let bleeding = 0;
-  let buried = 0;
-  for (const b of document.querySelectorAll(".bt-block-btn")) {
-    const r = b.getBoundingClientRect();
-    const x = r.left + r.width / 2;
-    const y = r.top + r.height / 2;
-    if (!r.width || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
-    b.style.visibility = "hidden";
-    const under = document.elementFromPoint(x, y);
-    b.style.visibility = "";
-    const top = document.elementFromPoint(x, y);
-    const own = !!under && b.parentElement.contains(under);
-    const onTop = !!top && b.contains(top);
-    if (!own) covered++;
-    if (!own && onTop) bleeding++;
-    if (own && !onTop) buried++;
-  }
-  return { player: true, target: true, covered, bleeding, buried };
 });
-overlay.covered > 0 && overlay.bleeding === 0 && overlay.buried === 0
-  ? ok(`a 🚫 under the sticky player stays under it (${overlay.covered} covered, none drawn on top)`)
-  : fail("🚫 vs YouTube's overlays: " + JSON.stringify(overlay));
-
-// ---- 5. tap 🚫 → Block channel ----
+watch.related === 0 && watch.teaser
+  ? ok("phone watch page: no related videos under the player, comments teaser still there")
+  : fail("phone watch page related/teaser: " + JSON.stringify(watch));
+watch.like && watch.leftover.length === 0
+  ? ok("phone watch page: Share, Save and Report gone from the row, Like stays")
+  : fail("phone action row: " + JSON.stringify(watch));
 await p.goto("https://m.youtube.com/results?search_query=veritasium", { waitUntil: "domcontentloaded" });
-await p.waitForTimeout(7000);
-const shown = await p.evaluate(() =>
-  [...document.querySelectorAll(".bt-block-btn")].filter((b) => getComputedStyle(b).opacity !== "0").length
+await p.waitForTimeout(6000);
+const pivot = await p.evaluate(() =>
+  [...document.querySelectorAll("ytm-pivot-bar-item-renderer")].filter((e) => e.getClientRects().length).map((e) => (e.textContent || "").trim())
 );
-shown > 0 ? ok(`🚫 buttons visible without hover (${shown})`) : fail("no 🚫 button visible on a touch screen");
-const picked = await p.evaluate(() => {
-  for (const b of document.querySelectorAll(".bt-block-btn")) {
-    const opt = [...b.parentElement.querySelectorAll(".bt-block-menu button")].find((x) => /^Block channel/.test(x.textContent));
-    if (opt) {
-      b.setAttribute("data-bt-test", "1");
-      return opt.textContent;
-    }
+pivot.length > 0 && !pivot.includes("Home") && !pivot.includes("Shorts") && !pivot.includes("")
+  ? ok(`bottom bar: Home and Shorts gone, no blank tab left (${pivot.join(", ")})`)
+  : fail("bottom bar tabs: " + JSON.stringify(pivot));
+
+// ---- 5. ⋮ → Block channel ----
+const picked = await (async () => {
+  for (let n = 0; n < 6; n += 1) {
+    const m = await tapMenu(n);
+    const row = m && m.rows.find((r) => /^Block channel/.test(r.text));
+    if (row) return { ...m, row };
+    await closeSheet();
+    await p.waitForTimeout(500);
   }
   return null;
-});
+})();
 if (!picked) {
-  fail("no tile offered “Block channel”");
+  fail("no tile's ⋮ sheet offered “Block channel”");
 } else {
-  await p.tap('.bt-block-btn[data-bt-test="1"]');
-  await p.waitForTimeout(300);
-  await p.tap('.bt-block-btn[data-bt-test="1"] ~ .bt-block-menu button:has-text("Block channel")');
+  picked.row.reachable ? ok(`“${picked.row.text}” is on screen in the sheet, tappable`) : fail("the Block channel row is under something: " + JSON.stringify(picked));
+  await p.tap('bt-tile-menu .bt-menu-row:has-text("Block channel")');
   await p.waitForTimeout(1500);
   const bl = await send({ type: "GET_BLOCKLIST" });
   const keys = Object.keys(bl.channels);
-  keys.length === 1 && (await p.locator('[data-bt-test="1"]').count()) === 0
-    ? ok(`tapping 🚫 → ${picked.trim()} blocks it and removes the tile (${keys[0]})`)
-    : fail(`tap-to-block: keys=${JSON.stringify(keys)}`);
+  const after = await p.evaluate(() => ({
+    tile: !!document.querySelector('[data-bt-test="tile"]'),
+    sheet: [...document.querySelectorAll("bottom-sheet-container #content-wrapper")].some((e) => e.getClientRects().length),
+    toast: (document.querySelector("bt-toast") || {}).textContent || ""
+  }));
+  keys.length === 1 && !after.tile && !after.sheet && /Undo/.test(after.toast)
+    ? ok(`tapping it blocks ${keys[0]}, removes the tile, closes the sheet and offers Undo`)
+    : fail(`⋮ block: keys=${JSON.stringify(keys)} ${JSON.stringify(after)}`);
 }
 
 // ---- 6. tapping the logo goes to Subscriptions, without a reload ----

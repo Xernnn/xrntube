@@ -9,10 +9,12 @@ import { chromium } from "playwright";
 // identity, the popup wants one row per real channel — and nothing else guards
 // that split.
 //
-// The popup's own block buttons can't be driven here: it reads
+// The popup's own block buttons aren't driven here: it reads
 // `chrome.tabs.query({active: true})`, and a popup opened as an ordinary
 // Playwright page *is* the active tab. So the buttons are covered via the
-// message they send, and the popup is checked for the states it can reach.
+// message they send, and the popup is checked for the states it can reach —
+// including the one a phone browser puts it in, opened as a tab with the
+// YouTube page behind it.
 
 const EXT_PATH = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const HANDLE = "@mkbhd";
@@ -137,6 +139,23 @@ const chanKeys = (chan && chan.channels ? chan.channels : []).map((c) => c.key);
 chanKeys.length === 1 && chanKeys[0].toLowerCase() === HANDLE
   ? ok(`channel page reports exactly one channel (${chanKeys[0]})`)
   : fail(`channel page target wrong: ${JSON.stringify(chanKeys)}`);
+
+// ---- a popup opened as a tab of its own, as a phone browser does ----
+// That tab is then the active one, and the YouTube page you came from sits
+// behind it: the popup must find the page you were on rather than report
+// "nothing to block here". The channel page above is the YouTube tab now.
+const asTab = await ctx.newPage();
+await asTab.goto(`chrome-extension://${extId}/popup/popup.html`);
+await asTab.waitForTimeout(2500);
+const tabbed = await asTab.evaluate(() => ({
+  noTarget: !document.getElementById("no-target").hidden,
+  page: !document.getElementById("current-page").hidden,
+  rows: document.querySelectorAll("#channel-rows > *").length
+}));
+tabbed.page && !tabbed.noTarget && tabbed.rows >= 1
+  ? ok("opened as a tab, the popup finds the YouTube page behind it")
+  : fail(`popup opened as a tab: ${JSON.stringify(tabbed)}`);
+await asTab.close();
 
 const send2 = (m) => ext2.evaluate((mm) => new Promise((r) => chrome.runtime.sendMessage(mm, r)), m);
 await send2({ type: "UNBLOCK_CHANNEL", id: "@seedchan" });
