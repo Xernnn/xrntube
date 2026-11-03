@@ -159,7 +159,9 @@ exposes `self.XrnTube.serverSync` with `init(host)` / `onLocalChange()`
 (debounced push, from `broadcastUpdate()`) / `onPoll()` (the `bt-sync-poll`
 alarm, every `SYNC.POLL_PERIOD_MIN`) / `configure({ url, user, password })`
 (or `null` to disconnect) / `syncNow()` / `status()` / `history()` /
-`historyItem(name)`. The one `cycle()`: GET the document → merge → apply
+`historyItem(name)`. The one `cycle()`: GET the document (`?since=` the
+version it last agreed on, when nothing changed locally since — a 304 ends
+the cycle there) → merge → apply
 locally via `host.applyMergedState()` (then `broadcastUpdate(…, { fromSync:
 true })`, so it doesn't loop into another push) → PUT if the merge differs from
 the remote, with `If-Match` set to the version it read. A **412** means
@@ -188,7 +190,14 @@ the server's; anything one device normalises differently from the server
 every 3 minutes forever. List order therefore follows the server, with this
 device's own additions in front — keeping each device's own order was exactly
 that loop. `serversync-test` asserts that a second round of syncing pushes
-nothing.
+nothing — and pulls nothing either: the 304 depends on the same agreement, a
+fingerprint of what `sameBlocklist()` compares, taken of the merge at the end
+of each cycle and of local storage at the start of the next. A device whose
+storage normalises something away from the merge never matches, and quietly
+goes back to downloading the whole list every poll. One wake is also one
+pull: `onPoll()` skips while a cycle runs or for `SYNC.POLL_FRESH_MS` after
+one, because the alarm usually wakes a stopped worker whose `init()` is
+already pulling.
 
 `history()` / `historyItem()` read the server's kept copies
 (`GET /history`, `GET /history/<name>`). There is no "roll back": the options

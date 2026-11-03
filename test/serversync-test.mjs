@@ -227,6 +227,40 @@ try {
     ? ok(`once both devices agree, more syncing pushes nothing (still v${vAfter})`)
     : fail(`idle syncing kept pushing: v${vBefore} → v${vAfter}`);
 
+  // ---- …and pulls nothing either: an idle poll is a 304 ----
+  // The document is the whole list, and every device polls every 3 minutes:
+  // pulling it each time cost a real list ~150MB a day through the server.
+  const stateGets = (from) =>
+    [...serverLog.slice(from).matchAll(/"GET \/xrntube\/state(?:\?\S*)? HTTP\/1\.1" (\d{3})/g)].map((m) => m[1]);
+  const logSettles = () => new Promise((r) => setTimeout(r, 300));
+  let mark = serverLog.length;
+  await settle(A, B);
+  await logSettles();
+  let gets = stateGets(mark);
+  gets.length >= 8 && gets.every((c) => c === "304")
+    ? ok(`an idle round is answered "not modified" — ${gets.length} pulls, no list sent`)
+    : fail(`idle pulls answered: ${gets.join(" ") || "none"}`);
+
+  // ---- a poll alongside a pull adds nothing ----
+  // The poll alarm mostly finds the worker stopped, and starting it runs
+  // init(), which pulls; the alarm's onPoll() then queued a second pull behind
+  // that one, and the server's log had every poll fetching the list twice. The
+  // same shape without a cold start's timing (which a test can't pin down): a
+  // pull under way, and a poll.
+  mark = serverLog.length;
+  await A.ctx.serviceWorkers()[0].evaluate(async () => {
+    const s = self.XrnTube.serverSync;
+    await Promise.all([s.syncNow(), s.onPoll()]);
+    await new Promise((r) => setTimeout(r, 500)); // a queued rerun would pull in here
+  });
+  await logSettles();
+  gets = stateGets(mark);
+  gets.length === 1
+    ? ok(`a poll that arrives with a pull under way doesn't pull again (${gets[0]})`)
+    : fail(`a pull and a poll together pulled ${gets.length} times: ${gets.join(" ")}`);
+  // B has pulled "not modified" all this while; A's change below must still
+  // reach it — the version moved, so the server sends the document.
+
   // ---- the server's history, and restoring from it ----
   const beforeWipe = Object.keys(await A.list()).sort();
   await A.send({ type: "DELETE_DATA", channels: "all", videos: "all" });

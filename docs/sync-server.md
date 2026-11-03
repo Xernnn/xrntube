@@ -14,6 +14,7 @@ builds: `{ v, channels, videos, tombstones, keywords, allowlist, settings }`.
 | request | answer |
 |---|---|
 | `GET /state` | 200, the document (`{}` before the first push), `ETag: "<version>"` |
+| `GET /state?since=<version>` | **304**, no body, while the document is still at that version; otherwise as above. A query, not `If-None-Match`, so a server older than this ignores it, where a header would have failed the CORS preflight |
 | `PUT /state` + `If-Match: "<version>"` | 200 and the new `ETag`; **412** if another device wrote since that version; **428** without `If-Match` (`"*"` overwrites) |
 | `GET /history` | the earlier copies kept, newest first: `{ items: [{ name, version, updated, channels, videos, keywords, allowlist }] }` |
 | `GET /history/<name>` | one of them, as `GET /state` would have returned it then |
@@ -65,10 +66,20 @@ removed. Don't restore by copying an old file over `state.json`: every device
 holds newer tombstones for what you're trying to bring back, and the next
 sync deletes it again.
 
+**Idle polls cost nothing.** The document is the whole list (a few hundred
+KB even gzipped) and each device polls every 3 minutes, so a device that
+still holds exactly what it last agreed with the server — a hash of it,
+`agreedFp` in `bt_sync` — pulls with `?since=<that version>` and gets a 304
+unless another device has written since. The whole document is still pulled
+every 6 hours (`SYNC.FULL_PULL_MS`), and a poll that arrives while a pull is
+running, or within a minute of one, doesn't pull again: before both, a real
+list cost ~150MB a day through the server, every poll fetching it twice.
+
 `serversync-test` runs the real server with two browser profiles: a block
 crosses, an unblock crosses, two devices writing at once both keep their
 edits, settings / keywords / never-block entries changed on each device all
-survive and deletions cross, idle syncing pushes nothing, and a "delete
+survive and deletions cross, idle syncing pushes nothing and pulls only
+304s, a poll beside a running pull adds none, and a "delete
 everything" is undone from history through the options page.
 
 ## Running it

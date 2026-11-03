@@ -38,6 +38,15 @@
 // poll alarm also backstops the debounce timer, which a suspended service
 // worker can otherwise drop.
 //
+// Most polls find nothing new on either side, and the document is the whole
+// list (~1MB, a few hundred KB gzipped). So a device that still holds exactly
+// what it last agreed with the server (`agreedFp`) pulls with ?since=<that
+// version>, and the server answers 304 with no body unless it has moved on —
+// in which case nothing could merge, apply or push, and the cycle ends there.
+// The whole document is still pulled every SYNC.FULL_PULL_MS. And one wake is
+// one pull: a poll that finds a cycle running, or one just finished (the worker
+// woken by that alarm has already pulled from init), adds nothing.
+//
 // This module never touches blocklist storage directly — background.js passes
 // it a `host` with the few operations it needs, and calls serverSync.init(host).
 // ---------------------------------------------------------------------------
@@ -49,6 +58,7 @@
   // In-memory mirror of the chrome.storage.local `bt_sync` record.
   let cfg = null;
 
+  let ready = null; // init()'s loadCfg(), which a poll arriving first waits for
   let pushTimer = null;
   let running = false; // exactly one cycle at a time
   let rerunQueued = false; // a trigger arrived mid-cycle → run once more after
@@ -61,6 +71,8 @@
         user: null,
         password: null,
         lastVersion: null, // the server's ETag for what we last read or wrote
+        agreedFp: null, // fingerprint() of what this device and lastVersion both hold
+        lastFullPullAt: 0, // the last pull that fetched the whole document
         lastPulledAt: 0,
         lastPushedAt: 0,
         lastError: null,
@@ -109,7 +121,7 @@
         if (host) host.setClockOffset(offset);
       }
     }
-    if (!r.ok) {
+    if (!r.ok && r.status !== 304) {
       const err = new Error(
         r.status === 401 ? "the server refused the user name or password" : `server answered ${r.status} ${r.statusText}`
       );
@@ -119,8 +131,13 @@
     return r;
   }
 
-  async function fetchRemote() {
-    const r = await request("GET");
+  // `since`: the version this device last agreed with the server. A server
+  // still at that version answers 304, and this returns { notModified }; one
+  // older than ?since= ignores the query and sends the document as always.
+  async function fetchRemote(since) {
+    const path = since ? `/state?since=${versionNo(since)}` : "/state";
+    const r = await request("GET", undefined, null, path);
+    if (r.status === 304) return { notModified: true, version: since };
     let data = emptySnapshot();
     try {
       const parsed = await r.json();
@@ -364,6 +381,18 @@
       stableStringify(a.settings || null) === stableStringify(b.settings || null)
     );
   }
+  // What sameBlocklist() compares, hashed: equal fingerprints are equal under
+  // it. Kept in cfg in place of a second copy of the list.
+  async function fingerprint(s) {
+    const text = [
+      stableStringify({ channels: s.channels || {}, videos: s.videos || {}, tombstones: s.tombstones || {} }),
+      kwFingerprint(s.keywords),
+      allowFingerprint(s.allowlist),
+      stableStringify(s.settings || null)
+    ].join("\n");
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return btoa(String.fromCharCode(...new Uint8Array(digest)));
+  }
 
   // The server's version, as a number ("12" from the ETag `"12"`).
   const versionNo = (etag) => Number(String(etag || "").replace(/\D/g, "")) || 0;
@@ -390,7 +419,19 @@
         settings: rec.settings
       };
 
-      const { data: remote, version } = await fetchRemote();
+      // Unchanged here since the last cycle, and the server still at the
+      // version that cycle left it at: there is nothing to merge, apply or
+      // push, so don't download the list to find that out (see the top).
+      const localFp = await fingerprint(localSnapshot);
+      const agreed =
+        !!cfg.lastVersion && cfg.agreedFp === localFp && host.now() - (cfg.lastFullPullAt || 0) < SYNC.FULL_PULL_MS;
+      const { data: remote, version, notModified } = await fetchRemote(agreed ? cfg.lastVersion : null);
+      if (notModified) {
+        cfg.lastPulledAt = host.now();
+        cfg.lastError = null;
+        await persistCfg();
+        return { ok: true, changedLocally: false, pushed: false, notModified: true };
+      }
 
       // A server whose version went backwards was reset or restored from a
       // backup: what we agreed with it before says nothing about what it
@@ -439,8 +480,11 @@
         cfg.lastVersion = version || cfg.lastVersion;
       }
 
-      // Both sides now hold `merged`: that is the next cycle's base.
+      // Both sides now hold `merged`: that is the next cycle's base, and what
+      // the next cycle's local state must still match to pull with ?since=.
       await saveBase(merged);
+      cfg.agreedFp = await fingerprint(merged);
+      cfg.lastFullPullAt = host.now();
       cfg.lastPulledAt = host.now();
       cfg.lastError = null;
       cfg.remoteChannels = Object.keys(merged.channels).length;
@@ -471,7 +515,8 @@
     // Called once, at background.js top level (every worker wake).
     async init(hostImpl) {
       host = hostImpl;
-      await loadCfg();
+      ready = loadCfg();
+      await ready;
       host.setClockOffset(cfg.clockOffset || 0);
       if (enabled()) cycle();
     },
@@ -483,9 +528,14 @@
       pushTimer = setTimeout(() => cycle(), SYNC.PUSH_DEBOUNCE_MS);
     },
 
-    // Poll tick — background.js owns the alarm and forwards it here.
-    onPoll() {
-      if (enabled()) cycle();
+    // Poll tick — background.js owns the alarm and forwards it here, and
+    // onStartup calls it too. The alarm usually wakes a stopped worker, whose
+    // init() is already pulling by now (it was ahead in line for `ready`): a
+    // poll that queued a rerun behind it fetched the whole list twice a poll.
+    async onPoll() {
+      if (ready) await ready;
+      if (!enabled() || running || host.now() - (cfg.lastPulledAt || 0) < SYNC.POLL_FRESH_MS) return;
+      cycle();
     },
 
     // options page: connect with { url, user, password }, or pass null to

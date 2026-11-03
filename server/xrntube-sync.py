@@ -7,6 +7,10 @@ only, plus `bcrypt` to read an htpasswd file (Radicale's works as-is, so the
 calendar password is the sync password).
 
     GET  /state            200, the document; ETag: "<version>"
+    GET  /state?since=<v>  304 and no body when the document is still at
+                           version <v>; otherwise as above. In the query, not
+                           If-None-Match, so an older server just ignores it
+                           (a header would need its own CORS preflight entry)
     PUT  /state            needs If-Match: "<version>" (or "*" to overwrite)
                            200 with the new ETag, or 412 if someone else wrote
                            first — re-read, merge, try again
@@ -44,6 +48,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 import bcrypt
 
@@ -214,6 +219,15 @@ class Handler(BaseHTTPRequestHandler):
         return path
 
     def send(self, code, body=b"", ctype="text/plain; charset=utf-8", headers=None):
+        if code == 304:  # no body, so neither a type nor a length for one
+            self.send_response(304)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Expose-Headers", "ETag")
+            self.send_header("Cache-Control", "no-store")
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            return
         if isinstance(body, str):
             body = body.encode()
         if len(body) > 1024 and "gzip" in (self.headers.get("Accept-Encoding") or ""):
@@ -275,8 +289,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/state":
             with lock:
                 doc = read_state(user)
+            etag = {"ETag": f'"{doc["version"]}"'}
+            # A device that holds exactly what it last agreed with us asks
+            # whether we moved on; mostly we didn't, and the whole list (a
+            # few hundred KB even gzipped) stays put. That is every idle poll.
+            since = parse_qs(urlsplit(self.path).query).get("since", [""])[0]
+            if since and doc["version"] and since == str(doc["version"]):
+                return self.send(304, headers=etag)
             body = json.dumps(doc.get("data") or {}, ensure_ascii=False, separators=(",", ":"))
-            return self.send(200, body, "application/json; charset=utf-8", {"ETag": f'"{doc["version"]}"'})
+            return self.send(200, body, "application/json; charset=utf-8", etag)
         if path == "/history":
             with lock:
                 items = list_history(user)
