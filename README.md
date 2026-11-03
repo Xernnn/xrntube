@@ -66,7 +66,7 @@ afterwards.
 1. Open `chrome://extensions` (or `edge://extensions`, `brave://extensions`).
 2. Turn on **Developer mode** (top-right).
 3. Click **Load unpacked** and select the folder you just unpacked.
-4. Pin the 🚫 icon to your toolbar if you want the quick-block popup handy.
+4. Pin the xrntube icon (red, with a play button) to your toolbar if you want the quick-block popup handy.
 
 **2b. On your phone (Quetta or another Chromium browser with extensions)**
 
@@ -142,7 +142,7 @@ Three ways, all equivalent:
 |---|---|
 | **On a tile** | Click the tile's ⋮ (YouTube's own menu) → XrnTube's options are at the bottom, under YouTube's: *Block this video*, *Block channel: X*, *Block all videos from X*. A banner confirms it, with an **Undo**. A tile with no ⋮ (a channel card in search) is blocked from the popup or by right-click |
 | **Right-click** | Right-click a video or channel link (or anywhere on a watch page) → **XrnTube: block this channel** / **block this video** |
-| **Toolbar popup** | On a video or channel page, click the 🚫 toolbar icon — it lists the video and every channel it found, with both block modes per channel (and an **Unblock** button for anything already blocked) |
+| **Toolbar popup** | On a video or channel page, click the xrntube toolbar icon — it lists the video and every channel it found, with both block modes per channel (and an **Unblock** button for anything already blocked) |
 | **Options page** | Paste into the **Block something** box at the top of the Blocklist tab — `@handles`, `UC…` IDs, channel links, video links, several at once |
 
 A tile that credits several channels (YouTube's collaboration attribution)
