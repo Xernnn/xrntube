@@ -54,12 +54,47 @@ import bcrypt
 
 MAX_BODY = 32 * 1024 * 1024
 FAIL_DELAY_S = 2  # after a wrong password, as Radicale does
+FAIL_LIMIT = 10  # wrong logins from one address within FAIL_WINDOW_S, then 429 until they age out
+FAIL_WINDOW_S = 15 * 60
 AUTH_CACHE_S = 600  # a bcrypt check costs ~0.3s on a phone; don't pay it per request
 PREFIX = "/xrntube"
 
 args = None
 lock = threading.Lock()
 auth_cache = {}  # sha256(user:password) -> (user, expires, users-file mtime)
+fail_lock = threading.Lock()
+failures = {}  # client address -> monotonic times of its recent wrong logins
+
+
+def client_address(handler):
+    """The caller's address. Behind the local proxy (Funnel) that's the first X-Forwarded-For hop;
+    the header is only trusted from a loopback peer, since anyone else could make it up."""
+    peer = handler.client_address[0]
+    forwarded = handler.headers.get("X-Forwarded-For")
+    if forwarded and peer in ("127.0.0.1", "::1"):
+        return forwarded.split(",")[0].strip()
+    return peer
+
+
+def locked_out(addr):
+    """Whether this address has used up its wrong logins for now."""
+    now = time.monotonic()
+    with fail_lock:
+        recent = [t for t in failures.get(addr, ()) if now - t < FAIL_WINDOW_S]
+        if recent:
+            failures[addr] = recent
+        else:
+            failures.pop(addr, None)
+        return len(recent) >= FAIL_LIMIT
+
+
+def note_failure(addr):
+    now = time.monotonic()
+    with fail_lock:
+        if len(failures) > 10000:  # a flood from many addresses: forget the stale ones
+            for a in [a for a, ts in failures.items() if now - ts[-1] >= FAIL_WINDOW_S]:
+                del failures[a]
+        failures.setdefault(addr, []).append(now)
 
 
 def users_mtime():
@@ -246,10 +281,22 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def login(self):
+        # Ten wrong passwords from one address in 15 minutes lock it out until they age out, as
+        # xrnloops-sync and xrnrule-sync do: the delay alone still let a guesser try ~1800 an hour.
+        addr = client_address(self)
+        if locked_out(addr):
+            time.sleep(FAIL_DELAY_S)
+            self.send(429, "too many wrong passwords; try again later", headers={"Retry-After": str(FAIL_WINDOW_S)})
+            return None
         user = check_login(self.headers.get("Authorization"))
         if not user:
+            if self.headers.get("Authorization"):
+                note_failure(addr)
             time.sleep(FAIL_DELAY_S)
             self.send(401, "login required", headers={"WWW-Authenticate": 'Basic realm="XrnTube"'})
+            return None
+        with fail_lock:
+            failures.pop(addr, None)
         return user
 
     def do_OPTIONS(self):  # CORS preflight: no login

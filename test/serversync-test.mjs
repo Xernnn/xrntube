@@ -295,6 +295,19 @@ try {
     ? ok(`restoring that copy on B brings all ${beforeWipe.length} channels back on both devices, past A's tombstones`)
     : fail(`restore: preview=${JSON.stringify(previewText.slice(0, 120))} A=${restoredA} B=${restoredB} want=${beforeWipe}`);
 
+  // Last, since it locks this address out: ten wrong passwords (sent at once, each held 2 s) and
+  // even the right one gets 429 for 15 minutes. Basic auth from a loopback peer with a forwarded
+  // address counts against that address, as behind Tailscale Funnel.
+  const basic = (u, pw) => ({ Authorization: "Basic " + Buffer.from(`${u}:${pw}`).toString("base64") });
+  const state = (h) => fetch(`${URL_}/state`, { headers: h }).then((r) => r.status);
+  const fwd = { "X-Forwarded-For": "203.0.113.7" };
+  const wrong = await Promise.all(Array.from({ length: 10 }, () => state({ ...basic(USER, "nope"), ...fwd })));
+  const lockedRight = await state({ ...basic(USER, PASS), ...fwd });
+  const otherAddr = await state({ ...basic(USER, PASS), "X-Forwarded-For": "203.0.113.8" });
+  wrong.every((s) => s === 401) && lockedRight === 429 && otherAddr === 200
+    ? ok("ten wrong passwords lock that address out (429 even for the right one); other addresses still sign in")
+    : fail(`lockout: wrong ${wrong}, then right ${lockedRight}, other address ${otherAddr}`);
+
 } catch (e) {
   fail(e.stack || String(e));
 } finally {
