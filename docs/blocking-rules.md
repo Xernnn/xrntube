@@ -147,7 +147,8 @@ that alone.
 ## Title-keyword and duration filters
 
 `chrome.storage.sync` key `bt_keywords` =
-`{ list: [{ p, re }], ts, durMinSec, durMaxSec }`. A video is scrubbed if
+`{ list: [{ p, re }], ts, durMinSec, durMaxSec, commentLimit, subsMaxAgeDays }`
+(the last two below and in the next section). A video is scrubbed if
 its title matches any pattern **or** (when either bound is > 0) its duration
 badge is shorter than `durMinSec` / longer than `durMaxSec`. `content.js`
 compiles the patterns in `applyKeywords()` (loaded alongside `bt_settings`,
@@ -180,6 +181,53 @@ tab edits both (title list + a "Block videos by length" block). The sync
 merge carries the whole `keywords` object as last-write-wins on `ts`;
 `kwFingerprint()` (list + duration bounds, ts excluded) in `sameBlocklist()`
 is what makes a duration-only edit still push.
+
+## The Subscriptions feed's age limit
+
+`bt_keywords.subsMaxAgeDays` (options → Keywords & length → *Subscriptions
+page*; 0 or absent = off): on the Subscriptions feed only, any video
+`subsMaxAgeDays` days old or older is removed, whoever uploaded it — the same
+"N days or older" as a channel's own age rule, decided in `blockReasonFor()`
+from the item's `onSubsFeed`. An unknown date means recent, as everywhere;
+the allow-list still wins; playlists aren't judged. **Shorts are left
+alone**, the opposite of a channel's rule (`ageForRule()`): there, exempting
+dateless Shorts left half the channel behind, while on this feed they are a
+shelf of their own that the Shorts switches already cover, and reading them as
+old would empty it.
+
+Which feed a thing is on is the part that can go wrong, and each layer answers
+it from what it can see, never from the address bar:
+
+- **Layer 0** reads it off the response. YouTube stamps every `/browse`
+  response — the first page and each continuation — and `ytInitialData` with
+  `responseContext.serviceTrackingParams[].params[]` `{ key: "browse_id",
+  value: "FEsubscriptions" }` (a channel's tab carries its UC id, Home
+  `FEwhat_to_watch`). `page-hook.js`'s `browseIdOf()` marks the items
+  `onSubsFeed` and content.js decides. The request body would say it too, but
+  it is gzipped; the address bar is wrong during navigation — leaving
+  Subscriptions for Home, Home's first page arrives while it still says
+  `/feed/subscriptions`.
+- **The DOM scrub** asks the tile's page: desktop keeps every page you came
+  from, each in its own `ytd-browse`, and the Subscriptions one is
+  `ytd-browse[page-subtype="subscriptions"]` (`onSubsFeed()` in content.js).
+  m.youtube.com has no `ytd-browse` and shows one page at a time, so there
+  it is `location.pathname`.
+
+The limit only reads dates while it is on and only on that feed, and a tile
+whose date hasn't hydrated is pending (`agePending`), the same trap as a
+channel's age rule. The feed is newest first, so past the limit every page
+that arrives is removed whole; the round counter (`EXHAUST_ROUNDS`) then stops
+the continuations, and the stop notice names the limit (and where it is set)
+instead of "Reload to look further", which would only find the same.
+
+In sync the field is carried only when present, like `commentLimit`, and for
+a reason that matters more here: a device older than the field pushes its
+keyword record without it, and `mergeValue()` keeps this device's value only
+when the server's copy has none at all. A 0 filled in on read would be a value
+of its own, and could win the three-way merge and erase the limit everywhere.
+The options page likewise writes it back only once it has one.
+`kwFingerprint()` includes it only while it is on, so a record without it
+fingerprints exactly as it did before the field existed.
 
 ## Channel allow-list ("Never-block")
 

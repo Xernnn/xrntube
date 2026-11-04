@@ -191,7 +191,7 @@ one video.
 
 ## Keyword and length filters
 
-The **Keywords & length** tab holds two filters that apply to every video,
+The **Keywords & length** tab holds the filters that apply to every video,
 from any channel:
 
 - **By title** — a list of words or phrases; any video whose title contains
@@ -209,6 +209,13 @@ from any channel:
   bottom of the list. Replies are left alone: the cap is about how far the
   section scrolls, not about hiding half of a conversation you opened.
   Defaults to 50; set it to 0 for no cap.
+- **Subscriptions page** — *Hide videos older than N days* keeps your
+  Subscriptions feed to what's new: anything N days old or older goes, from
+  every channel, on that page only (Home, search and channel pages are left
+  alone). Shorts carry no date, so they stay (the Shorts switches cover them),
+  and so do channels on your Never-block list. Scroll past the limit and the
+  feed stops loading and says so, rather than paging in old videos only to
+  remove them. Blank or 0 turns it off.
 
 These sync alongside the blocklist. They are applied by script rather than by
 CSS (a title has to be read before it can be matched), so a matching tile can

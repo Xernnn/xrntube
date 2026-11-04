@@ -1325,8 +1325,12 @@
       const key = normalizeChannelKey(ref);
       if (key) keys.push(key);
     }
+    // page-hook.js marks what came from the Subscriptions feed (by the
+    // response's own browse id); the date matters there only while that
+    // feed's age limit is on.
+    const onSubsFeed = !!it.onSubsFeed && filterRec.subsMaxAgeDays > 0;
     let ageDays = null;
-    if (blockIndex.anyAgeRule && it.publishedText) {
+    if ((blockIndex.anyAgeRule || onSubsFeed) && it.publishedText) {
       const d = parseAgeDays(it.publishedText);
       if (plausibleAgeDays(d)) ageDays = d;
     }
@@ -1338,7 +1342,8 @@
         ageDays,
         isPlaylist: !!it.isPlaylist,
         isShort: !!it.isShort,
-        channelKeys: keys
+        channelKeys: keys,
+        onSubsFeed
       },
       blockIndex,
       filterRec
@@ -1494,6 +1499,21 @@
     return videoTitle ? all.split(videoTitle).join(" ") : all;
   }
 
+  // The desktop Subscriptions page. The desktop keeps the pages you came from
+  // in the DOM, each in its own ytd-browse, so a tile's own page says where it
+  // is: the address bar is wrong for a hidden page's tile, and for a moment
+  // during every navigation between two pages.
+  const SUBS_FEED_PAGE_SEL = 'ytd-browse[page-subtype="subscriptions"]';
+  // Whether a tile is on the Subscriptions feed, for that feed's age limit —
+  // asked only while the limit is on. m.youtube.com has no ytd-browse and shows
+  // one page at a time, so there the address is all there is to go on.
+  function onSubsFeed(el) {
+    if (!(filterRec.subsMaxAgeDays > 0)) return false;
+    const page = el.closest ? el.closest("ytd-browse") : null;
+    if (page) return page.matches(SUBS_FEED_PAGE_SEL);
+    return location.hostname.startsWith("m.") && location.pathname === "/feed/subscriptions";
+  }
+
   function extractInfo(el) {
     let videoId = null;
     let videoTitle = "";
@@ -1562,16 +1582,18 @@
       !isChannelCard && ((el.matches && el.matches(PLAYLIST_TILE_TAGS)) || !!el.querySelector(PLAYLIST_LINK_SEL));
     if (!videoId && channels.size === 0 && !isPlaylist) return null;
     // Only bother reading the tile's publish text / duration when a blocked
-    // channel has an age rule / a duration filter is active — parsing every
-    // tile otherwise is wasted work.
-    let ageDays = blockIndex.anyAgeRule && videoId ? parseAgeDays(tileAgeText(el, videoTitle)) : null;
+    // channel has an age rule (or this is the Subscriptions feed and it has
+    // one) / a duration filter is active — parsing every tile otherwise is
+    // wasted work.
+    const subsFeed = !!videoId && onSubsFeed(el);
+    let ageDays = (blockIndex.anyAgeRule || subsFeed) && videoId ? parseAgeDays(tileAgeText(el, videoTitle)) : null;
     if (!plausibleAgeDays(ageDays)) ageDays = null;
     const durationSec =
       videoId && (filterRec.durMinSec > 0 || filterRec.durMaxSec > 0) ? readDurationSec(el) : null;
     // Whether this is a Short matters only to the age rule, and only because
     // a Short never carries a date — see ageForRule() in shared/block-logic.js.
     const isShort = !!videoId && !!(el.querySelector('a[href*="/shorts/"]') || (el.matches && el.matches(SHORTS_ITEM_SELECTOR)));
-    return { videoId, videoTitle, channels, ageDays, durationSec, isPlaylist, isShort };
+    return { videoId, videoTitle, channels, ageDays, durationSec, isPlaylist, isShort, onSubsFeed: subsFeed };
   }
 
   // Why a tile is blocked, as a short string — null if it isn't. "Blocked"
@@ -1595,7 +1617,8 @@
         ageDays: info.ageDays,
         isPlaylist: info.isPlaylist,
         isShort: info.isShort,
-        channelKeys: info.channels.keys()
+        channelKeys: info.channels.keys(),
+        onSubsFeed: info.onSubsFeed
       },
       blockIndex,
       filterRec
@@ -2016,8 +2039,15 @@
       // ago" line, an unknown age reads as recent, and a tile checked in that
       // window kept an old video of an age-ruled channel on screen for good.
       // A Short never gets a date (ageForRule() already answers for it), so
-      // it is not pending.
-      const agePending = !!(info && info.videoId && info.ageDays == null && !info.isShort && ageRuledChannelOn(info));
+      // it is not pending. The Subscriptions feed's age limit has the same
+      // trap on every tile of that feed.
+      const agePending = !!(
+        info &&
+        info.videoId &&
+        info.ageDays == null &&
+        !info.isShort &&
+        (ageRuledChannelOn(info) || info.onSubsFeed)
+      );
       // A live stream has no duration and never will, so bound the retries
       // rather than re-processing it on every pass forever.
       const tries = Number(el.dataset.btPending || 0);
@@ -2714,16 +2744,24 @@
     // which is exactly what an age rule leaves behind — reads as a bug in the
     // extension.
     const anythingLeft = queryTiles(page).some((el) => el.offsetParent !== null);
+    // On the Subscriptions feed with its age limit on, what ran out is almost
+    // always the limit's window (the feed is newest first): name it, and where
+    // to change it, rather than "reload to look further", which finds the
+    // same. "Or blocked" because a blocked channel's run can stop it too.
+    const subsDays = page && onSubsFeed(page) ? filterRec.subsMaxAgeDays : 0;
     host.appendChild(
       feedNotice(
         "stop",
-        feedExhausted
-          ? "XrnTube stopped loading more: the last " +
-              EXHAUST_ROUNDS +
-              " pages of results were all blocked, so nothing else is coming. Reload to look further."
-          : anythingLeft
-            ? "XrnTube stopped loading more: everything further down is blocked, so nothing else is coming."
-            : "XrnTube stopped loading more: everything here is blocked."
+        subsDays
+          ? `XrnTube stopped loading more: everything further down is blocked or older than ${subsDays} ` +
+              `day${subsDays === 1 ? "" : "s"}, the Subscriptions limit set in Keywords & length.`
+          : feedExhausted
+            ? "XrnTube stopped loading more: the last " +
+                EXHAUST_ROUNDS +
+                " pages of results were all blocked, so nothing else is coming. Reload to look further."
+            : anythingLeft
+              ? "XrnTube stopped loading more: everything further down is blocked, so nothing else is coming."
+              : "XrnTube stopped loading more: everything here is blocked."
       )
     );
     dbg(

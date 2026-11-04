@@ -515,6 +515,23 @@
     return { sites, items };
   }
 
+  // Which feed a response belongs to. YouTube stamps its browse id into every
+  // /browse response — the first page and each continuation alike — and into
+  // ytInitialData: `responseContext.serviceTrackingParams[].params[]`
+  // `{ key: "browse_id", value: "FEsubscriptions" }` (a channel's UC id on its
+  // tabs, FEwhat_to_watch on Home). Read off the response itself, because
+  // neither of the alternatives holds: the request body is gzipped, and the
+  // address bar is late — leaving Subscriptions for Home, Home's first page
+  // arrives while it still says /feed/subscriptions.
+  function browseIdOf(data) {
+    const services = data && data.responseContext && data.responseContext.serviceTrackingParams;
+    if (!Array.isArray(services)) return "";
+    for (const s of services) {
+      for (const kv of (s && s.params) || []) if (kv && kv.key === "browse_id" && kv.value) return String(kv.value);
+    }
+    return "";
+  }
+
   function isEmptyish(v) {
     if (Array.isArray(v)) return v.length === 0;
     return !!v && typeof v === "object" && Object.keys(v).length === 0;
@@ -611,6 +628,9 @@
       dbg("collect threw on", what, e);
       return 0;
     }
+    // Where these came from, for the Subscriptions feed's own age limit — a
+    // description like the rest; content.js decides whether it applies.
+    if (items.length && browseIdOf(data) === "FEsubscriptions") for (const it of items) it.onSubsFeed = true;
     let blocked = [];
     if (items.length) {
       stats.candidates += items.length;

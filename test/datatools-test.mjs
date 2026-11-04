@@ -110,13 +110,13 @@ await msg({ type: "RESTORE_UNBLOCK", ts: d2.undoTs });
 
 // keywords + never-block go in the same undo record
 await p.evaluate(() =>
-  chrome.storage.sync.set({ bt_keywords: { list: [{ p: "foo", re: false }, { p: "ba+r", re: true }], ts: Date.now(), durMinSec: 30, durMaxSec: 0, commentLimit: 20 } })
+  chrome.storage.sync.set({ bt_keywords: { list: [{ p: "foo", re: false }, { p: "ba+r", re: true }], ts: Date.now(), durMinSec: 30, durMaxSec: 0, commentLimit: 20, subsMaxAgeDays: 5 } })
 );
 const d3 = await msg({ type: "DELETE_DATA", keywords: true, allowlist: true });
 let kw = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
 bl = await blocklist();
-kw.list.length === 0 && kw.durMinSec === 30 && Object.keys(bl.allowlist).length === 0
-  ? ok("DELETE_DATA clears keywords (length rule kept) and the never-block list")
+kw.list.length === 0 && kw.durMinSec === 30 && kw.subsMaxAgeDays === 5 && Object.keys(bl.allowlist).length === 0
+  ? ok("DELETE_DATA clears keywords (length rule and Subscriptions limit kept) and the never-block list")
   : fail("keyword/allow delete: " + JSON.stringify({ kw, allow: bl.allowlist }));
 await msg({ type: "RESTORE_UNBLOCK", ts: d3.undoTs });
 kw = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
@@ -137,6 +137,7 @@ const backup = JSON.parse(readFileSync(await download.path(), "utf8"));
 backup.format === "xrntube-backup" &&
 Object.keys(backup.channels).length === Object.keys(before.channels).length &&
 backup.keywords.list.length === 2 &&
+backup.keywords.subsMaxAgeDays === 5 &&
 backup.allowlist["@allowx"] &&
 backup.settings.removeRelated === false
   ? ok(`backup holds channels, videos, keywords, never-block and switches (${download.suggestedFilename()})`)
@@ -152,6 +153,10 @@ await p.fill("#modal-body input", "delete");
 await p.click("#modal-confirm");
 await p.waitForTimeout(800);
 await p.evaluate(() => chrome.storage.sync.set({ bt_settings: {} }));
+// the wipe keeps the limits, so take one away to see the import bring it back
+await p.evaluate(() =>
+  chrome.storage.sync.get("bt_keywords").then((r) => chrome.storage.sync.set({ bt_keywords: { ...r.bt_keywords, subsMaxAgeDays: 0 } }))
+);
 bl = await blocklist();
 kw = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
 Object.keys(bl.channels).length === 0 && Object.keys(bl.videos).length === 0 && kw.list.length === 0 && Object.keys(bl.allowlist).length === 0
@@ -176,10 +181,25 @@ bl.channels["@chanb"].ucid === UC_B &&
 bl.channels[UC_A].mode === "exceptWhitelist" &&
 kw.list.length === 2 &&
 kw.commentLimit === 20 &&
+kw.subsMaxAgeDays === 5 &&
 bl.allowlist["@allowx"] &&
 settings.removeRelated === false
   ? ok("importing the backup restores all of it — identities, modes, keywords, limits, never-block, switches")
   : fail("round trip lost something: " + JSON.stringify({ ch: Object.keys(bl.channels), kw, settings }));
+
+// ---- 4b. the Subscriptions age limit, set on the Keywords page ----
+await p.locator('.page-tab[data-page="keywords"]').click();
+await p.fill("#subs-age", "3");
+await p.click("#subs-age-save");
+await p.waitForTimeout(400);
+const subsSet = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+await p.fill("#subs-age", "");
+await p.click("#subs-age-save");
+await p.waitForTimeout(400);
+const subsOff = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+subsSet.subsMaxAgeDays === 3 && subsOff.subsMaxAgeDays === 0 && subsOff.list.length === 2 && subsOff.commentLimit === 20
+  ? ok("the Subscriptions age limit saves from its own field (3 days, then blank = off), leaving the rest of the record alone")
+  : fail(`Subscriptions limit field: set=${JSON.stringify(subsSet)} off=${JSON.stringify(subsOff)}`);
 
 // ---- 5. per-row Delete + Undo toast ----
 await p.locator('.page-tab[data-page="blocklist"]').click();

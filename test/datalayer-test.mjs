@@ -631,6 +631,51 @@ const results = (o) =>
     : fail("playlist lockup survived an age-ruled block");
 }
 
+// ---- 16. the Subscriptions feed's age limit, and only on that feed ----
+// Which feed a response is comes from the response itself: YouTube stamps its
+// browse id into `responseContext.serviceTrackingParams` on every /browse
+// page and continuation (confirmed live — a channel's tab carries its UC id,
+// the Subscriptions page FEsubscriptions). The address bar can't be used:
+// leaving Subscriptions for Home, Home's first page arrives while it still
+// says /feed/subscriptions, and it would have aged out Home's older videos.
+{
+  const stamped = (browseId, items) => ({
+    responseContext: {
+      serviceTrackingParams: [
+        { service: "GFEEDBACK", params: [{ key: "browse_id", value: browseId }, { key: "browse_id_prefix", value: "" }] }
+      ]
+    },
+    ...wrap(items)
+  });
+  const aged = (id, when, ucid = GOOD, handle = "@good") =>
+    video(id, `upload ${id}`, "Someone", ucid, handle, { publishedTimeText: { simpleText: when } });
+  const feed = () => [
+    aged("o1111111111", "3 weeks ago"),
+    aged("o2222222222", "1 week ago"), // 7 days: the limit is "N days or older", as a channel's age rule is
+    aged("n1111111111", "1 hour ago"),
+    aged("n2222222222", "6 days ago"),
+    video("l1111111111", "live now, no date", "Someone", GOOD, "@good", { publishedTimeText: undefined }),
+    short("s6666666666", "a short", "Someone", GOOD, "@good"),
+    aged("k1111111111", "2 years ago", ALLOWED, "@ok")
+  ];
+  const lists = { channels: {}, videos: {}, allowlist: { [ALLOWED]: { note: "" } } };
+  const limit = { list: [], subsMaxAgeDays: 7 };
+
+  const subs = videoIds(await filter(lists, limit, stamped("FEsubscriptions", feed())));
+  same(subs, ["n1111111111", "n2222222222", "l1111111111", "s6666666666", "k1111111111"])
+    ? ok("Subscriptions, 7-day limit: 3 weeks and 1 week old go; 1 hour, 6 days, undated, the Short and a never-block channel stay")
+    : fail(`Subscriptions feed with a 7-day limit kept ${JSON.stringify(subs)}`);
+
+  const home = videoIds(await filter(lists, limit, stamped("FEwhat_to_watch", feed())));
+  const search = videoIds(await filter(lists, limit, wrap(feed())));
+  home.length === 7 && search.length === 7
+    ? ok("…the same videos on Home, or on a page with no browse id, are left alone")
+    : fail(`the Subscriptions limit reached another feed: home kept ${home.length}/7, search ${search.length}/7`);
+
+  const off = videoIds(await filter(lists, { list: [], subsMaxAgeDays: 0 }, stamped("FEsubscriptions", feed())));
+  off.length === 7 ? ok("…and with the limit at 0 the Subscriptions feed keeps everything") : fail(`limit 0 still removed: kept ${off.length}/7`);
+}
+
 // ---- YouTube's auto-generated chapters (the hideAutoChapters switch) ----
 // A watch-next response in YouTube's shape: the player-bar markers, the
 // chapter button, the chapter panel, a "Chapters" chip in another panel's

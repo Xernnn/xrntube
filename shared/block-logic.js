@@ -205,21 +205,28 @@ self.XrnTube = self.XrnTube || {};
       // Not a block rule — nothing downstream consults it in blockReasonFor()
       // — but it lives with the other numeric knobs so there is one place a
       // number the user typed gets read and clamped.
-      commentLimit: Math.max(0, Math.floor(Number(rec && rec.commentLimit) || 0))
+      commentLimit: Math.max(0, Math.floor(Number(rec && rec.commentLimit) || 0)),
+      // The Subscriptions feed's own age limit, in days (0 = off): that feed
+      // shows nothing older, whoever uploaded it. See blockReasonFor().
+      subsMaxAgeDays: Math.max(0, Math.floor(Number(rec && rec.subsMaxAgeDays) || 0))
     };
   }
 
   const EMPTY_FILTERS = compileFilters(null);
 
   function anyFilterActive(filters) {
-    return !!filters && (filters.matchers.length > 0 || filters.durMinSec > 0 || filters.durMaxSec > 0);
+    return (
+      !!filters &&
+      (filters.matchers.length > 0 || filters.durMinSec > 0 || filters.durMaxSec > 0 || filters.subsMaxAgeDays > 0)
+    );
   }
 
   // The single verdict, for a thing described by whatever the caller could
   // see. `item` is a plain object; every field is optional, and a field the
   // caller couldn't read must be null/undefined rather than a guess:
   //   videoId, videoTitle, durationSec, ageDays, isPlaylist, isShort,
-  //   channelKeys (iterable of "UC…" / "@handle")
+  //   channelKeys (iterable of "UC…" / "@handle"),
+  //   onSubsFeed (the thing is on the Subscriptions feed — where, not what)
   // Returns a short reason string, or null when nothing blocks it. "Blocked"
   // is just "reason != null" — keeping them one function is what stops the
   // debug log and the real decision ever disagreeing.
@@ -245,6 +252,16 @@ self.XrnTube = self.XrnTube || {};
     if (item.videoId && d != null && d > 0) {
       if (f.durMinSec > 0 && d < f.durMinSec) return `duration ${d}s < ${f.durMinSec}s`;
       if (f.durMaxSec > 0 && d > f.durMaxSec) return `duration ${d}s > ${f.durMaxSec}s`;
+    }
+    // The Subscriptions feed's age limit: on that feed only, any channel, the
+    // same "N days or older" as a channel's own age rule. An unknown date
+    // means recent, as everywhere. A Short is left alone, unlike under a
+    // channel's rule (ageForRule): there, exempting its dateless Shorts left
+    // half the channel behind; here they are a shelf of their own, which the
+    // Shorts switches already cover, and treating them as old would empty it.
+    const a = item.ageDays;
+    if (f.subsMaxAgeDays > 0 && item.onSubsFeed && item.videoId && !item.isPlaylist && !item.isShort) {
+      if (a != null && a >= f.subsMaxAgeDays) return `subscriptions: ${Math.floor(a)}d old, limit ${f.subsMaxAgeDays}d`;
     }
     for (const key of keys) {
       const e = lookupEntry(idx, key);

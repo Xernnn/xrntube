@@ -74,10 +74,13 @@ const liftedInfo = [
   grabConst("MAX_PLAUSIBLE_AGE_DAYS", shared, "shared/block-logic.js"),
   grabFn("plausibleAgeDays", shared, "shared/block-logic.js"),
   grabFn("parseAgeDays", shared, "shared/block-logic.js"),
-  `const blockIndex = { anyAgeRule: true };
-   const filterRec = { durMinSec: 0, durMaxSec: 0 };
+  // Live objects on window, so a case can turn a rule on or off.
+  `const blockIndex = (window.__btIndex = { anyAgeRule: true });
+   const filterRec = (window.__btFilters = { durMinSec: 0, durMaxSec: 0, subsMaxAgeDays: 0 });
    const readDurationSec = () => null;`,
   grabFn("tileAgeText"),
+  grabConst("SUBS_FEED_PAGE_SEL"),
+  grabFn("onSubsFeed"),
   grabFn("extractInfo")
 ].join("\n");
 
@@ -104,6 +107,7 @@ const infoFor = (html) =>
         isPlaylist: i.isPlaylist,
         isShort: i.isShort,
         ageDays: i.ageDays,
+        onSubsFeed: i.onSubsFeed,
         channels: [...i.channels.keys()]
       }
     );
@@ -316,6 +320,42 @@ const plInfo = await infoFor(
 plInfo && plInfo.isPlaylist === true
   ? ok("a real playlist tile is still judged as a playlist")
   : fail(`playlist tile came back as ${JSON.stringify(plInfo)}`);
+
+// The Subscriptions feed's age limit needs a tile's date even when no channel
+// has an age rule, and must know which page a tile is on. The desktop keeps
+// the pages you came from in the DOM, each its own ytd-browse, so the tile's
+// page answers — the address bar would be wrong for a hidden page's tiles.
+await page.evaluate(() => {
+  window.__btIndex.anyAgeRule = false;
+  window.__btFilters.subsMaxAgeDays = 7;
+});
+const feedTile = (subtype) =>
+  `<ytd-browse page-subtype="${subtype}">
+     <ytd-rich-item-renderer>
+       <a href="/watch?v=subsvideo01">Some upload</a>
+       <ytd-channel-name><a href="/@someone">Someone</a></ytd-channel-name>
+       <div id="metadata-line"><span>12K views</span><span>3 weeks ago</span></div>
+     </ytd-rich-item-renderer>
+   </ytd-browse>`;
+const tileIn = async (subtype) =>
+  page.evaluate((h) => {
+    document.body.innerHTML = h;
+    const i = window.extractInfo(document.body.querySelector("ytd-rich-item-renderer"));
+    return i && { onSubsFeed: i.onSubsFeed, ageDays: i.ageDays };
+  }, feedTile(subtype));
+const onSubs = await tileIn("subscriptions");
+const onHome = await tileIn("home");
+onSubs && onSubs.onSubsFeed === true && Math.round(onSubs.ageDays) === 21
+  ? ok("a tile on the Subscriptions page is marked as such and dated, with no channel age rule anywhere")
+  : fail(`Subscriptions tile came back as ${JSON.stringify(onSubs)}`);
+onHome && onHome.onSubsFeed === false && onHome.ageDays === null
+  ? ok("…the same tile on Home is not, and isn't dated either (nothing needs its date)")
+  : fail(`Home tile came back as ${JSON.stringify(onHome)}`);
+await page.evaluate(() => (window.__btFilters.subsMaxAgeDays = 0));
+const limitOff = await tileIn("subscriptions");
+limitOff && limitOff.onSubsFeed === false
+  ? ok("…and with the limit off, nothing is asked of the Subscriptions page at all")
+  : fail(`with the limit off the tile came back as ${JSON.stringify(limitOff)}`);
 
 await browser.close();
 console.log("\nDONE");

@@ -191,7 +191,7 @@
             <div class="page-head">
               <div>
                 <h1>Keywords &amp; length</h1>
-                <p class="lede">Hide videos by what they're called or how long they run.</p>
+                <p class="lede">Hide videos by what they're called, how long they run, or how old they are on your Subscriptions page.</p>
               </div>
             </div>
 
@@ -241,6 +241,21 @@
                 <label class="kw-regex">Show at most
                   <input id="comment-limit" type="number" min="0" step="10" /> comments</label>
                 <button id="comment-save" class="btn primary">Apply</button>
+              </div>
+            </section>
+
+            <section class="card">
+              <h2>Subscriptions page</h2>
+              <p class="blurb">
+                Hides videos older than this from your Subscriptions feed, from
+                every channel, so it only shows what's new. Shorts carry no date
+                and stay (the Shorts switches cover them), and so do channels on
+                your Never-block list. Blank or 0 shows everything.
+              </p>
+              <div class="kw-add">
+                <label class="kw-regex">Hide videos older than
+                  <input id="subs-age" type="number" min="0" step="1" /> days</label>
+                <button id="subs-age-save" class="btn primary">Apply</button>
               </div>
             </section>
           </div>

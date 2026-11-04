@@ -1435,7 +1435,8 @@ async function exportBackup() {
       list: Array.isArray(kw.list) ? kw.list : [],
       durMinSec: Number(kw.durMinSec) || 0,
       durMaxSec: Number(kw.durMaxSec) || 0,
-      commentLimit: kw.commentLimit === undefined ? DEFAULT_COMMENT_LIMIT : Number(kw.commentLimit) || 0
+      commentLimit: kw.commentLimit === undefined ? DEFAULT_COMMENT_LIMIT : Number(kw.commentLimit) || 0,
+      subsMaxAgeDays: Number(kw.subsMaxAgeDays) || 0
     },
     settings: resolveSettings(stored[SETTINGS_KEY])
   };
@@ -1661,6 +1662,7 @@ function buildImportPlan(data) {
         plan.duration = { minSec: Number(kw.durMinSec) || 0, maxSec: Number(kw.durMaxSec) || 0 };
       }
       if (kw.commentLimit !== undefined) plan.commentLimit = Math.max(0, Number(kw.commentLimit) || 0);
+      if (kw.subsMaxAgeDays !== undefined) plan.subsMaxAgeDays = Math.max(0, Math.floor(Number(kw.subsMaxAgeDays) || 0));
     }
     if (data.settings && typeof data.settings === "object") plan.settings = data.settings;
     return plan;
@@ -1678,6 +1680,7 @@ function emptyPlan(source) {
     keywords: [],
     duration: null,
     commentLimit: undefined,
+    subsMaxAgeDays: undefined,
     settings: null,
     skipped: []
   };
@@ -1750,6 +1753,13 @@ async function previewAndImport(plan) {
   if (plan.commentLimit !== undefined) {
     addRow("commentLimit", `Comment limit — ${plan.commentLimit ? plan.commentLimit + " comments" : "no limit"}`, "Replaces your current limit.");
   }
+  if (plan.subsMaxAgeDays !== undefined) {
+    addRow(
+      "subsMaxAgeDays",
+      `Subscriptions age limit — ${plan.subsMaxAgeDays ? plural(plan.subsMaxAgeDays, "day") : "off"}`,
+      "Replaces your current limit."
+    );
+  }
   if (allowKeys.length) addRow("allowlist", `Never-block list — ${allowKeys.length.toLocaleString()}`, "Merged with yours.");
   if (plan.settings) {
     addRow("settings", "“What gets hidden” switches", "Replaces your current switches with the backup's.");
@@ -1814,6 +1824,10 @@ async function previewAndImport(plan) {
   }
   if (want("commentLimit")) {
     keywords.commentLimit = plan.commentLimit;
+    kwChanged = true;
+  }
+  if (want("subsMaxAgeDays")) {
+    keywords.subsMaxAgeDays = plan.subsMaxAgeDays;
     kwChanged = true;
   }
   if (kwChanged) await saveKeywords();
@@ -2403,7 +2417,11 @@ function readKeywordsRecord(k) {
         // A record saved before this setting existed carries no commentLimit,
         // which is not the same as the user choosing "no cap" — fall back to
         // the default rather than to 0.
-        commentLimit: k.commentLimit === undefined ? DEFAULT_COMMENT_LIMIT : Number(k.commentLimit) || 0
+        commentLimit: k.commentLimit === undefined ? DEFAULT_COMMENT_LIMIT : Number(k.commentLimit) || 0,
+        // Absent until someone sets it, and written back only then: a 0 saved
+        // on a device that never had the field would count as a change, and
+        // the sync merge would let it erase a limit set on another device.
+        ...(k.subsMaxAgeDays !== undefined ? { subsMaxAgeDays: Math.max(0, Math.floor(Number(k.subsMaxAgeDays) || 0)) } : {})
       }
     : { list: [], ts: 0, durMinSec: 0, durMaxSec: 0, commentLimit: DEFAULT_COMMENT_LIMIT };
 }
@@ -2454,7 +2472,8 @@ async function saveKeywords() {
       ts: keywords.ts,
       durMinSec: keywords.durMinSec || 0,
       durMaxSec: keywords.durMaxSec || 0,
-      commentLimit: keywords.commentLimit || 0
+      commentLimit: keywords.commentLimit || 0,
+      ...(keywords.subsMaxAgeDays !== undefined ? { subsMaxAgeDays: keywords.subsMaxAgeDays } : {})
     }
   });
   send({ type: MSG.SYNC_NOW }).catch(() => {});
@@ -2465,6 +2484,7 @@ function renderDuration() {
   $("dur-min").value = keywords.durMinSec ? String(keywords.durMinSec) : "";
   $("dur-max").value = keywords.durMaxSec ? String(Math.round(keywords.durMaxSec / 60)) : "";
   $("comment-limit").value = keywords.commentLimit ? String(keywords.commentLimit) : "";
+  $("subs-age").value = keywords.subsMaxAgeDays ? String(keywords.subsMaxAgeDays) : "";
 }
 
 function initKeywords() {
@@ -2486,6 +2506,16 @@ function initKeywords() {
     saveKeywords();
     renderDuration();
     toast(keywords.commentLimit ? `Watch pages keep ${keywords.commentLimit} comments.` : "Comments are no longer capped.");
+  });
+  $("subs-age-save").addEventListener("click", () => {
+    keywords.subsMaxAgeDays = Math.max(0, Math.floor(Number($("subs-age").value) || 0));
+    saveKeywords();
+    renderDuration();
+    toast(
+      keywords.subsMaxAgeDays
+        ? `Subscriptions hides videos ${plural(keywords.subsMaxAgeDays, "day")} old or older.`
+        : "Subscriptions shows videos of any age."
+    );
   });
 
   // Adds one pattern or, when several lines were pasted, each line.

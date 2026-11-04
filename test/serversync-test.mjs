@@ -168,12 +168,13 @@ try {
     : fail(`settings: A=${sA.sidebarExplore}/${sA.actionClip} B=${sB.sidebarExplore}/${sB.actionClip}`);
 
   // ---- keywords: item by item, deletions included, bounds carried ----
-  // { add, drop, set } — data, not code: the options page's CSP forbids eval.
+  // { add, drop, set, strip } — data, not code: the options page's CSP forbids eval.
   const editKw = (d, op) =>
     d.p.evaluate(
-      ({ add, drop, set }) =>
+      ({ add, drop, set, strip }) =>
         chrome.storage.sync.get("bt_keywords").then((r) => {
-          const k = r.bt_keywords || { list: [] };
+          const k = { ...(r.bt_keywords || { list: [] }) };
+          if (strip) delete k[strip];
           let list = k.list.filter((x) => x.p !== drop);
           if (add) list = [{ p: add, re: false }, ...list];
           return chrome.storage.sync.set({ bt_keywords: { ...k, ...(set || {}), list, ts: Date.now() } });
@@ -197,6 +198,19 @@ try {
   !kwA2.list.some((k) => k.p === "reaction") && kwA2.list.length === 2 && kwB2.commentLimit === 12 && kwA2.commentLimit === 12
     ? ok("a keyword deleted on B is deleted on A; A's comment limit reaches B")
     : fail(`keyword delete / commentLimit: A=${JSON.stringify(kwA2)} B=${JSON.stringify(kwB2)}`);
+
+  // The Subscriptions age limit travels the same way — and survives a device
+  // that has never heard of it: an older version writes its record without
+  // the field, and must not take the limit away from everyone else.
+  await editKw(A, { set: { subsMaxAgeDays: 7 } });
+  await settle(A, B);
+  const reached = (await kwOf(B)).subsMaxAgeDays;
+  await editKw(B, { add: "from-older-b", strip: "subsMaxAgeDays" });
+  await settle(B, A);
+  const [kwA3, kwB3] = [await kwOf(A), await kwOf(B)];
+  reached === 7 && kwA3.subsMaxAgeDays === 7 && kwB3.subsMaxAgeDays === 7 && kwA3.list.some((k) => k.p === "from-older-b")
+    ? ok("A's Subscriptions age limit reaches B, and a record written without it (an older device's) doesn't erase it")
+    : fail(`subsMaxAgeDays: reached B as ${reached}; then A=${JSON.stringify(kwA3)} B=${JSON.stringify(kwB3)}`);
 
   // ---- never-block list: same ----
   await A.send({ type: "ALLOW_CHANNEL", id: "@keep-a" });

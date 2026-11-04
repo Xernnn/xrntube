@@ -131,6 +131,16 @@ it names.
   "no document load" assertions in `settings-test` and `mobile-test` are what
   notice. A late switch on desktop patches the rendered
   `ytd-topbar-logo-renderer`'s `data` instead; mobile has no such property.
+- **The Subscriptions age limit knows its feed by two YouTube details.**
+  Layer 0 reads `browse_id` out of `responseContext.serviceTrackingParams`
+  (`FEsubscriptions` — confirmed live on the first page and every
+  continuation of a channel tab, and on the Subscriptions page's
+  `ytInitialData`); the DOM scrub reads `ytd-browse[page-subtype=
+  "subscriptions"]`. If either goes, that layer quietly stops applying the
+  limit and the other carries it; if both go, the Subscriptions feed simply
+  shows old videos again, with nothing failing. `datalayer-test` and
+  `tilescope-test` pin the shapes offline. Signed out, the Subscriptions page
+  has no feed, so no live test can see the limit work — check it by hand.
 - **The tag list is not the whole surface, and the gaps cluster on search and
   channel pages.** Nine renderer families reached `RENDERER_SELECTOR` late
   precisely because they appear nowhere else: `ytd-universal-watch-card-renderer`
