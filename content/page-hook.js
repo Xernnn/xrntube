@@ -555,6 +555,11 @@
               isShort = true;
             }
           }
+          // A Short can also come as a plain `videoRenderer` (search does
+          // this: measured live, all 19 of a Shorts-heavy query's results),
+          // known only by where a click goes. The DOM knows it by the same
+          // thing, its `/shorts/` link, so both layers call it a Short.
+          if (!isShort && videoId && r.navigationEndpoint && r.navigationEndpoint.reelWatchEndpoint) isShort = true;
           if (refs.size || videoId || isPlaylist) {
             items.push({
               channelRefs: [...refs],

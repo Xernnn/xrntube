@@ -117,6 +117,12 @@ shortsWhenOff > 0
 
 await setToggle(["shortsFeedTiles", "shortsPlayer", "shortsChannelTab"], true);
 const yt3 = await ctx.newPage();
+// This query's results can be nothing but Shorts (measured: 19 of 19). Each
+// page of them, removed, left the page as short as before, so YouTube fetched
+// the next one at once — 6 or 7 pages in 9s, endlessly — and this check, timed
+// at the end, sometimes landed between a batch arriving and its removal.
+let shortsPages = 0;
+yt3.on("request", (r) => r.url().includes("/youtubei/v1/search") && shortsPages++);
 await yt3.goto("https://www.youtube.com/results?search_query=news+shorts", { waitUntil: "domcontentloaded" });
 await yt3.waitForTimeout(9000);
 const diag = await yt3.evaluate(() => {
@@ -139,6 +145,9 @@ console.log("   diag:", JSON.stringify(diag, null, 1));
 diag.count === 0
   ? ok("removeShorts on: 0 Shorts shelves/tiles remain")
   : fail(`${diag.count} Shorts elements survived with the toggle on`);
+shortsPages <= 4
+  ? ok(`…and a search of nothing but Shorts stops paging them in (${shortsPages} more page(s) in 9s)`)
+  : fail(`a Shorts-only search kept paging: ${shortsPages} more pages in 9s — the curb doesn't count Shorts`);
 
 // --- 6. reset button ---
 await opt.locator("#settings-reset").click();

@@ -988,11 +988,14 @@
           'ytd-reel-item-renderer, ytm-shorts-lockup-view-model, ytm-shorts-lockup-view-model-v2, a[href*="/shorts/"]'
         )
       ) {
+        noteSwitchHidden(Math.max(1, shelf.querySelectorAll(SHORTS_ITEM_SELECTOR).length), "Shorts");
         shelf.remove();
       }
     });
     root.querySelectorAll(SHORTS_SHELF_SELECTOR).forEach((el) => {
-      if (el.isConnected) el.remove();
+      if (!el.isConnected) return;
+      noteSwitchHidden(Math.max(1, el.querySelectorAll(SHORTS_ITEM_SELECTOR).length), "Shorts");
+      el.remove();
     });
     root.querySelectorAll(SHORTS_ITEM_SELECTOR).forEach((el) => {
       if (!el.isConnected) return;
@@ -1004,6 +1007,7 @@
       // (measured on /@…/shorts) — they render as nothing, but they are
       // still tiles as far as everything downstream is concerned.
       const wrapper = el.closest("ytd-rich-item-renderer, ytm-rich-item-renderer");
+      noteSwitchHidden(1, "Shorts");
       el.remove();
       if (
         wrapper &&
@@ -1020,6 +1024,7 @@
     root.querySelectorAll(RENDERER_SELECTOR).forEach((el) => {
       if (el.isConnected && el.querySelector('a[href*="/shorts/"]')) {
         const shelf = findShelfAncestor(el);
+        noteSwitchHidden(1, "Shorts");
         el.remove();
         if (shelf) scheduleShelfPrune(shelf);
       }
@@ -2067,6 +2072,7 @@
     if (settings.membersOnlyTiles && isMembersOnlyTile(el)) {
       const shelf = findShelfAncestor(el);
       dbg("removed", el.tagName.toLowerCase(), "— members-only");
+      noteSwitchHidden(1, "members-only videos");
       el.remove();
       if (shelf) scheduleShelfPrune(shelf);
       return;
@@ -2324,6 +2330,7 @@
       queryTiles(root).forEach((el) => {
         if (el.isConnected && isMembersOnlyTile(el)) {
           const shelf = findShelfAncestor(el);
+          noteSwitchHidden(1, "members-only videos");
           el.remove();
           if (shelf) scheduleShelfPrune(shelf);
         }
@@ -2596,7 +2603,11 @@
     for (let i = 0; i < items.length; i += 1) {
       if (!items[i] || !items[i].videoId) continue; // a channel card is not a result
       videos += 1;
-      if (!gone.has(i)) survived += 1;
+      // A Short the Shorts switch takes away is as gone as a blocked video:
+      // a search can be nothing but Shorts (measured: 19 results of 19), and
+      // counting them as survivors kept it paging until YouTube ran out.
+      if (gone.has(i) || (items[i].isShort && settings.shortsFeedTiles)) continue;
+      survived += 1;
     }
     if (survived > 0) {
       emptyRounds = 0;
@@ -2628,6 +2639,31 @@
   function notePageSuppressed(n) {
     suppressedOnPage += n;
     blockedOnPage += n;
+  }
+  // Tiles a switch took away — Shorts, members-only — rather than the
+  // blocklist, in the same window as `suppressedOnPage` but counted apart:
+  // every Home feed loses a Shorts shelf or two, so these weigh in on the
+  // curb only once nothing is left showing (see curbRunawayFeed()), and the
+  // notices name them instead of calling them blocked. `hiddenKinds` says
+  // which, for the whole page view.
+  let hiddenOnPage = 0;
+  const hiddenKinds = new Set();
+  function noteSwitchHidden(n, kind) {
+    if (!(n > 0)) return;
+    hiddenOnPage += n;
+    hiddenKinds.add(kind);
+  }
+  // The sentinel the curb last saw in range, the page's height then, and how
+  // many batches in a row have arrived without moving it out (curbRunawayFeed()).
+  const STUCK_BATCHES = 2;
+  let stuckSentinel = null;
+  let stuckHeight = 0;
+  let stuckBatches = 0;
+  // What the curb's notice says was taken away.
+  function goneWhat() {
+    const kinds = [...hiddenKinds].join(" or ");
+    if (!kinds) return "blocked";
+    return blockedOnPage ? `blocked or ${kinds}` : `${kinds}, which XrnTube's switches hide`;
   }
   // ---------- is layer 0 still doing its job? ----------
   // The JSON filter failing is invisible from the outside: the DOM scrub
@@ -2704,6 +2740,10 @@
   function startPageView() {
     suppressedOnPage = 0;
     blockedOnPage = 0;
+    hiddenOnPage = 0;
+    hiddenKinds.clear();
+    stuckSentinel = null;
+    stuckBatches = 0;
     health.early = 0;
     health.dom = 0;
     // A new page view is a new search / a new feed: it gets its own rounds,
@@ -2723,6 +2763,7 @@
   // notePageSuppressed()), and so do the grace periods measured from it.
   function pageViewRendered() {
     suppressedOnPage = 0;
+    hiddenOnPage = 0;
     pageStartedAt = Date.now();
     layer0Misses = 0;
   }
@@ -2764,14 +2805,34 @@
       feedEndSince = 0;
       const ended = activeNotice();
       if (ended && ended.getAttribute("kind") === "end") ended.remove();
-      if (suppressedOnPage < CURB_MIN_SUPPRESSED) return; // short, but not by us
+      if (suppressedOnPage + hiddenOnPage < CURB_MIN_SUPPRESSED) return; // short, but not by us
       // Match YouTube's own trigger: it fetches while the sentinel is in (or
       // near) the viewport. Testing "can the page scroll at all" is NOT the same
       // thing and gets this wrong — a blocked channel page still scrolls by the
       // height of its masthead and header (measured 1388px against a 1000px
       // viewport), so that test passed while the feed underneath was looping.
       const rect = sentinel.getBoundingClientRect();
-      if (rect.top > window.innerHeight * 1.5) return; // out of range; loading normally
+      if (rect.top > window.innerHeight * 1.5) {
+        stuckSentinel = null;
+        stuckBatches = 0;
+        return; // out of range; loading normally
+      }
+      // Tiles a switch hid (Shorts, members-only) curb only a page that has
+      // stopped growing. Every Home feed loses a Shorts shelf or two, so
+      // their count alone would leave the curb one scroll from firing on a
+      // feed that works; but a search whose results are all Shorts loops
+      // exactly like a blocked one (measured: 7 more pages in 9s, the page
+      // pinned at the viewport's height). Each batch YouTube adds brings a new
+      // sentinel (measured on search, a channel grid and the phone), so a new
+      // one still in range, the page less than a screen taller, is a batch
+      // that changed nothing — and STUCK_BATCHES of those in a row is the loop.
+      if (sentinel !== stuckSentinel) {
+        const h = document.documentElement.scrollHeight;
+        stuckBatches = stuckSentinel && h - stuckHeight < window.innerHeight ? stuckBatches + 1 : 0;
+        stuckSentinel = sentinel;
+        stuckHeight = h;
+      }
+      if (suppressedOnPage < CURB_MIN_SUPPRESSED && stuckBatches < STUCK_BATCHES) return;
     } else if (!sentinel && activeNotice()) {
       return; // already curbed, and nothing new has been asked for since
     }
@@ -2816,15 +2877,15 @@
           : feedExhausted
             ? "XrnTube stopped loading more: the last " +
                 EXHAUST_ROUNDS +
-                " pages of results were all blocked, so nothing else is coming. Reload to look further."
+                ` pages of results were all ${goneWhat()}, so nothing else is coming. Reload to look further.`
             : anythingLeft
-              ? "XrnTube stopped loading more: everything further down is blocked, so nothing else is coming."
-              : "XrnTube stopped loading more: everything here is blocked."
+              ? `XrnTube stopped loading more: everything further down is ${goneWhat()}, so nothing else is coming.`
+              : `XrnTube stopped loading more: everything here is ${goneWhat()}.`
       )
     );
     dbg(
       "runaway feed curbed —",
-      feedExhausted ? EXHAUST_ROUNDS + " empty rounds" : suppressedOnPage + " tiles suppressed",
+      feedExhausted ? EXHAUST_ROUNDS + " empty rounds" : `${suppressedOnPage} tiles suppressed, ${hiddenOnPage} hidden by a switch`,
       "; continuation stopped"
     );
   }
@@ -3778,6 +3839,8 @@
         // the "nothing more to load" line.
         suppressedOnPage,
         blockedOnPage,
+        hiddenOnPage,
+        hiddenKinds: [...hiddenKinds],
         emptyRounds,
         feedExhausted,
         settings,

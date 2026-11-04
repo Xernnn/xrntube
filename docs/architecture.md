@@ -294,10 +294,28 @@ feed fires extra continuation fetches before the loop breaks (measured: 2
 instead of 0). Anything else that starts removing content earlier in the
 pipeline has to feed that counter too.
 
+Tiles a **switch** takes away — Shorts (`scrubShorts()`), members-only —
+are counted apart, in `hiddenOnPage` (`noteSwitchHidden()`), and never in
+`blockedOnPage`, so the "XrnTube blocked N results" line stays true. They
+weigh in on the curb only once the page has stopped growing: two batches in
+a row that arrived (each brings a new sentinel — measured on search, a
+channel grid and the phone) and left the page less than a screen taller,
+its sentinel still in range (`stuckBatches`, `STUCK_BATCHES`). Every Home
+feed loses a Shorts shelf or two, so counting them like blocked tiles would
+leave the curb one scroll from stopping a feed that works; but before they
+counted at all, a search whose results were all Shorts paged until YouTube
+ran out — measured: 7 more pages in 9s with the page pinned at the
+viewport's height. The notices then say what went (`goneWhat()`: blocked,
+Shorts, members-only videos).
+
 The same handler also counts **rounds**, which is the half of the runaway
 problem geometry cannot see (`noteJudgedRound()` → `feedExhausted`). One
 judged batch is one fetch, so a batch that carried videos and had none
-survive is an empty round; a single surviving video resets the count. After
+survive is an empty round; a single surviving video resets the count. A
+Short the Shorts switch removes is no survivor either (`isShort` — the hook
+marks one by its renderer, its lockup's content type, or a plain
+`videoRenderer` whose click goes to `reelWatchEndpoint`, which is how search
+sends them). After
 `EXHAUST_ROUNDS` (3) of those on a paging surface — search, the feeds, a
 channel's tabs; never `/watch`, whose rail is fixed-length and whose
 continuation also loads comments — the surface is declared exhausted:

@@ -463,7 +463,8 @@ and `why("<CSS selector>")`, which explains a tile: the channel keys it
 carries, how each resolves against the blocklist, and the verdict.
 
 **"A search stopped loading more results."** If several pages of results in a
-row are entirely blocked, XrnTube stops the page asking for more and says so
+row are entirely blocked — or entirely Shorts, with the Shorts switch on —
+XrnTube stops the page asking for more and says so
 in a line where the next batch would have gone ("XrnTube stopped loading
 more…"). Without that, YouTube keeps fetching page after page looking for
 something to show — which is what pins a CPU core and makes the tab crawl.

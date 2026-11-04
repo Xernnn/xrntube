@@ -488,6 +488,7 @@ const results = (o) =>
           const scheduleExtrasScrub = () => {};
           let onSurface = true;
           const onLayer0Surface = () => onSurface;
+          const settings = { shortsFeedTiles: true };
           ${src}
           const round = (n, survivors) => {
             const items = [];
@@ -497,6 +498,14 @@ const results = (o) =>
               if (i >= survivors) blocked.push(i);
             }
             noteJudgedRound(items, blocked);
+          };
+          // A response of Shorts, none of them blocked — and \`plain\` ordinary
+          // videos among them, also unblocked.
+          const shortsRound = (n, plain = 0) => {
+            const items = [];
+            for (let i = 0; i < n; i += 1) items.push({ videoId: "s" + i, isShort: true });
+            for (let i = 0; i < plain; i += 1) items.push({ videoId: "p" + i });
+            noteJudgedRound(items, []);
           };
           ${b}
         `)(),
@@ -536,6 +545,28 @@ const results = (o) =>
   offSurface === false
     ? ok("a watch page is never declared exhausted (its rail is not an infinite feed)")
     : fail("the round counter fired off a paging surface");
+
+  // A search can be all Shorts (measured live: 19 results of 19). With the
+  // Shorts switch on, the DOM takes every one away, so they are no more a
+  // surviving result than a blocked video — counting them as survivors kept
+  // such a search paging until YouTube ran out. With it off they are results.
+  const allShorts = await run(`
+    for (let r = 0; r < 3; r += 1) shortsRound(10);
+    const on = feedExhausted;
+    return on;
+  `);
+  const shortsOff = await run(`
+    settings.shortsFeedTiles = false;
+    for (let r = 0; r < 6; r += 1) shortsRound(10);
+    return feedExhausted;
+  `);
+  const mixed = await run(`
+    for (let r = 0; r < 6; r += 1) shortsRound(10, 1);
+    return feedExhausted;
+  `);
+  allShorts === true && shortsOff === false && mixed === false
+    ? ok("three all-Shorts responses end the paging while the Shorts switch hides them — not with it off, and not while one ordinary video survives each")
+    : fail(`Shorts rounds: on=${allShorts} off=${shortsOff} mixed=${mixed}`);
 }
 
 // ---- 14. an age rule has to reach Shorts, which carry no date ----
@@ -674,6 +705,19 @@ const results = (o) =>
 
   const off = videoIds(await filter(lists, { list: [], subsMaxAgeDays: 0 }, stamped("FEsubscriptions", feed())));
   off.length === 7 ? ok("…and with the limit at 0 the Subscriptions feed keeps everything") : fail(`limit 0 still removed: kept ${off.length}/7`);
+
+  // A Short can also arrive as a plain videoRenderer, dated, known only by
+  // where a click goes (measured live on search: 19 of 19). The DOM calls it
+  // a Short by its /shorts/ link and leaves it to the Shorts switches, so the
+  // hook has to call it one too — or the two layers decide it differently.
+  const shortAsVideo = video("r1111111111", "a short, as a video tile", "Someone", GOOD, "@good", {
+    publishedTimeText: { simpleText: "3 weeks ago" },
+    navigationEndpoint: { commandMetadata: { webCommandMetadata: { url: "/shorts/r1111111111" } }, reelWatchEndpoint: { videoId: "r1111111111" } }
+  });
+  const kept = videoIds(await filter(lists, limit, stamped("FEsubscriptions", [shortAsVideo, aged("o3333333333", "3 weeks ago")])));
+  same([...new Set(kept)], ["r1111111111"]) // its click target names the id too
+    ? ok("…a Short that comes as a plain video tile is a Short to the hook too: left to the Shorts switches, like the DOM leaves it")
+    : fail(`a Short as a videoRenderer on Subscriptions: kept ${JSON.stringify(kept)}`);
 }
 
 // ---- 17. a lockup's length and date, where YouTube keeps them now ----

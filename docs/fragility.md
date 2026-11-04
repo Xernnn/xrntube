@@ -233,6 +233,17 @@ it names.
   — the loop stopping, and an unblocked or partially-blocked feed still paging
   normally, since over-correcting here would break scrolling everywhere.
 
+  **Tiles a switch removes (Shorts, members-only) were not counted at all**,
+  so a search whose every result was a Short looped exactly like a blocked
+  one: measured, 7 more pages in 9s, endlessly. Each Shorts shelf that
+  arrived was removed and the next page fetched, which read in tests as
+  "YouTube keeps re-adding the shelf" (`settings-test` failed whenever its
+  look landed between a batch and its removal). They count now, apart
+  (`hiddenOnPage`), and only toward a page that has stopped growing — two
+  batches that each left the sentinel in range and the page less than a
+  screen taller — because every Home feed loses a Shorts shelf or two and
+  must keep paging. `settings-test` asserts the Shorts-only search stops.
+
   **A search page slips past all of that**, which is why there is a second
   brake. The results page is tall on its own — masthead, filter chips, a
   channel card, a shelf — so its sentinel can sit further than 1.5 viewports
