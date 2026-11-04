@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "XrnTube — Channel & Video Blocker",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "description": "Permanently remove blocked YouTube channels and videos from recommendations, search, and feeds. Syncs across your browsers through your own server.",
   "permissions": [
     "storage",
