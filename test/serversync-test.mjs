@@ -174,7 +174,7 @@ try {
       ({ add, drop, set, strip }) =>
         chrome.storage.sync.get("bt_keywords").then((r) => {
           const k = { ...(r.bt_keywords || { list: [] }) };
-          if (strip) delete k[strip];
+          for (const f of [].concat(strip || [])) delete k[f];
           let list = k.list.filter((x) => x.p !== drop);
           if (add) list = [{ p: add, re: false }, ...list];
           return chrome.storage.sync.set({ bt_keywords: { ...k, ...(set || {}), list, ts: Date.now() } });
@@ -199,18 +199,22 @@ try {
     ? ok("a keyword deleted on B is deleted on A; A's comment limit reaches B")
     : fail(`keyword delete / commentLimit: A=${JSON.stringify(kwA2)} B=${JSON.stringify(kwB2)}`);
 
-  // The Subscriptions age limit travels the same way — and survives a device
-  // that has never heard of it: an older version writes its record without
-  // the field, and must not take the limit away from everyone else.
-  await editKw(A, { set: { subsMaxAgeDays: 7 } });
+  // The Subscriptions rules travel the same way — and survive a device that
+  // has never heard of them: an older version writes its record without the
+  // fields, and must not take the rules away from everyone else.
+  const SUBS = ["subsMaxAgeDays", "subsHideWatched", "subsHideUpcoming"];
+  const subsOf = (k) => SUBS.map((f) => k[f]);
+  await editKw(A, { set: { subsMaxAgeDays: 7, subsHideWatched: true, subsHideUpcoming: true } });
   await settle(A, B);
-  const reached = (await kwOf(B)).subsMaxAgeDays;
-  await editKw(B, { add: "from-older-b", strip: "subsMaxAgeDays" });
+  const reached = subsOf(await kwOf(B));
+  await editKw(B, { add: "from-older-b", strip: SUBS });
   await settle(B, A);
   const [kwA3, kwB3] = [await kwOf(A), await kwOf(B)];
-  reached === 7 && kwA3.subsMaxAgeDays === 7 && kwB3.subsMaxAgeDays === 7 && kwA3.list.some((k) => k.p === "from-older-b")
-    ? ok("A's Subscriptions age limit reaches B, and a record written without it (an older device's) doesn't erase it")
-    : fail(`subsMaxAgeDays: reached B as ${reached}; then A=${JSON.stringify(kwA3)} B=${JSON.stringify(kwB3)}`);
+  const want = JSON.stringify([7, true, true]);
+  JSON.stringify(reached) === want && JSON.stringify(subsOf(kwA3)) === want && JSON.stringify(subsOf(kwB3)) === want &&
+  kwA3.list.some((k) => k.p === "from-older-b")
+    ? ok("A's Subscriptions rules (7 days, hide watched, hide upcoming) reach B, and a record written without them (an older device's) doesn't erase them")
+    : fail(`Subscriptions rules: reached B as ${JSON.stringify(reached)}; then A=${JSON.stringify(kwA3)} B=${JSON.stringify(kwB3)}`);
 
   // ---- never-block list: same ----
   await A.send({ type: "ALLOW_CHANNEL", id: "@keep-a" });

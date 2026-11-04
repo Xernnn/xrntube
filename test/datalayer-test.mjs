@@ -46,7 +46,7 @@ const harness = `
   (() => {
     const BT = self.XrnTube;
     const { buildBlockIndex, compileFilters, normalizeChannelKey, parseAgeDays,
-            plausibleAgeDays, parseDurationSec, blockReasonFor } = BT;
+            plausibleAgeDays, parseDurationSec, subsRulesOn, blockReasonFor } = BT;
     let blockIndex = BT.EMPTY_INDEX;
     let filterRec = BT.EMPTY_FILTERS;
     ${judgeSrc}
@@ -674,6 +674,118 @@ const results = (o) =>
 
   const off = videoIds(await filter(lists, { list: [], subsMaxAgeDays: 0 }, stamped("FEsubscriptions", feed())));
   off.length === 7 ? ok("…and with the limit at 0 the Subscriptions feed keeps everything") : fail(`limit 0 still removed: kept ${off.length}/7`);
+}
+
+// ---- 17. a lockup's length and date, where YouTube keeps them now ----
+// Measured live on a channel's streams tab, 30 lockups of 30: the length
+// badge sits in `thumbnailBottomOverlayViewModel.badges` (the rule's old path
+// read nothing), and the metadata rows are [byline] then [views, date], so
+// the date is neither the first row nor the first part — taking the first
+// match handed content.js the channel's name as the date. Either way a lockup
+// passed every length and age rule in this layer, and only the DOM scrub,
+// a frame later, could catch it.
+const lockup = (id, { len = "12:34", date = "3 weeks ago", ucid = SOFT, handle = "@soft", progress, name = "Someone" } = {}) => ({
+  lockupViewModel: {
+    contentId: id,
+    contentType: "LOCKUP_CONTENT_TYPE_VIDEO",
+    contentImage: {
+      thumbnailViewModel: {
+        overlays: [
+          {
+            thumbnailBottomOverlayViewModel: {
+              ...(progress != null ? { progressBar: { thumbnailOverlayProgressBarViewModel: { startPercent: progress } } } : {}),
+              badges: [{ thumbnailBadgeViewModel: { text: len, badgeStyle: "THUMBNAIL_OVERLAY_BADGE_STYLE_DEFAULT" } }]
+            }
+          },
+          { thumbnailHoverOverlayToggleActionsViewModel: { buttons: [] } }
+        ]
+      }
+    },
+    metadata: {
+      lockupMetadataViewModel: {
+        title: { content: `lockup ${id}` },
+        metadata: {
+          contentMetadataViewModel: {
+            metadataRows: [
+              { metadataParts: [{ text: { content: name, commandRuns: [{ onTap: { innertubeCommand: navEndpoint(ucid, handle) } }] } }] },
+              { metadataParts: [{ text: { content: "24K views" } }, { text: { content: date } }] }
+            ]
+          }
+        }
+      }
+    }
+  }
+});
+const contentIds = (o) => {
+  const out = [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) return n.forEach(walk);
+    if (n.lockupViewModel) out.push(n.lockupViewModel.contentId);
+    Object.values(n).forEach(walk);
+  };
+  walk(o);
+  return out;
+};
+{
+  const none = { channels: {}, videos: {}, allowlist: {} };
+  const long = await filter(none, { list: [], durMaxSec: 600 }, wrap([lockup("L-long", { len: "12:34" }), lockup("L-short", { len: "5:00" })]));
+  same(contentIds(long), ["L-short"])
+    ? ok("a lockup's length is read off its bottom-overlay badge: a 10-minute cap takes the 12:34 one, keeps the 5:00")
+    : fail(`lockup length bound kept ${JSON.stringify(contentIds(long))}`);
+  const aged = { channels: { [SOFT]: { mode: "exceptWhitelist", blockOlderThanDays: 7 } }, videos: {}, allowlist: {} };
+  const old = await filter(aged, null, wrap([lockup("L-old", { date: "3 weeks ago" }), lockup("L-new", { date: "1 day ago" })]));
+  same(contentIds(old), ["L-new"])
+    ? ok("…and its date off the second row's second part: a 7-day channel rule takes the 3-week-old one, keeps yesterday's")
+    : fail(`lockup age rule kept ${JSON.stringify(contentIds(old))}`);
+  // The byline is left out of the date text: the table matches a unit
+  // anywhere, years first, so this channel's name would date every upload.
+  const named = await filter(aged, null, wrap([lockup("L-named", { date: "2 days ago", name: "1 Year Challenge" })]));
+  same(contentIds(named), ["L-named"])
+    ? ok("…and a channel called \"1 Year Challenge\" doesn't date its 2-day-old upload a year old")
+    : fail("a lockup was dated by its channel's name");
+}
+
+// ---- 18. the Subscriptions feed's watched and upcoming rules ----
+// Watch progress is `thumbnailOverlayResumePlaybackRenderer.percentDurationWatched`
+// on the older renderers and a progress bar's `startPercent` on a lockup.
+// Upcoming is structural on the older renderers (`upcomingEventData`, a time
+// status styled UPCOMING — both measured live on m.youtube.com) and only the
+// badge's text on a lockup (measured live on desktop).
+{
+  const stampedAs = (browseId, items) => ({
+    responseContext: { serviceTrackingParams: [{ service: "GFEEDBACK", params: [{ key: "browse_id", value: browseId }] }] },
+    ...wrap(items)
+  });
+  const overlays = (...o) => ({ thumbnailOverlays: [...o, { thumbnailOverlayTimeStatusRenderer: { text: { simpleText: "12:34" } } }] });
+  const resume = (pct) => ({ thumbnailOverlayResumePlaybackRenderer: { percentDurationWatched: pct } });
+  const feed = () => [
+    video("w1000000001", "watched to the end", "Someone", GOOD, "@good", { ...overlays(resume(100)), publishedTimeText: { simpleText: "1 day ago" } }),
+    video("w5000000001", "watched half-way", "Someone", GOOD, "@good", { ...overlays(resume(50)), publishedTimeText: { simpleText: "1 day ago" } }),
+    video("u0000000001", "premieres tomorrow", "Someone", GOOD, "@good", {
+      upcomingEventData: { startTime: "1793900000", isReminderSet: false },
+      thumbnailOverlays: [{ thumbnailOverlayTimeStatusRenderer: { text: { simpleText: "UPCOMING" }, style: "UPCOMING" } }],
+      publishedTimeText: undefined
+    }),
+    video("n0000000001", "plain new upload", "Someone", GOOD, "@good", { publishedTimeText: { simpleText: "2 hours ago" } }),
+    lockup("L-watched", { ucid: GOOD, handle: "@good", date: "1 day ago", progress: 100 }),
+    lockup("L-upcoming", { ucid: GOOD, handle: "@good", len: "Upcoming", date: "Scheduled for 11/7/26, 2:00 PM" }),
+    lockup("L-live", { ucid: GOOD, handle: "@good", len: "LIVE", date: "312 watching" })
+  ];
+  const lists = { channels: {}, videos: {}, allowlist: {} };
+  const rules = { list: [], subsHideWatched: true, subsHideUpcoming: true };
+  const subs = await filter(lists, rules, stampedAs("FEsubscriptions", feed()));
+  same(videoIds(subs), ["w5000000001", "n0000000001"]) && same(contentIds(subs), ["L-live"])
+    ? ok("Subscriptions: watched (100%) and upcoming go in both shapes; half-watched, a plain upload and a live stream stay")
+    : fail(`Subscriptions watched/upcoming kept ${JSON.stringify([videoIds(subs), contentIds(subs)])}`);
+  const home = await filter(lists, rules, stampedAs("FEwhat_to_watch", feed()));
+  videoIds(home).length === 4 && contentIds(home).length === 3
+    ? ok("…and on Home the same response keeps everything")
+    : fail(`watched/upcoming reached Home: ${JSON.stringify([videoIds(home), contentIds(home)])}`);
+  const offWatched = await filter(lists, { list: [], subsHideUpcoming: true }, stampedAs("FEsubscriptions", feed()));
+  videoIds(offWatched).includes("w1000000001") && contentIds(offWatched).includes("L-watched") && !contentIds(offWatched).includes("L-upcoming")
+    ? ok("…each rule is its own switch: upcoming alone leaves watched videos be")
+    : fail(`upcoming-only kept ${JSON.stringify([videoIds(offWatched), contentIds(offWatched)])}`);
 }
 
 // ---- YouTube's auto-generated chapters (the hideAutoChapters switch) ----

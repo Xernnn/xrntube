@@ -242,6 +242,56 @@
     return "";
   }
 
+  // Every text at `path`, with arrays walked in full where pick() takes the
+  // first match. A lockup's metadata rows are [byline] then [views, date] on
+  // a feed — [views, date] alone on a channel's own tab — so the date is in
+  // neither the first row nor the first part, and pick() handed content.js
+  // the channel's name or the view count as the "date": the age rules never
+  // saw a lockup's age in this layer at all. A text that links to a channel
+  // is left out: it's the byline, a name, and a name like "1 Year Challenge"
+  // reads as a year old (content.js's tileAgeText() leaves out the same).
+  function allText(obj, path) {
+    let cur = [obj];
+    for (const seg of path.split(".")) {
+      const next = [];
+      for (const o of cur) {
+        const v = o && typeof o === "object" ? o[seg] : undefined;
+        if (Array.isArray(v)) next.push(...v);
+        else if (v != null) next.push(v);
+      }
+      cur = next;
+    }
+    const namesChannel = (t) =>
+      !!t && Array.isArray(t.commandRuns) && t.commandRuns.some((c) => pick(c, "onTap.innertubeCommand.browseEndpoint"));
+    return cur
+      .filter((t) => !namesChannel(t))
+      .map(textOf)
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  function pickNum(obj, paths) {
+    for (const p of paths) {
+      const v = pick(obj, p);
+      const n = v == null || v === "" ? NaN : Number(v); // Number(null) is 0, not "absent"
+      if (Number.isFinite(n)) return n;
+    }
+    return null;
+  }
+
+  // A premiere or scheduled stream, not aired yet. The older renderers say so
+  // structurally — `upcomingEventData`, a time-status overlay styled UPCOMING
+  // (desktop and phone alike, measured live on m.youtube.com). A lockup has
+  // neither: its only sign is the thumbnail badge's text, "Upcoming" in
+  // English, where a video has its length and a stream "LIVE". Localised, so
+  // in another UI language this one shape goes unrecognised (it fails open).
+  const LOCKUP_BADGE = "contentImage.thumbnailViewModel.overlays.thumbnailBottomOverlayViewModel.badges.thumbnailBadgeViewModel.text";
+  function upcomingOf(r) {
+    if (r.upcomingEventData) return true;
+    if (pick(r, "thumbnailOverlays.thumbnailOverlayTimeStatusRenderer.style") === "UPCOMING") return true;
+    return /^upcoming$/i.test(textOf(pick(r, LOCKUP_BADGE)) || "");
+  }
+
   function pickStr(obj, paths) {
     for (const p of paths) {
       const v = pick(obj, p);
@@ -307,6 +357,9 @@
   //   titles      paths to the title
   //   lengths     paths to the duration badge text (sent raw)
   //   published   paths to the "3 days ago" text (sent raw)
+  //   publishedAll  one path whose every text is sent, joined — for a tile
+  //               whose date is one part among several (see allText)
+  //   watched     paths to how much of it you've watched, 0–100
   //   isPlaylist  the tile is a playlist/mix
   //   isShort     the tile is a Short, which never carries a publish date
   //   kindFrom    field naming what this renderer actually is, when one tag
@@ -325,7 +378,8 @@
     videoIds: V,
     titles: ["title", "headline"],
     lengths: ["thumbnailOverlays.thumbnailOverlayTimeStatusRenderer.text", "lengthText"],
-    published: ["publishedTimeText"]
+    published: ["publishedTimeText"],
+    watched: ["thumbnailOverlays.thumbnailOverlayResumePlaybackRenderer.percentDurationWatched"]
   };
   const PLAYLIST_BASE = { isPlaylist: true, titles: ["title"] };
   const CHANNEL_CARD = { whole: true };
@@ -391,11 +445,17 @@
       bylinePaths: ["metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows"],
       videoIds: ["contentId"],
       titles: ["metadata.lockupMetadataViewModel.title"],
+      // The badge moved: measured live, every lockup's length now sits in
+      // `thumbnailBottomOverlayViewModel.badges`, and the older
+      // `thumbnailOverlayBadgeViewModel` path read nothing — so length
+      // bounds never reached a lockup in this layer. Both are kept.
       lengths: [
+        LOCKUP_BADGE,
         "contentImage.thumbnailViewModel.overlays.thumbnailOverlayBadgeViewModel.thumbnailBadges.thumbnailBadgeViewModel.text"
       ],
-      published: [
-        "metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows.metadataParts.text"
+      publishedAll: "metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows.metadataParts.text",
+      watched: [
+        "contentImage.thumbnailViewModel.overlays.thumbnailBottomOverlayViewModel.progressBar.thumbnailOverlayProgressBarViewModel.startPercent"
       ]
     },
 
@@ -501,7 +561,15 @@
               videoId,
               videoTitle: videoId && rule.titles ? pickText(r, rule.titles) : "",
               lengthText: videoId && rule.lengths ? pickText(r, rule.lengths) : "",
-              publishedText: videoId && rule.published ? pickText(r, rule.published) : "",
+              publishedText: !videoId
+                ? ""
+                : rule.publishedAll
+                  ? allText(r, rule.publishedAll)
+                  : rule.published
+                    ? pickText(r, rule.published)
+                    : "",
+              watchedPct: videoId && rule.watched ? pickNum(r, rule.watched) : null,
+              isUpcoming: !!videoId && upcomingOf(r),
               isPlaylist,
               isShort
             });

@@ -125,7 +125,13 @@ tests use it), through the same `lookupChannels()`.
 Installed from the signed `.crx` (the phone), the manifest has an
 `update_url` on the sync server (`npm run release` writes it into the `.crx`
 only; see [sync-server.md](sync-server.md) → Updates), the browser polls it
-every few hours, and `requestUpdateCheck()` asks sooner. Loaded unpacked —
+every few hours, and `requestUpdateCheck()` asks sooner — but only once the
+worker has read `updates.xml` itself (public, sent with CORS) and found a
+newer version there (`offeredVersion()`, `versionNewer()`). The browser backs
+`requestUpdateCheck()` off after every check, doubling the wait, so the hourly
+alarm calling it with nothing new soon had every call answered `throttled` —
+**Check now** included, right after a release. An unreachable server answers
+`unreachable` and the browser isn't asked at all. Loaded unpacked —
 `"development"`, the laptop running the working copy — there is no update
 URL, but the browser serves an unpacked extension's files straight from its
 folder, so `fetch(getURL("manifest.json"))` reads the folder as it is now: a
@@ -741,11 +747,14 @@ writes keywords / switches itself. The sub-count sweep then starts on its
 own — an imported `UC…`-only channel blocks nothing in feeds until it has its
 `@handle`. The danger zone is `DELETE_DATA` in its various shapes, plus
 `deleteLookupFailures()`: `lookupFailures()` splits the channels the lookup
-has *attempted* (`subsAttempted()`) into gone / failed / hiding-their-count,
-and only the first two are pre-ticked. The import keeps an entry's
-`subsAt`/`subsV` even when it carries no `subs` — a failed lookup has to
-survive a backup round trip as "tried", or it is fetched again and never
-lands in the failed group.
+has *attempted* (`subsAttempted()`) into gone / one ID found / no sub count /
+hiding-their-count, and only *gone* is pre-ticked — the others still block,
+and the one-ID group is mostly lookups YouTube was throttling, which
+`resolveRetryDue()` has the page queue again (see
+[subscriber-counts.md](subscriber-counts.md) → "One identity is not a
+result"). The import keeps an entry's `subsAt`/`subsV`/`idTries` even when it
+carries no `subs` — a lookup has to survive a backup round trip as "tried",
+or it is fetched again and never lands in a group.
 
 **Per-viewer preferences** — sort, the "hide under N subs" filter and the
 thumbnail toggle — live in `localStorage` (`xt-blocklist-view`). The

@@ -147,8 +147,9 @@ that alone.
 ## Title-keyword and duration filters
 
 `chrome.storage.sync` key `bt_keywords` =
-`{ list: [{ p, re }], ts, durMinSec, durMaxSec, commentLimit, subsMaxAgeDays }`
-(the last two below and in the next section). A video is scrubbed if
+`{ list: [{ p, re }], ts, durMinSec, durMaxSec, commentLimit, subsMaxAgeDays,
+subsHideWatched, subsHideUpcoming }` (the comment limit below, the last three
+in the next section). A video is scrubbed if
 its title matches any pattern **or** (when either bound is > 0) its duration
 badge is shorter than `durMinSec` / longer than `durMaxSec`. `content.js`
 compiles the patterns in `applyKeywords()` (loaded alongside `bt_settings`,
@@ -170,9 +171,13 @@ turns the filter off. Only the *title* case was treated as pending, so every
 tile got locked in before its badge arrived and `durMinSec`/`durMaxSec` did
 nothing at all on a normal page load (confirmed live: 13 of 13 under-bound
 videos survived). Both are pending now, `recheckHydratingTiles()` re-processes
-them, and its query includes **`LOCKUP_SELECTOR`** — leaving that out meant
-modern search tiles were never re-examined either, which also weakened the
-keyword recheck. `REHYDRATE_MAX_TRIES` bounds the retries so a live stream —
+them, and its query (`VIDEO_RECHECK_SELECTOR`) includes **`LOCKUP_SELECTOR`**
+— leaving that out meant modern search tiles were never re-examined either,
+which also weakened the keyword recheck — **and the phone's tile tags**:
+without `ytm-rich-item-renderer` / `ytm-video-with-context-renderer` /
+`ytm-compact-video-renderer` a phone tile was judged once, on first render,
+and a title, length or date that arrived after that was never read
+(`subsfeed-test` fails without them). `REHYDRATE_MAX_TRIES` bounds the retries so a live stream —
 no duration, ever — isn't re-read for the life of the page; size it against
 the **2s heartbeat**, not the ~400ms throttle, because the throttle only fires
 on DOM mutation and a settled page is driven by the heartbeat alone (at 8
@@ -182,18 +187,33 @@ merge carries the whole `keywords` object as last-write-wins on `ts`;
 `kwFingerprint()` (list + duration bounds, ts excluded) in `sameBlocklist()`
 is what makes a duration-only edit still push.
 
-## The Subscriptions feed's age limit
+## The Subscriptions feed's rules
 
-`bt_keywords.subsMaxAgeDays` (options → Keywords & length → *Subscriptions
-page*; 0 or absent = off): on the Subscriptions feed only, any video
-`subsMaxAgeDays` days old or older is removed, whoever uploaded it — the same
-"N days or older" as a channel's own age rule, decided in `blockReasonFor()`
-from the item's `onSubsFeed`. An unknown date means recent, as everywhere;
-the allow-list still wins; playlists aren't judged. **Shorts are left
-alone**, the opposite of a channel's rule (`ageForRule()`): there, exempting
-dateless Shorts left half the channel behind, while on this feed they are a
-shelf of their own that the Shorts switches already cover, and reading them as
-old would empty it.
+Three, in `bt_keywords` (options → Keywords & length → *Subscriptions page*),
+on the Subscriptions feed only and for any channel, decided in
+`blockReasonFor()` from the item's `onSubsFeed` (`subsRulesOn()` says whether
+any is on):
+
+- `subsMaxAgeDays` (0 or absent = off): any video that many days old or older
+  is removed — the same "N days or older" as a channel's own age rule. An
+  unknown date means recent, as everywhere.
+- `subsHideWatched`: a video watched `WATCHED_PCT` (90%) or more of the way
+  is removed — past the credits and end screen, where people stop; one left
+  half-way stays. The number is `percentDurationWatched` on the older
+  renderers' resume overlay, a lockup's progress bar `startPercent`, and in
+  the DOM the progress bar's inline width.
+- `subsHideUpcoming`: a premiere or scheduled stream that hasn't started is
+  removed; a live one stays. Structural on the older renderers
+  (`upcomingEventData`, a time status styled `UPCOMING`; in the DOM
+  `overlay-style` / the phone's `data-style`, measured live), but a lockup's
+  only sign is its thumbnail badge's **text**, "Upcoming" — so in another UI
+  language lockups fail open.
+
+The allow-list still wins; playlists aren't judged. **Shorts are left alone**
+by all three, the opposite of a channel's age rule (`ageForRule()`): there,
+exempting dateless Shorts left half the channel behind, while on this feed
+they are a shelf of their own that the Shorts switches already cover, and
+they carry neither a date nor a progress bar.
 
 Which feed a thing is on is the part that can go wrong, and each layer answers
 it from what it can see, never from the address bar:
@@ -213,21 +233,24 @@ it from what it can see, never from the address bar:
   m.youtube.com has no `ytd-browse` and shows one page at a time, so there
   it is `location.pathname`.
 
-The limit only reads dates while it is on and only on that feed, and a tile
-whose date hasn't hydrated is pending (`agePending`), the same trap as a
-channel's age rule. The feed is newest first, so past the limit every page
+The rules read only what they need, only while on, and only on that feed. A
+tile whose date hasn't hydrated is pending (`agePending`) while the age limit
+is on, the same trap as a channel's age rule; watched and upcoming have no
+"not hydrated yet" to wait for (no bar looks exactly like unwatched), so the
+JSON layer, which sees the overlays in the response, is what normally
+decides those. The feed is newest first, so past the limit every page
 that arrives is removed whole; the round counter (`EXHAUST_ROUNDS`) then stops
 the continuations, and the stop notice names the limit (and where it is set)
 instead of "Reload to look further", which would only find the same.
 
-In sync the field is carried only when present, like `commentLimit`, and for
-a reason that matters more here: a device older than the field pushes its
+In sync the fields are carried only when present, like `commentLimit`, and
+for a reason that matters more here: a device older than a field pushes its
 keyword record without it, and `mergeValue()` keeps this device's value only
-when the server's copy has none at all. A 0 filled in on read would be a value
-of its own, and could win the three-way merge and erase the limit everywhere.
-The options page likewise writes it back only once it has one.
-`kwFingerprint()` includes it only while it is on, so a record without it
-fingerprints exactly as it did before the field existed.
+when the server's copy has none at all. A 0 or `false` filled in on read
+would be a value of its own, and could win the three-way merge and erase the
+rule everywhere. The options page likewise writes each back only once it has
+one. `kwFingerprint()` includes each only while it is on, so a record without
+them fingerprints exactly as it did before they existed.
 
 ## Channel allow-list ("Never-block")
 

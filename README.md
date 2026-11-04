@@ -93,7 +93,9 @@ on fetches every new version from there by itself.
 
 Options → **Sync** → **Updates** shows the version and where it updates
 from; **Check now** looks straight away instead of waiting the few hours the
-browser takes on its own. A copy loaded from a `.zip` (`npm run package`) also
+browser takes on its own. XrnTube also checks hourly by itself, reading your
+server's update file first and asking the browser only when there's a newer
+version, so a release usually reaches a phone within the hour. A copy loaded from a `.zip` (`npm run package`) also
 works, but is unpacked and never updates.
 
 If your browser only installs from a store, publish the zip to the Chrome Web
@@ -209,13 +211,21 @@ from any channel:
   bottom of the list. Replies are left alone: the cap is about how far the
   section scrolls, not about hiding half of a conversation you opened.
   Defaults to 50; set it to 0 for no cap.
-- **Subscriptions page** — *Hide videos older than N days* keeps your
-  Subscriptions feed to what's new: anything N days old or older goes, from
-  every channel, on that page only (Home, search and channel pages are left
-  alone). Shorts carry no date, so they stay (the Shorts switches cover them),
-  and so do channels on your Never-block list. Scroll past the limit and the
-  feed stops loading and says so, rather than paging in old videos only to
-  remove them. Blank or 0 turns it off.
+- **Subscriptions page** — three rules for your Subscriptions feed only, from
+  every channel (Home, search and channel pages are left alone):
+  - *Hide videos older than N days* keeps the feed to what's new: anything N
+    days old or older goes. Scroll past the limit and the feed stops loading
+    and says so, rather than paging in old videos only to remove them. Blank
+    or 0 turns it off.
+  - *Hide videos you've watched* drops anything you've watched 90% or more of
+    the way through. One you left half-way stays.
+  - *Hide premieres and scheduled streams* drops what hasn't aired yet. Live
+    streams stay. (In a UI language other than English, the newest desktop
+    tiles mark these only in words XrnTube doesn't read, so some may stay.)
+
+  Shorts are left alone by all three (they carry no date or progress bar, and
+  the Shorts switches cover them), and so are channels on your Never-block
+  list.
 
 These sync alongside the blocklist. They are applied by script rather than by
 CSS (a title has to be read before it can be matched), so a matching tile can
@@ -311,10 +321,12 @@ The **Backup & data** tab:
 - **Danger zone** — delete all channels, all videos, all keywords, the
   never-block list, or everything (that last one asks you to type `delete`).
   Also **Delete channels that can't be looked up**: the ones the sub-count
-  lookup already tried and couldn't use, in three groups you tick —
-  *gone* (YouTube says the channel no longer exists) and *lookup failed* (no
-  sub count, or its other ID never found) are pre-selected; *hides its sub
-  count* is offered but not ticked, since those are live channels. A channel
+  lookup already tried and couldn't fully use, in groups you tick. Only
+  *gone* (YouTube says the channel no longer exists) is pre-selected. The
+  rest still block, so they're offered but not ticked: *only one ID found*
+  (the lookup never found its `@handle` or `UC…` ID; usually a lookup YouTube
+  was throttling, and XrnTube looks these up again a few times, days apart,
+  until they pair up), *no sub count*, and *hides its sub count*. A channel
   not looked up yet is never in any group.
   Every deletion syncs to your other devices and can be undone from
   **Recently removed**; each dialog offers a backup first.

@@ -76,11 +76,16 @@ const liftedInfo = [
   grabFn("parseAgeDays", shared, "shared/block-logic.js"),
   // Live objects on window, so a case can turn a rule on or off.
   `const blockIndex = (window.__btIndex = { anyAgeRule: true });
-   const filterRec = (window.__btFilters = { durMinSec: 0, durMaxSec: 0, subsMaxAgeDays: 0 });
+   const filterRec = (window.__btFilters = { durMinSec: 0, durMaxSec: 0, subsMaxAgeDays: 0, subsHideWatched: false, subsHideUpcoming: false });
    const readDurationSec = () => null;`,
+  grabFn("subsRulesOn", shared, "shared/block-logic.js"),
   grabFn("tileAgeText"),
   grabConst("SUBS_FEED_PAGE_SEL"),
   grabFn("onSubsFeed"),
+  grabConst("WATCHED_BAR_SEL"),
+  grabFn("tileWatchedPct"),
+  grabConst("UPCOMING_SEL"),
+  grabFn("tileUpcoming"),
   grabFn("extractInfo")
 ].join("\n");
 
@@ -356,6 +361,68 @@ const limitOff = await tileIn("subscriptions");
 limitOff && limitOff.onSubsFeed === false
   ? ok("…and with the limit off, nothing is asked of the Subscriptions page at all")
   : fail(`with the limit off the tile came back as ${JSON.stringify(limitOff)}`);
+
+// The date is read without the byline's channel link: a lockup's metadata
+// leads with it, and the unit table matches anywhere, years first.
+await page.evaluate(() => (window.__btIndex.anyAgeRule = true));
+const namedAge = await infoFor(
+  `<ytd-rich-item-renderer>
+     <a href="/watch?v=namedvideo1">An upload</a>
+     <yt-content-metadata-view-model>
+       <div><span><a href="/@oneyearchallenge">1 Year Challenge</a></span></div>
+       <div><span>24K views</span><span>2 days ago</span></div>
+     </yt-content-metadata-view-model>
+   </ytd-rich-item-renderer>`
+);
+namedAge && Math.round(namedAge.ageDays) === 2
+  ? ok('a channel called "1 Year Challenge" doesn\'t date its tile a year old: the byline link is left out of the date text')
+  : fail(`named-channel tile dated ${JSON.stringify(namedAge)}`);
+
+// The other two Subscriptions rules read the thumbnail: how far the progress
+// bar runs, and whether the time badge says the video hasn't aired. Each in
+// the three markups — the older desktop renderer, a desktop lockup (the badge
+// text is all it has: measured live), and the phone (measured live).
+await page.evaluate(() => Object.assign(window.__btFilters, { subsHideWatched: true, subsHideUpcoming: true }));
+const thumbIn = (thumb, host = "ytd-browse") =>
+  page.evaluate(
+    ([t, hostTag]) => {
+      document.body.innerHTML =
+        (hostTag === "ytd-browse" ? '<ytd-browse page-subtype="subscriptions">' : "") +
+        `<ytd-rich-item-renderer><a href="/watch?v=subsvideo02">An upload</a>${t}` +
+        '<div id="metadata-line"><span>1 hour ago</span></div></ytd-rich-item-renderer>' +
+        (hostTag === "ytd-browse" ? "</ytd-browse>" : "");
+      const i = window.extractInfo(document.body.querySelector("ytd-rich-item-renderer"));
+      return i && { watchedPct: i.watchedPct, isUpcoming: i.isUpcoming, onSubsFeed: i.onSubsFeed };
+    },
+    [thumb, host]
+  );
+const thumbs = {
+  oldWatched: await thumbIn('<ytd-thumbnail-overlay-resume-playback-renderer><div id="progress" style="width: 100%;"></div></ytd-thumbnail-overlay-resume-playback-renderer>'),
+  lockupWatched: await thumbIn(
+    '<yt-thumbnail-overlay-progress-bar-view-model><div class="ytThumbnailOverlayProgressBarHostWatchedProgressBar">' +
+      '<div class="ytThumbnailOverlayProgressBarHostWatchedProgressBarSegment" style="width: 37%;"></div></div></yt-thumbnail-overlay-progress-bar-view-model>'
+  ),
+  phoneWatched: await thumbIn(
+    '<ytm-thumbnail-overlay-resume-playback-renderer><div class="thumbnail-overlay-resume-playback-progress" style="width:95%"></div></ytm-thumbnail-overlay-resume-playback-renderer>'
+  ),
+  oldUpcoming: await thumbIn('<ytd-thumbnail-overlay-time-status-renderer overlay-style="UPCOMING"><span>UPCOMING</span></ytd-thumbnail-overlay-time-status-renderer>'),
+  lockupUpcoming: await thumbIn('<yt-thumbnail-bottom-overlay-view-model><badge-shape><div>Upcoming</div></badge-shape></yt-thumbnail-bottom-overlay-view-model>'),
+  lockupLive: await thumbIn('<yt-thumbnail-bottom-overlay-view-model><badge-shape><div>LIVE</div></badge-shape></yt-thumbnail-bottom-overlay-view-model>'),
+  lockupLength: await thumbIn('<yt-thumbnail-bottom-overlay-view-model><badge-shape><div>12:04</div></badge-shape></yt-thumbnail-bottom-overlay-view-model>'),
+  phoneUpcoming: await thumbIn('<ytm-thumbnail-overlay-time-status-renderer data-style="UPCOMING"><badge-shape>Upcoming</badge-shape></ytm-thumbnail-overlay-time-status-renderer>')
+};
+thumbs.oldWatched.watchedPct === 100 && thumbs.lockupWatched.watchedPct === 37 && thumbs.phoneWatched.watchedPct === 95
+  ? ok("how far you've watched, off all three progress bars (100%, 37%, 95%)")
+  : fail("watched progress: " + JSON.stringify(thumbs));
+thumbs.oldUpcoming.isUpcoming && thumbs.lockupUpcoming.isUpcoming && thumbs.phoneUpcoming.isUpcoming &&
+!thumbs.lockupLive.isUpcoming && !thumbs.lockupLength.isUpcoming && thumbs.lockupLength.watchedPct === null
+  ? ok("upcoming, off all three time badges — and a LIVE or a length badge is not upcoming, a tile with no bar not watched")
+  : fail("upcoming badges: " + JSON.stringify(thumbs));
+await page.evaluate(() => Object.assign(window.__btFilters, { subsHideWatched: false }));
+const watchedOff = await thumbIn('<ytd-thumbnail-overlay-resume-playback-renderer><div id="progress" style="width: 100%;"></div></ytd-thumbnail-overlay-resume-playback-renderer>');
+watchedOff.watchedPct === null && watchedOff.onSubsFeed === true
+  ? ok("…and with hide-watched off the bar isn't read, though the feed's other rule keeps it marked")
+  : fail("hide-watched off: " + JSON.stringify(watchedOff));
 
 await browser.close();
 console.log("\nDONE");

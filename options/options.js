@@ -5,7 +5,10 @@ const {
   DEFAULT_SETTINGS,
   KEYWORDS_KEY,
   SETTING_GROUPS,
-  SUBS_SCRAPE_VERSION,
+  subsAttempted,
+  knowsOneIdentity,
+  resolveRetryDue,
+  RESOLVE_MAX_TRIES,
   resolveSettings
 } = self.XrnTube;
 
@@ -240,7 +243,7 @@ function render() {
   clearVideosBtn.hidden = allVideos.length === 0;
   clearVideosBtn.textContent = `Clear ${plural(allVideos.length, "blocked video")}`;
   const failures = lookupFailures();
-  const nFailed = failures.gone.length + failures.failed.length + failures.hidden.length;
+  const nFailed = failures.gone.length + failures.oneId.length + failures.noCount.length + failures.hidden.length;
   $("clean-failed-btn").hidden = nFailed === 0;
   $("clean-failed-btn").textContent = `Delete channels that can't be looked up (${nFailed.toLocaleString()})…`;
   const clearChannelsBtn = $("clear-channels-btn");
@@ -679,15 +682,6 @@ function buildVideoRow(id, entry) {
   );
   li.appendChild(top);
   return li;
-}
-
-function subsAttempted(entry) {
-  // An attempt only counts if it was made by the *current* scrape. Version 1
-  // read the first sub count in the channel's HTML, which was frequently some
-  // other channel's — so those numbers are wrong, not merely old, and the one
-  // sweep that replaces them has to be allowed to happen. After it, `subsV` is
-  // current and the entry is never fetched again.
-  return !!(entry && entry.subsAt && (entry.subsV || 0) >= SUBS_SCRAPE_VERSION);
 }
 
 function buildSubsChip(id, entry) {
@@ -1436,7 +1430,9 @@ async function exportBackup() {
       durMinSec: Number(kw.durMinSec) || 0,
       durMaxSec: Number(kw.durMaxSec) || 0,
       commentLimit: kw.commentLimit === undefined ? DEFAULT_COMMENT_LIMIT : Number(kw.commentLimit) || 0,
-      subsMaxAgeDays: Number(kw.subsMaxAgeDays) || 0
+      subsMaxAgeDays: Number(kw.subsMaxAgeDays) || 0,
+      subsHideWatched: !!kw.subsHideWatched,
+      subsHideUpcoming: !!kw.subsHideUpcoming
     },
     settings: resolveSettings(stored[SETTINGS_KEY])
   };
@@ -1662,7 +1658,13 @@ function buildImportPlan(data) {
         plan.duration = { minSec: Number(kw.durMinSec) || 0, maxSec: Number(kw.durMaxSec) || 0 };
       }
       if (kw.commentLimit !== undefined) plan.commentLimit = Math.max(0, Number(kw.commentLimit) || 0);
-      if (kw.subsMaxAgeDays !== undefined) plan.subsMaxAgeDays = Math.max(0, Math.floor(Number(kw.subsMaxAgeDays) || 0));
+      // The Subscriptions feed's rules travel as one part: whichever of them
+      // the file has (an older backup has none, or only the age limit).
+      const subs = {};
+      if (kw.subsMaxAgeDays !== undefined) subs.subsMaxAgeDays = Math.max(0, Math.floor(Number(kw.subsMaxAgeDays) || 0));
+      if (kw.subsHideWatched !== undefined) subs.subsHideWatched = !!kw.subsHideWatched;
+      if (kw.subsHideUpcoming !== undefined) subs.subsHideUpcoming = !!kw.subsHideUpcoming;
+      if (Object.keys(subs).length) plan.subs = subs;
     }
     if (data.settings && typeof data.settings === "object") plan.settings = data.settings;
     return plan;
@@ -1680,7 +1682,7 @@ function emptyPlan(source) {
     keywords: [],
     duration: null,
     commentLimit: undefined,
-    subsMaxAgeDays: undefined,
+    subs: null,
     settings: null,
     skipped: []
   };
@@ -1753,12 +1755,13 @@ async function previewAndImport(plan) {
   if (plan.commentLimit !== undefined) {
     addRow("commentLimit", `Comment limit — ${plan.commentLimit ? plan.commentLimit + " comments" : "no limit"}`, "Replaces your current limit.");
   }
-  if (plan.subsMaxAgeDays !== undefined) {
-    addRow(
-      "subsMaxAgeDays",
-      `Subscriptions age limit — ${plan.subsMaxAgeDays ? plural(plan.subsMaxAgeDays, "day") : "off"}`,
-      "Replaces your current limit."
-    );
+  if (plan.subs) {
+    const s = plan.subs;
+    const parts = [];
+    if (s.subsMaxAgeDays !== undefined) parts.push(s.subsMaxAgeDays ? `older than ${plural(s.subsMaxAgeDays, "day")} hidden` : "any age");
+    if (s.subsHideWatched !== undefined) parts.push(s.subsHideWatched ? "watched hidden" : "watched shown");
+    if (s.subsHideUpcoming !== undefined) parts.push(s.subsHideUpcoming ? "upcoming hidden" : "upcoming shown");
+    addRow("subs", `Subscriptions page — ${parts.join(" · ")}`, "Replaces your current Subscriptions rules.");
   }
   if (allowKeys.length) addRow("allowlist", `Never-block list — ${allowKeys.length.toLocaleString()}`, "Merged with yours.");
   if (plan.settings) {
@@ -1826,8 +1829,8 @@ async function previewAndImport(plan) {
     keywords.commentLimit = plan.commentLimit;
     kwChanged = true;
   }
-  if (want("subsMaxAgeDays")) {
-    keywords.subsMaxAgeDays = plan.subsMaxAgeDays;
+  if (want("subs")) {
+    Object.assign(keywords, plan.subs);
     kwChanged = true;
   }
   if (kwChanged) await saveKeywords();
@@ -1912,30 +1915,38 @@ function renderDataPage() {
   const f = lookupFailures();
   set(
     "danger-failed",
-    f.gone.length + f.failed.length + f.hidden.length,
-    `${f.gone.length.toLocaleString()} gone · ${f.failed.length.toLocaleString()} whose lookup failed · ${f.hidden.length.toLocaleString()} hiding their sub count. You pick which.`
+    f.gone.length + f.oneId.length + f.noCount.length + f.hidden.length,
+    `${f.gone.length.toLocaleString()} gone · ${f.oneId.length.toLocaleString()} with one ID found` +
+      (f.retrying ? ` (${f.retrying.toLocaleString()} being retried)` : "") +
+      ` · ${f.noCount.length.toLocaleString()} with no sub count · ${f.hidden.length.toLocaleString()} hiding it. You pick which.`
   );
   $("danger-all").disabled = !(nCh || nVid || nKw || nAllow);
 }
 
-// Channels the sub-count lookup has already tried and couldn't use, in three
-// groups. A channel not looked up yet is in none of them — after a big import
-// thousands are only waiting their turn, and that is not a failure.
-//   gone   — YouTube says it doesn't exist (deleted, terminated, renamed)
-//   failed — looked up, but no sub count, or its other identity never found
-//   hidden — a live, resolved channel that keeps its count private; a real
-//            block, so it is offered but never pre-selected
+// Channels the sub-count lookup has already tried and couldn't fully use, in
+// four groups. A channel not looked up yet is in none of them — after a big
+// import thousands are only waiting their turn, and that is not a failure.
+//   gone    — YouTube says it doesn't exist (deleted, terminated, renamed)
+//   oneId   — its other identity (@handle / UC…) never came back. Still a
+//             block where tiles link the one it has, and very likely a
+//             lookup YouTube was throttling: it is retried, days apart
+//             (`retrying` counts those with tries left)
+//   noCount — paired up, but no sub count came back: cosmetic
+//   hidden  — a live, resolved channel that keeps its count private
+// Only `gone` is pre-selected for deletion: everything else is a real block.
 function lookupFailures() {
-  const out = { gone: [], failed: [], hidden: [] };
+  const out = { gone: [], oneId: [], noCount: [], hidden: [], retrying: 0 };
   for (const [id, e] of Object.entries(state.channels || {})) {
     if (e.gone) {
       out.gone.push(id);
       continue;
     }
     if (!subsAttempted(e)) continue;
-    const unresolved = id.startsWith("UC") ? !e.handle : !e.ucid;
-    if (e.subs === "hidden" && !unresolved) out.hidden.push(id);
-    else if (unresolved || subsToNumber(e.subs) == null) out.failed.push(id);
+    if (knowsOneIdentity(id, e)) {
+      out.oneId.push(id);
+      if ((e.idTries || 0) < RESOLVE_MAX_TRIES) out.retrying++;
+    } else if (e.subs === "hidden") out.hidden.push(id);
+    else if (subsToNumber(e.subs) == null) out.noCount.push(id);
   }
   return out;
 }
@@ -1944,7 +1955,17 @@ async function deleteLookupFailures() {
   const f = lookupFailures();
   const groups = [
     ["gone", "Gone", "YouTube says these channels no longer exist — deleted, terminated or renamed.", true],
-    ["failed", "Lookup failed", "Looked up, but no sub count came back, or the channel's other ID (@handle / UC…) was never found.", true],
+    [
+      "oneId",
+      "Only one ID found",
+      "The lookup never found the channel's other ID (@handle / UC…), so these may show up where YouTube links that one — but they " +
+        "still block everywhere else. Usually a lookup YouTube was throttling: " +
+        (f.retrying
+          ? `${plural(f.retrying, "is", "are")} being looked up again over the next few days, so wait rather than delete.`
+          : "each has been retried and still doesn't resolve."),
+      false
+    ],
+    ["noCount", "No sub count", "Identified fine but no count came back — cosmetic: these still block everywhere.", false],
     ["hidden", "Hide their sub count", "Live channels that just keep the number private — still real blocks.", false]
   ].filter(([key]) => f[key].length);
   if (!groups.length) {
@@ -2366,7 +2387,8 @@ const UPDATE_RESULT = {
   update_available: (r) => `Version ${r.version} found: installing. This page closes when it's in — open it again.`,
   no_update: () => "Up to date.",
   throttled: () => "The browser checked a moment ago and won't again yet. Try in a few minutes; it also checks on its own.",
-  no_update_url: () => "This copy has no update address to check."
+  no_update_url: () => "This copy has no update address to check.",
+  unreachable: () => "Couldn't reach the update server. The browser also checks on its own, every few hours."
 };
 
 async function initUpdates() {
@@ -2421,7 +2443,9 @@ function readKeywordsRecord(k) {
         // Absent until someone sets it, and written back only then: a 0 saved
         // on a device that never had the field would count as a change, and
         // the sync merge would let it erase a limit set on another device.
-        ...(k.subsMaxAgeDays !== undefined ? { subsMaxAgeDays: Math.max(0, Math.floor(Number(k.subsMaxAgeDays) || 0)) } : {})
+        ...(k.subsMaxAgeDays !== undefined ? { subsMaxAgeDays: Math.max(0, Math.floor(Number(k.subsMaxAgeDays) || 0)) } : {}),
+        ...(k.subsHideWatched !== undefined ? { subsHideWatched: !!k.subsHideWatched } : {}),
+        ...(k.subsHideUpcoming !== undefined ? { subsHideUpcoming: !!k.subsHideUpcoming } : {})
       }
     : { list: [], ts: 0, durMinSec: 0, durMaxSec: 0, commentLimit: DEFAULT_COMMENT_LIMIT };
 }
@@ -2473,7 +2497,9 @@ async function saveKeywords() {
       durMinSec: keywords.durMinSec || 0,
       durMaxSec: keywords.durMaxSec || 0,
       commentLimit: keywords.commentLimit || 0,
-      ...(keywords.subsMaxAgeDays !== undefined ? { subsMaxAgeDays: keywords.subsMaxAgeDays } : {})
+      ...(keywords.subsMaxAgeDays !== undefined ? { subsMaxAgeDays: keywords.subsMaxAgeDays } : {}),
+      ...(keywords.subsHideWatched !== undefined ? { subsHideWatched: keywords.subsHideWatched } : {}),
+      ...(keywords.subsHideUpcoming !== undefined ? { subsHideUpcoming: keywords.subsHideUpcoming } : {})
     }
   });
   send({ type: MSG.SYNC_NOW }).catch(() => {});
@@ -2485,6 +2511,8 @@ function renderDuration() {
   $("dur-max").value = keywords.durMaxSec ? String(Math.round(keywords.durMaxSec / 60)) : "";
   $("comment-limit").value = keywords.commentLimit ? String(keywords.commentLimit) : "";
   $("subs-age").value = keywords.subsMaxAgeDays ? String(keywords.subsMaxAgeDays) : "";
+  $("subs-watched").checked = !!keywords.subsHideWatched;
+  $("subs-upcoming").checked = !!keywords.subsHideUpcoming;
 }
 
 function initKeywords() {
@@ -2516,6 +2544,16 @@ function initKeywords() {
         ? `Subscriptions hides videos ${plural(keywords.subsMaxAgeDays, "day")} old or older.`
         : "Subscriptions shows videos of any age."
     );
+  });
+  $("subs-watched").addEventListener("change", (e) => {
+    keywords.subsHideWatched = e.target.checked;
+    saveKeywords();
+    toast(e.target.checked ? "Subscriptions hides videos you've watched." : "Subscriptions shows watched videos again.");
+  });
+  $("subs-upcoming").addEventListener("change", (e) => {
+    keywords.subsHideUpcoming = e.target.checked;
+    saveKeywords();
+    toast(e.target.checked ? "Subscriptions hides premieres and streams that haven't started." : "Subscriptions shows upcoming premieres and streams again.");
   });
 
   // Adds one pattern or, when several lines were pasted, each line.
@@ -2673,8 +2711,12 @@ document.addEventListener("keydown", (e) => {
 // on a click.
 async function autoFetchMissingSubs() {
   // The background drops ids already queued, so an open page joining a
-  // running sweep adds nothing twice.
-  const ids = Object.keys(state.channels || {}).filter((id) => !subsAttempted(state.channels[id]));
+  // running sweep adds nothing twice. A channel looked up but still knowing
+  // one identity comes back too, a few times and days apart (resolveRetryDue).
+  const now = Date.now();
+  const ids = Object.keys(state.channels || {}).filter(
+    (id) => !subsAttempted(state.channels[id]) || resolveRetryDue(id, state.channels[id], now)
+  );
   if (!ids.length) return;
   await bulkFetchSubs(ids, "Auto-fetched");
 }

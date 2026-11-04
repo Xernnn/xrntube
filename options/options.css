@@ -547,6 +547,9 @@ a.drawer-btn { text-decoration: none; display: inline-flex; align-items: center;
 .kw-add input[type="text"] { flex: 1; min-width: 240px; }
 .kw-regex { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 13px; white-space: nowrap; }
 .kw-regex input[type="number"] { width: 72px; }
+/* A checkbox with a sentence beside it: wraps on a phone, unlike .kw-regex. */
+.subs-check { display: flex; align-items: flex-start; gap: 8px; color: var(--ink-2); font-size: 13px; margin: 0 0 10px; }
+.subs-check input { margin-top: 2px; flex: none; }
 
 /* ---------------- settings tree ---------------- */
 .sgroup {

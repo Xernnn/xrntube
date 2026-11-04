@@ -200,6 +200,20 @@ const subsOff = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords")))
 subsSet.subsMaxAgeDays === 3 && subsOff.subsMaxAgeDays === 0 && subsOff.list.length === 2 && subsOff.commentLimit === 20
   ? ok("the Subscriptions age limit saves from its own field (3 days, then blank = off), leaving the rest of the record alone")
   : fail(`Subscriptions limit field: set=${JSON.stringify(subsSet)} off=${JSON.stringify(subsOff)}`);
+await p.check("#subs-watched");
+await p.check("#subs-upcoming");
+await p.waitForTimeout(400);
+const subsBoxes = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+await p.uncheck("#subs-upcoming");
+await p.waitForTimeout(400);
+const subsBoxOff = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+await p.reload();
+await p.locator('.page-tab[data-page="keywords"]').click();
+const shown = await p.evaluate(() => [document.getElementById("subs-watched").checked, document.getElementById("subs-upcoming").checked]);
+subsBoxes.subsHideWatched === true && subsBoxes.subsHideUpcoming === true && subsBoxOff.subsHideUpcoming === false &&
+subsBoxOff.subsHideWatched === true && JSON.stringify(shown) === "[true,false]" && subsBoxOff.list.length === 2
+  ? ok("hide watched / hide upcoming save as they're ticked, untick on their own, and show as saved after a reload")
+  : fail(`Subscriptions boxes: on=${JSON.stringify(subsBoxes)} off=${JSON.stringify(subsBoxOff)} shown=${JSON.stringify(shown)}`);
 
 // ---- 5. per-row Delete + Undo toast ----
 await p.locator('.page-tab[data-page="blocklist"]').click();
@@ -251,8 +265,10 @@ ageAfterTick === 7 && ageAfterEdit === 1 && !ageAfterUntick
   : fail(`age rule saves: tick=${ageAfterTick} edit=${ageAfterEdit} untick=${ageAfterUntick}`);
 
 // ---- 8. delete the channels the lookup couldn't use ----
-// One of each: gone, looked up but failed, live but hiding its count, not
-// looked up yet, and healthy. Only the first two are pre-selected; the
+// One of each: gone, looked up with one identity found, identified with no
+// count, live but hiding its count, not looked up yet, and healthy. Only the
+// gone one is pre-selected — the rest still block, and the one-identity group
+// is mostly lookups YouTube was throttling, which get retried; the
 // not-yet-looked-up one must never be offered at all.
 await msg({ type: "DELETE_DATA", channels: "all", videos: "all" });
 const C = (n) => "UC" + String(n).padStart(22, "c");
@@ -260,10 +276,11 @@ await msg({
   type: "IMPORT_BLOCKLIST",
   channels: {
     [C(1)]: stamped({ name: "Gone one", gone: true, subs: "n/a" }),
-    [C(2)]: stamped({ name: "Failed one" }), // looked up: no count, no @handle
+    [C(2)]: stamped({ name: "One-ID one" }), // looked up: no count, no @handle
     [C(3)]: stamped({ name: "Hidden one", subs: "hidden", handle: "@hiddenone" }),
     [C(4)]: { name: "Pending one", ts: now, mode: "full", whitelist: {} }, // never looked up
-    [C(5)]: stamped({ name: "Healthy one", subs: "1.2M", handle: "@healthyone" })
+    [C(5)]: stamped({ name: "Healthy one", subs: "1.2M", handle: "@healthyone" }),
+    [C(6)]: stamped({ name: "Uncounted one", handle: "@uncounted" }) // both IDs, no count
   },
   videos: {}
 });
@@ -280,23 +297,76 @@ const offered = await p.evaluate(() =>
 JSON.stringify(offered) ===
 JSON.stringify([
   { title: "Gone — 1", checked: true },
-  { title: "Lookup failed — 1", checked: true },
+  { title: "Only one ID found — 1", checked: false },
+  { title: "No sub count — 1", checked: false },
   { title: "Hide their sub count — 1", checked: false }
 ])
-  ? ok("cleanup offers gone + failed (pre-selected) and hidden-count (opt-in), never a not-yet-looked-up one")
+  ? ok("cleanup offers gone (pre-selected), one-ID, no-count and hidden-count (opt-in), never a not-yet-looked-up one")
   : fail("cleanup groups: " + JSON.stringify(offered));
+const retryNote = await p.locator("#modal-body .plan > li", { hasText: "Only one ID found" }).textContent();
+/being looked up again/.test(retryNote)
+  ? ok("…and says the one-ID channels are being looked up again, so wait rather than delete")
+  : fail("one-ID group note: " + retryNote);
 await p.click("#modal-confirm");
 await p.waitForTimeout(800);
 bl = await blocklist();
 const left = Object.keys(bl.channels).sort();
-JSON.stringify(left) === JSON.stringify([C(3), C(4), C(5)].sort())
-  ? ok("…and deletes exactly the selected groups")
+JSON.stringify(left) === JSON.stringify([C(2), C(3), C(4), C(5), C(6)].sort())
+  ? ok("…and deletes exactly the selected group")
   : fail("left after cleanup: " + JSON.stringify(left));
 await p.locator(".toast button", { hasText: "Undo" }).first().click();
 await p.waitForTimeout(800);
-Object.keys((await blocklist()).channels).length === 5
+Object.keys((await blocklist()).channels).length === 6
   ? ok("…and Undo brings them back")
   : fail("undo after cleanup didn't restore");
+
+// ---- 8b. a channel left with one identity is looked up again ----
+// YouTube is faked: every channel page this profile's worker asks for is a
+// synthetic one — a full header for the channel that now resolves, and a page
+// with no header at all (what a throttled sweep got) for the other.
+const R = (n) => "UC" + String(n).padStart(22, "r");
+const DAY = 864e5;
+const channelPage = (ucid, handle) =>
+  `<html><head><link rel="canonical" href="https://www.youtube.com/channel/${ucid}"></head><body><script>var ytInitialData = ` +
+  `{"header":{"pageHeaderRenderer":{"pageTitle":"Resolved","content":{"pageHeaderViewModel":{"metadata":{"contentMetadataViewModel":{` +
+  `"metadataRows":[{"metadataParts":[{"text":{"content":"${handle}"}}]},{"metadataParts":[{"text":{"content":"1.2M subscribers"}},` +
+  `{"text":{"content":"300 videos"}}]}],"delimiter":" • "}}}}}}};</script>` + " ".repeat(13000) + "</body></html>";
+const asked = [];
+await ctx.route("https://www.youtube.com/**", (route) => {
+  const url = route.request().url();
+  asked.push(url);
+  if (url.includes(R(1))) return route.fulfill({ status: 200, contentType: "text/html", body: channelPage(R(1), "@retriedone") });
+  return route.fulfill({ status: 200, contentType: "text/html", body: "<html><body>nothing here</body></html>" });
+});
+await msg({ type: "DELETE_DATA", channels: "all", videos: "all" });
+await msg({
+  type: "IMPORT_BLOCKLIST",
+  channels: {
+    [R(1)]: stamped({ name: "Due", subsAt: now - 4 * DAY }), // one ID, looked up days ago: due
+    [R(2)]: stamped({ name: "Out of tries", subsAt: now - 4 * DAY, idTries: 3 }),
+    [R(3)]: stamped({ name: "Just tried", subsAt: now - 3600e3 }), // one ID, but tried an hour ago
+    [R(4)]: { name: "Never looked up", ts: now, mode: "full", whitelist: {} } // gets a headerless page
+  },
+  videos: {}
+});
+await p.reload(); // opening the page is what queues lookups
+for (let i = 0; i < 60; i++) {
+  const { sweep } = await msg({ type: "GET_SWEEP" });
+  if (!sweep.queued && sweep.finishedAt) break;
+  await p.waitForTimeout(500);
+}
+const after = (await blocklist()).channels;
+const askedFor = (id) => asked.some((u) => u.includes(id));
+after[R(1)].handle === "@retriedone" && after[R(1)].subs === "1.2M" && after[R(1)].idTries === undefined
+  ? ok("a one-ID channel looked up days ago is asked again on opening the page — and pairs up (handle, count, no tries left to count)")
+  : fail("retry of a due one-ID channel: " + JSON.stringify(after[R(1)]));
+!askedFor(R(2)) && !askedFor(R(3)) && after[R(2)].subsAt === now - 4 * DAY && after[R(3)].subsAt === now - 3600e3
+  ? ok("…but not one out of tries, nor one tried an hour ago")
+  : fail(`retry gate: asked R2=${askedFor(R(2))} R3=${askedFor(R(3))}`);
+askedFor(R(4)) && !after[R(4)].subsAt && !after[R(4)].idTries
+  ? ok("a page with no channel header that yielded nothing is not recorded as a lookup (it's asked again later)")
+  : fail("headerless page recorded: " + JSON.stringify(after[R(4)]));
+await ctx.unroute("https://www.youtube.com/**");
 
 // ---- 9. one channel stored twice is folded into one once it's paired ----
 // "@dupchan" (video-only, blocked first) and its UC id (a full block, with a

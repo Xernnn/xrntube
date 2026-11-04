@@ -131,14 +131,30 @@ it names.
   "no document load" assertions in `settings-test` and `mobile-test` are what
   notice. A late switch on desktop patches the rendered
   `ytd-topbar-logo-renderer`'s `data` instead; mobile has no such property.
+- **A lockup's length, date, progress and "Upcoming" are all paths into
+  `lockupViewModel`, and two of them had already moved.** Measured live on a
+  channel's streams tab (30 lockups of 30): the length badge is at
+  `contentImage.thumbnailViewModel.overlays[].thumbnailBottomOverlayViewModel
+  .badges[].thumbnailBadgeViewModel.text` (`LOCKUP_BADGE` in page-hook.js —
+  the older `thumbnailOverlayBadgeViewModel.thumbnailBadges` path read
+  nothing), and the date is a later part of the metadata rows, which
+  `allText()` reads whole minus the channel link. Both had silently turned
+  length bounds and age rules off for lockups in layer 0, leaving the DOM
+  scrub to catch them a frame later — nothing fails when this happens, so
+  `datalayer-test` pins the live shape. The watch-progress path
+  (`thumbnailBottomOverlayViewModel.progressBar
+  .thumbnailOverlayProgressBarViewModel.startPercent`) and the DOM progress
+  bars (`WATCHED_BAR_SEL`) were **not** measured — progress only exists
+  signed in — so if "hide watched" misses, check those first, on a signed-in
+  Subscriptions page. "Upcoming" on a lockup is the badge's English text.
 - **The Subscriptions age limit knows its feed by two YouTube details.**
   Layer 0 reads `browse_id` out of `responseContext.serviceTrackingParams`
   (`FEsubscriptions` — confirmed live on the first page and every
   continuation of a channel tab, and on the Subscriptions page's
   `ytInitialData`); the DOM scrub reads `ytd-browse[page-subtype=
   "subscriptions"]`. If either goes, that layer quietly stops applying the
-  limit and the other carries it; if both go, the Subscriptions feed simply
-  shows old videos again, with nothing failing. `datalayer-test` and
+  feed's rules and the other carries them; if both go, the Subscriptions feed
+  simply shows old, watched and upcoming videos again, with nothing failing. `datalayer-test` and
   `tilescope-test` pin the shapes offline. Signed out, the Subscriptions page
   has no feed, so no live test can see the limit work — check it by hand.
 - **The tag list is not the whole surface, and the gaps cluster on search and

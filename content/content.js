@@ -17,6 +17,7 @@
     compileFilters,
     EMPTY_FILTERS,
     anyFilterActive,
+    subsRulesOn,
     blockReasonFor
   } = self.XrnTube;
 
@@ -1326,9 +1327,9 @@
       if (key) keys.push(key);
     }
     // page-hook.js marks what came from the Subscriptions feed (by the
-    // response's own browse id); the date matters there only while that
-    // feed's age limit is on.
-    const onSubsFeed = !!it.onSubsFeed && filterRec.subsMaxAgeDays > 0;
+    // response's own browse id); where a thing is matters only while one of
+    // that feed's rules is on, and its date only while the age limit is.
+    const onSubsFeed = !!it.onSubsFeed && subsRulesOn(filterRec);
     let ageDays = null;
     if ((blockIndex.anyAgeRule || onSubsFeed) && it.publishedText) {
       const d = parseAgeDays(it.publishedText);
@@ -1343,7 +1344,9 @@
         isPlaylist: !!it.isPlaylist,
         isShort: !!it.isShort,
         channelKeys: keys,
-        onSubsFeed
+        onSubsFeed,
+        watchedPct: onSubsFeed && Number.isFinite(it.watchedPct) ? it.watchedPct : null,
+        isUpcoming: onSubsFeed && !!it.isUpcoming
       },
       blockIndex,
       filterRec
@@ -1492,9 +1495,23 @@
   // tile has one; otherwise the tile minus its own title, which is the part
   // that lies. An unknown tile shape therefore still gets a wide read — just
   // never one that includes the words the uploader chose.
+  //
+  // Inside the metadata, a channel link is a name, never the date — and a
+  // name is the other part that lies: a lockup's metadata leads with its
+  // byline, and "1 Year Challenge" reads as a year old (the unit table
+  // matches anywhere, years first). So its text is left out, as page-hook.js
+  // leaves out the same part of the JSON.
   function tileAgeText(el, videoTitle) {
     const scopes = el.querySelectorAll ? el.querySelectorAll(AGE_SCOPE_SEL) : [];
-    if (scopes.length) return Array.from(scopes, (n) => n.textContent || "").join(" ");
+    if (scopes.length) {
+      return Array.from(scopes, (n) => {
+        let t = n.textContent || "";
+        for (const a of n.querySelectorAll('a[href^="/@"], a[href^="/channel/"]')) {
+          if (a.textContent) t = t.split(a.textContent).join(" ");
+        }
+        return t;
+      }).join(" ");
+    }
     const all = el.textContent || "";
     return videoTitle ? all.split(videoTitle).join(" ") : all;
   }
@@ -1504,14 +1521,43 @@
   // is: the address bar is wrong for a hidden page's tile, and for a moment
   // during every navigation between two pages.
   const SUBS_FEED_PAGE_SEL = 'ytd-browse[page-subtype="subscriptions"]';
-  // Whether a tile is on the Subscriptions feed, for that feed's age limit —
-  // asked only while the limit is on. m.youtube.com has no ytd-browse and shows
-  // one page at a time, so there the address is all there is to go on.
+  // Whether a tile is on the Subscriptions feed, for that feed's own rules —
+  // asked only while one is on. m.youtube.com has no ytd-browse and shows one
+  // page at a time, so there the address is all there is to go on.
   function onSubsFeed(el) {
-    if (!(filterRec.subsMaxAgeDays > 0)) return false;
+    if (!subsRulesOn(filterRec)) return false;
     const page = el.closest ? el.closest("ytd-browse") : null;
     if (page) return page.matches(SUBS_FEED_PAGE_SEL);
     return location.hostname.startsWith("m.") && location.pathname === "/feed/subscriptions";
+  }
+
+  // How much of a tile's video you've watched, off its progress bar: the
+  // older renderers' resume overlay, a lockup's progress-bar view model and
+  // the phone's resume overlay. The bar's inline width is the number; no bar
+  // means none watched (null). The JSON layer reads the same number from
+  // the response and is the one that normally decides.
+  const WATCHED_BAR_SEL = [
+    "ytd-thumbnail-overlay-resume-playback-renderer #progress",
+    "yt-thumbnail-overlay-progress-bar-view-model [class*='WatchedProgressBarSegment']",
+    "ytm-thumbnail-overlay-resume-playback-renderer .thumbnail-overlay-resume-playback-progress"
+  ].join(",");
+  function tileWatchedPct(el) {
+    const bar = el.querySelector(WATCHED_BAR_SEL);
+    const m = bar && /width:\s*([\d.]+)%/.exec(bar.getAttribute("style") || "");
+    return m ? Math.min(100, Number(m[1])) : null;
+  }
+  // A premiere or scheduled stream that hasn't started. The older renderers'
+  // time-status overlay says so by attribute (desktop `overlay-style`, the
+  // phone's `data-style`, measured live); a lockup only by its thumbnail
+  // badge's text, "Upcoming" in English (see upcomingOf() in page-hook.js).
+  const UPCOMING_SEL = [
+    'ytd-thumbnail-overlay-time-status-renderer[overlay-style="UPCOMING"]',
+    'ytm-thumbnail-overlay-time-status-renderer[data-style="UPCOMING"]'
+  ].join(",");
+  function tileUpcoming(el) {
+    if (el.querySelector(UPCOMING_SEL)) return true;
+    const badge = el.querySelector("yt-thumbnail-bottom-overlay-view-model badge-shape");
+    return !!badge && /^\s*upcoming\s*$/i.test(badge.textContent || "");
   }
 
   function extractInfo(el) {
@@ -1586,14 +1632,17 @@
     // one) / a duration filter is active — parsing every tile otherwise is
     // wasted work.
     const subsFeed = !!videoId && onSubsFeed(el);
-    let ageDays = (blockIndex.anyAgeRule || subsFeed) && videoId ? parseAgeDays(tileAgeText(el, videoTitle)) : null;
+    const subsAge = subsFeed && filterRec.subsMaxAgeDays > 0;
+    let ageDays = (blockIndex.anyAgeRule || subsAge) && videoId ? parseAgeDays(tileAgeText(el, videoTitle)) : null;
     if (!plausibleAgeDays(ageDays)) ageDays = null;
     const durationSec =
       videoId && (filterRec.durMinSec > 0 || filterRec.durMaxSec > 0) ? readDurationSec(el) : null;
     // Whether this is a Short matters only to the age rule, and only because
     // a Short never carries a date — see ageForRule() in shared/block-logic.js.
     const isShort = !!videoId && !!(el.querySelector('a[href*="/shorts/"]') || (el.matches && el.matches(SHORTS_ITEM_SELECTOR)));
-    return { videoId, videoTitle, channels, ageDays, durationSec, isPlaylist, isShort, onSubsFeed: subsFeed };
+    const watchedPct = subsFeed && filterRec.subsHideWatched ? tileWatchedPct(el) : null;
+    const isUpcoming = subsFeed && filterRec.subsHideUpcoming && tileUpcoming(el);
+    return { videoId, videoTitle, channels, ageDays, durationSec, isPlaylist, isShort, onSubsFeed: subsFeed, watchedPct, isUpcoming };
   }
 
   // Why a tile is blocked, as a short string — null if it isn't. "Blocked"
@@ -1618,7 +1667,9 @@
         isPlaylist: info.isPlaylist,
         isShort: info.isShort,
         channelKeys: info.channels.keys(),
-        onSubsFeed: info.onSubsFeed
+        onSubsFeed: info.onSubsFeed,
+        watchedPct: info.watchedPct,
+        isUpcoming: info.isUpcoming
       },
       blockIndex,
       filterRec
@@ -2046,7 +2097,7 @@
         info.videoId &&
         info.ageDays == null &&
         !info.isShort &&
-        (ageRuledChannelOn(info) || info.onSubsFeed)
+        (ageRuledChannelOn(info) || (info.onSubsFeed && filterRec.subsMaxAgeDays > 0))
       );
       // A live stream has no duration and never will, so bound the retries
       // rather than re-processing it on every pass forever.
@@ -2964,6 +3015,22 @@
   // on the heartbeat, and the cost of being wrong the other way is only a few
   // cheap re-reads of a handful of tiles.
   const REHYDRATE_MAX_TRIES = 25;
+  // The video tiles that can be left pending, on both sites. LOCKUP_SELECTOR
+  // belongs here: search results are `yt-lockup-view-model` now, and leaving
+  // it out meant the modern tiles were never re-examined at all. So do the
+  // phone's tags: without them a phone tile was judged once, on first render,
+  // and a title, length or date that arrived after that was never read — so
+  // keyword, length and age rules (the Subscriptions limit's too) passed it.
+  const VIDEO_RECHECK_SELECTOR = [
+    "ytd-video-renderer",
+    "ytd-rich-item-renderer",
+    "ytd-compact-video-renderer",
+    "ytd-grid-video-renderer",
+    "ytm-rich-item-renderer",
+    "ytm-video-with-context-renderer",
+    "ytm-compact-video-renderer",
+    LOCKUP_SELECTOR
+  ].join(",");
   function recheckHydratingTiles(root) {
     if (!root.querySelectorAll) return;
     root.querySelectorAll(REHYDRATE_RECHECK_SELECTOR).forEach((el) => {
@@ -2972,15 +3039,10 @@
       processRenderer(el);
     });
     // Video tiles processRenderer left un-checked because a title, duration
-    // badge or publish date hadn't hydrated — re-process just those. LOCKUP_SELECTOR belongs
-    // here: search results are `yt-lockup-view-model` now, so leaving it out
-    // meant the modern tiles were never re-examined at all.
+    // badge or publish date hadn't hydrated — re-process just those.
     if (anyFilter() || blockIndex.anyAgeRule) {
       root
-        .querySelectorAll(
-          "ytd-video-renderer, ytd-rich-item-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, " +
-            LOCKUP_SELECTOR
-        )
+        .querySelectorAll(VIDEO_RECHECK_SELECTOR)
         .forEach((el) => {
           if (el.dataset.btChecked !== "1") processRenderer(el);
         });

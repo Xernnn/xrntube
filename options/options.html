@@ -191,7 +191,7 @@
             <div class="page-head">
               <div>
                 <h1>Keywords &amp; length</h1>
-                <p class="lede">Hide videos by what they're called, how long they run, or how old they are on your Subscriptions page.</p>
+                <p class="lede">Hide videos by what they're called or how long they run — and keep your Subscriptions page to what's new.</p>
               </div>
             </div>
 
@@ -247,16 +247,20 @@
             <section class="card">
               <h2>Subscriptions page</h2>
               <p class="blurb">
-                Hides videos older than this from your Subscriptions feed, from
-                every channel, so it only shows what's new. Shorts carry no date
-                and stay (the Shorts switches cover them), and so do channels on
-                your Never-block list. Blank or 0 shows everything.
+                Keeps your Subscriptions feed to what's new and unwatched, from
+                every channel — Home, search and channel pages are left alone.
+                Shorts stay (they carry no date or progress bar, and the Shorts
+                switches cover them), and so do channels on your Never-block list.
               </p>
               <div class="kw-add">
                 <label class="kw-regex">Hide videos older than
                   <input id="subs-age" type="number" min="0" step="1" /> days</label>
                 <button id="subs-age-save" class="btn primary">Apply</button>
               </div>
+              <label class="subs-check"><input type="checkbox" id="subs-watched" />
+                <span>Hide videos you've watched — 90% or more of the way through. One you left half-way stays.</span></label>
+              <label class="subs-check"><input type="checkbox" id="subs-upcoming" />
+                <span>Hide premieres and scheduled streams that haven't started yet. Live streams stay.</span></label>
             </section>
           </div>
 

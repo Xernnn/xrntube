@@ -10,7 +10,10 @@ const {
   SETTINGS_KEY,
   ALLOWLIST_KEY,
   KEYWORDS_KEY,
-  SUBS_SCRAPE_VERSION
+  SUBS_SCRAPE_VERSION,
+  subsAttempted,
+  knowsOneIdentity,
+  resolveRetryDue
 } = self.XrnTube;
 
 // A cross-device clock: server-sync.js feeds the sync server's Date header back
@@ -904,6 +907,10 @@ async function applyChannelInfo(map) {
     if (info.name && (!e.name || e.name === id || e.name === e.handle || e.name === info.handle)) {
       n.name = info.name;
     }
+    // Still one identity: count the try, so resolveRetryDue() knows when to
+    // stop asking. Paired up: nothing left to retry.
+    if (knowsOneIdentity(id, n)) n.idTries = (e.idTries || 0) + 1;
+    else delete n.idTries;
     return n;
   };
 
@@ -967,8 +974,13 @@ async function lookupChannels(ids) {
         left.push(id);
         break;
       }
-      // null (a 5xx and the like) is left unrecorded: the next sweep asks again.
-      if (info) results[id] = info;
+      // null (a 5xx and the like) is left unrecorded: the next sweep asks
+      // again. So is a page with no channel header that yielded nothing at
+      // all: a live channel always has one, and recording that as an answer
+      // is how a throttled sweep marked hundreds of channels looked-up for
+      // good with neither a handle nor a count.
+      const empty = info && !info.gone && !info.headed && !info.handle && !info.ucid && info.subs == null;
+      if (info && !empty) results[id] = info;
       await sleep(LOOKUP_SPACING_MS * (1 + Math.random()));
     }
   };
@@ -1048,6 +1060,23 @@ async function runSweep() {
       continue;
     }
     chrome.alarms.create(SWEEP_ALARM, { delayInMinutes: 1 }); // watchdog while working
+    // Drop what no longer needs asking: deleted meanwhile, or looked up and
+    // paired by another device (every device's options page queues the same
+    // retries, and the answers arrive here through sync). Asking anyway only
+    // doubles the traffic YouTube throttles on.
+    const { channels } = await loadAll();
+    const now = syncedNow();
+    const stale = new Set(
+      s.queue
+        .slice(0, SWEEP_BATCH)
+        .filter((id) => !channels[id] || (subsAttempted(channels[id]) && !resolveRetryDue(id, channels[id], now)))
+    );
+    if (stale.size) {
+      s.queue = s.queue.filter((id) => !stale.has(id));
+      s.done += stale.size;
+      await saveSweep();
+      continue;
+    }
     const batch = s.queue.slice(0, SWEEP_BATCH);
     const { results, throttled, left } = await lookupChannels(batch);
     await applyChannelInfo(results);
@@ -1304,6 +1333,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               // list gets swept again for counts it already has.
               if (Number(entry.subsAt) > 0 || entry.subs) channels[id].subsAt = Number(entry.subsAt) || now;
               if (channels[id].subsAt && Number(entry.subsV) > 0) channels[id].subsV = Number(entry.subsV);
+              // …and so does how often it came back with one identity, or a
+              // restore would hand every such channel its retries again.
+              if (channels[id].subsAt && Number(entry.idTries) > 0) channels[id].idTries = Math.floor(Number(entry.idTries));
               if (entry.handle) channels[id].handle = String(entry.handle);
               if (entry.ucid) channels[id].ucid = String(entry.ucid);
               // A channel the export already knew was gone stays gone — otherwise
@@ -1603,10 +1635,49 @@ async function checkForUpdate() {
     return { status: "reloading", version: onDisk, installType };
   }
   if (!running.update_url) return { status: "no_update_url", version: running.version, installType };
+  // Ask the server first, and the browser only when there's something to
+  // take. The browser backs requestUpdateCheck() off after every check it
+  // makes, doubling the wait each time, so an hourly call that found nothing
+  // soon had it answering "throttled" — the user's own Check now included,
+  // right after a release, which is the one time it matters. updates.xml is
+  // public and sent with CORS, so reading it needs no host permission.
+  let offered;
+  try {
+    const res = await fetch(running.update_url, { cache: "no-store", credentials: "omit" });
+    if (res.ok) offered = offeredVersion(await res.text(), chrome.runtime.id);
+  } catch {}
+  // Unreachable (offline, or the server down): a browser check would fail the
+  // same way and only push its backoff further. The browser's own periodic
+  // check still runs regardless.
+  if (offered === undefined) return { status: "unreachable", version: running.version, installType };
+  if (!versionNewer(offered, running.version)) return { status: "no_update", version: running.version, installType };
   // "update_available" (onUpdateAvailable follows once it's downloaded),
   // "no_update", or "throttled" when asked too often.
   const res = await chrome.runtime.requestUpdateCheck();
-  return { status: res.status, version: res.version || running.version, installType };
+  return { status: res.status, version: res.version || offered, installType };
+}
+
+// The version updates.xml (scripts/crx.mjs's updateManifest) offers this
+// extension, or "" when it lists none for it. A service worker has no
+// DOMParser; the file is ours and one line per element.
+function offeredVersion(xml, id) {
+  for (const app of String(xml).split(/<app\b/).slice(1)) {
+    if (!new RegExp(`^[^>]*\\bappid=["']${id}["']`).test(app)) continue;
+    const m = /<updatecheck\b[^>]*\bversion=["']([\d.]+)["']/.exec(app);
+    return m ? m[1] : "";
+  }
+  return "";
+}
+
+// "2.1.10" is newer than "2.1.9": compared numerically, part by part.
+function versionNewer(a, b) {
+  const pa = String(a).split(".").map(Number);
+  const pb = String(b).split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d > 0;
+  }
+  return false;
 }
 
 // Created only when missing: creating an alarm again restarts its period, and

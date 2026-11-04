@@ -77,7 +77,8 @@ self.XrnTube.MSG = {
   // Options → Sync → Check now: look for a new version immediately. Answers
   // { status, version, installType } — status is the browser's own
   // ("update_available" / "no_update" / "throttled"), or "reloading" for an
-  // unpacked install whose folder has a new version, or "no_update_url".
+  // unpacked install whose folder has a new version, "no_update_url", or
+  // "unreachable" when updates.xml couldn't be read (the browser isn't asked).
   CHECK_FOR_UPDATE: "CHECK_FOR_UPDATE",
   // Content script → popup: how the layers are doing on this tab — what the
   // JSON layer removed, and how much the DOM scrub had to catch after it.
@@ -150,6 +151,34 @@ self.XrnTube.SETTINGS_KEY = "bt_settings";
 //       cards, and the page's own header sits past where the reader stopped.
 //   2 — the channel's own `pageHeaderRenderer`, off its search tab.
 self.XrnTube.SUBS_SCRAPE_VERSION = 2;
+// Has the current scrape looked this entry up? An attempt by an older scrape
+// doesn't count (its numbers are wrong, not merely old), so that one sweep
+// that replaces them is allowed to happen; after it the entry is left alone —
+// except for resolveRetryDue() below.
+self.XrnTube.subsAttempted = function (entry) {
+  return !!(entry && entry.subsAt && (entry.subsV || 0) >= self.XrnTube.SUBS_SCRAPE_VERSION);
+};
+// An entry that knows only the identity it is keyed by: a UC… key with no
+// @handle, or an @handle with no UC id. Tiles link one format or the other,
+// varying by surface, so such an entry is invisible on the other half.
+self.XrnTube.knowsOneIdentity = function (id, entry) {
+  return String(id).startsWith("UC") ? !entry.handle : !entry.ucid;
+};
+// A lookup that left an entry knowing one identity is not the last word. A
+// sweep run while YouTube was throttling recorded hundreds of them in one
+// day — headerless pages, read as "nothing to find" — and every one sampled
+// weeks later looked up fine: handle, count and its own UC id. So such an
+// entry is looked up again, days apart, until `idTries` (lookups that left it
+// with one identity, counted by applyChannelInfo) reaches the limit: a channel
+// that really has no handle stops being asked about after that.
+self.XrnTube.RESOLVE_MAX_TRIES = 3;
+self.XrnTube.RESOLVE_RETRY_MS = 3 * 24 * 3600 * 1000;
+self.XrnTube.resolveRetryDue = function (id, entry, now) {
+  const X = self.XrnTube;
+  if (!entry || entry.gone || !X.subsAttempted(entry) || !X.knowsOneIdentity(id, entry)) return false;
+  if ((entry.idTries || 0) >= X.RESOLVE_MAX_TRIES) return false;
+  return now - entry.subsAt >= X.RESOLVE_RETRY_MS;
+};
 // chrome.storage.sync. { list: [{ p: <pattern>, re: <bool: treat as regex> }],
 // ts: <ms> }. A video whose title matches any pattern is scrubbed (JS only —
 // CSS can't match text). ts drives last-write-wins in the sync merge.

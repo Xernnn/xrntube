@@ -125,3 +125,49 @@ doubles as Stop while it runs, and it resumes where it left off. Note that
 the enrichment is worth having beyond the numbers: a `UC…`-keyed channel does
 not block modern feed tiles until its `@handle` is known (see "Channel
 identity").
+
+## One identity is not a result
+
+A lookup that comes back with the channel's header pairs its identities: a
+`UC…` entry learns its `@handle`, an `@handle` entry its `UC…` id. One that
+leaves the entry knowing only the format it is keyed by (`knowsOneIdentity()`
+in `shared/constants.js`) is a problem, not a cosmetic gap — tiles link one
+format or the other by surface, so that channel still shows wherever the
+missing one is used (see [blocking-rules.md](blocking-rules.md) → "Channel
+identity").
+
+**Measured on a real list:** a fifth of its entries were `UC…`-keyed with no
+`@handle`, nearly all stamped by one sweep on one day and most with no count
+either — and every one sampled weeks later looked up fine, handle, count and
+matching `UC…` id. The sweep had run while YouTube was throttling,
+the pages it got had no channel header, and `lookupChannels()` recorded
+"nothing found" as an answer. `subsAttempted()` then counted them as done
+forever, and the review dialog called them "Lookup failed" and **ticked them
+for deletion** — one click away from unblocking all of them.
+
+Three changes, together:
+
+- **Nothing found is not recorded.** A scrape with no header and no handle,
+  id or count is treated like a 5xx: unrecorded, asked again next sweep. (The
+  doc above already said "no header → nothing recorded"; the code didn't.) A
+  gone channel is unaffected — that is decided first, by status or by the
+  error alert.
+- **One identity is retried.** `resolveRetryDue()` puts such an entry back
+  in the options page's auto-fetch when its last lookup is `RESOLVE_RETRY_MS`
+  (3 days) old, until `idTries` — counted by `applyChannelInfo()` on every
+  lookup that still leaves it with one identity, cleared once it pairs —
+  reaches `RESOLVE_MAX_TRIES` (3). A channel that really has no handle stops
+  being asked about after that. Entries recorded before `idTries` existed
+  start at 0, so the old backlog gets its retries right away.
+- **The sweep drops what's no longer due.** Every device's options page
+  queues the same retries, and the answers reach the other devices through
+  sync. Before each batch, `runSweep()` drops ids whose entry is gone or now
+  attempted-and-not-due, so two devices don't double what YouTube throttles
+  on.
+
+The review dialog splits the old "Lookup failed" group into **Only one ID
+found** (says when retries are pending) and **No sub count** (cosmetic), and
+pre-ticks neither. `datatools-test` covers the dialog, the retry gate (due,
+out of tries, tried recently) and the unrecorded headerless page, against a
+faked YouTube.
+

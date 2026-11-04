@@ -11,6 +11,8 @@ import { packageFiles, withUpdateUrl, zip, crx3, extensionId, updateManifest, co
 //     signature verifies over the zip, an ID derived from the key, every
 //     shipped file inside, update_url in its manifest (and not in the zip's),
 //     and an updates.xml that names that ID, version and file
+//   - an installed copy reads updates.xml before asking the browser, and asks
+//     only when it lists a newer version (the browser throttles its checks)
 //   - an unpacked copy (the laptop) reloads itself when its folder's manifest
 //     names another version: from options → Sync → Check now, and from the
 //     check every start of the worker makes; a check with nothing new is a
@@ -121,6 +123,60 @@ try {
   compareVersions("2.1.0", "2.0.13") > 0 && compareVersions("2.1", "2.1.0") === 0 && compareVersions("2.0.9", "2.0.10") < 0
     ? ok("versions compare numerically, part by part")
     : fail("compareVersions");
+
+  // ---- 1b. an installed copy asks the server before the browser ----
+  // The browser backs requestUpdateCheck() off after every check, so an hourly
+  // call that found nothing left even Check now answering "throttled". So the
+  // worker reads updates.xml itself and asks the browser only for a newer
+  // version. The real checkForUpdate() — lifted out of background.js by shape
+  // — against a fake browser and server, in Node.
+  const bg = readFileSync(join(EXT_PATH, "background/background.js"), "utf8");
+  const lift = (name) => {
+    const m = new RegExp(`\\n(async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}\\n`).exec(bg);
+    if (!m) throw new Error(`can't lift ${name}() out of background.js`);
+    return m[0];
+  };
+  const ID = extensionId(privateKey);
+  const check = async ({ running, served }) => {
+    let asked = 0;
+    const chrome = {
+      runtime: {
+        id: ID,
+        getManifest: () => ({ version: running, update_url: UPDATE_URL }),
+        requestUpdateCheck: async () => (asked++, { status: "update_available", version: served })
+      },
+      management: { getSelf: async () => ({ installType: "normal" }) }
+    };
+    const fetch = async (url) => {
+      if (served === null) throw new TypeError("Failed to fetch");
+      if (url !== UPDATE_URL) return { ok: false, text: async () => "" };
+      return { ok: true, text: async () => updateManifest({ id: ID, version: served, codebase: "https://example.invalid/x.crx", crx }) };
+    };
+    const run = new Function(
+      "chrome",
+      "fetch",
+      `const WORKER_VERSION_KEY = "bt_worker_version";${lift("checkForUpdate")}${lift("offeredVersion")}${lift("versionNewer")}return checkForUpdate();`
+    );
+    const res = await run(chrome, fetch);
+    return { status: res.status, version: res.version, asked };
+  };
+  const same = await check({ running: "2.1.3", served: "2.1.3" });
+  const newer = await check({ running: "2.1.9", served: "2.1.10" });
+  const older = await check({ running: "2.2.0", served: "2.1.10" });
+  const down = await check({ running: "2.1.3", served: null });
+  same.status === "no_update" && same.asked === 0 && older.status === "no_update" && older.asked === 0
+    ? ok("nothing newer on the server (same, or older): up to date, and the browser is never asked")
+    : fail(`no-op check: same=${JSON.stringify(same)} older=${JSON.stringify(older)}`);
+  newer.status === "update_available" && newer.asked === 1 && newer.version === "2.1.10"
+    ? ok("a newer version on the server (2.1.10 over 2.1.9, numerically): the browser is asked, once")
+    : fail(`newer version: ${JSON.stringify(newer)}`);
+  down.status === "unreachable" && down.asked === 0
+    ? ok("server unreachable: reported as such, and the browser isn't asked to fail the same way")
+    : fail(`unreachable: ${JSON.stringify(down)}`);
+  const other = updateManifest({ id: "a".repeat(32), version: "9.9.9", codebase: "https://example.invalid/x.crx", crx });
+  new Function(`${lift("offeredVersion")}return offeredVersion;`)()(other, ID) === ""
+    ? ok("an updates.xml that lists another extension offers this one nothing")
+    : fail("offeredVersion read another app's version");
 } catch (e) {
   fail(e.stack || String(e));
 }

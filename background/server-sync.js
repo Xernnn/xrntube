@@ -12,7 +12,8 @@
 //     channels:   { <key>: { name, ts, updated_at, mode, whitelist, … } },
 //     videos:     { <id>:  { title, ts, updated_at } },
 //     tombstones: { "channel:<key>" | "video:<id>": <deletedAtMs> },
-//     keywords:   { list: [{ p, re }], ts, durMinSec, durMaxSec, commentLimit, subsMaxAgeDays },
+//     keywords:   { list: [{ p, re }], ts, durMinSec, durMaxSec, commentLimit,
+//                   subsMaxAgeDays, subsHideWatched, subsHideUpcoming },
 //     allowlist:  { list: { <key>: { note, ts } }, ts },
 //     settings:   { <leaf>: bool } }   — the "What gets hidden" switches
 //
@@ -184,17 +185,20 @@
   // The keyword bounds that travel with the list. `commentLimit` is optional:
   // a record saved before it existed has none, which the options page reads as
   // the default (not as "no cap"), so it is carried only when present.
-  // `subsMaxAgeDays` (the Subscriptions feed's age limit) is carried only when
-  // present for a different reason: a device older than it drops it from
-  // what it pushes, and mergeValue() keeps this device's value only when the
-  // server's copy has none at all — a 0 filled in here would be a value, and
-  // whichever side changed it last would win, erasing the limit.
-  const KW_FIELDS = ["durMinSec", "durMaxSec", "commentLimit", "subsMaxAgeDays"];
+  // The Subscriptions feed's rules (`subsMaxAgeDays`, `subsHideWatched`,
+  // `subsHideUpcoming`) are carried only when present for a different reason:
+  // a device older than a field drops it from what it pushes, and mergeValue()
+  // keeps this device's value only when the server's copy has none at all — a
+  // 0 or false filled in here would be a value, and whichever side changed it
+  // last would win, erasing the rule everywhere.
+  const KW_FIELDS = ["durMinSec", "durMaxSec", "commentLimit", "subsMaxAgeDays", "subsHideWatched", "subsHideUpcoming"];
   function readKeywords(k) {
     if (!k || !Array.isArray(k.list)) return { list: [], ts: 0, durMinSec: 0, durMaxSec: 0 };
     const out = { list: k.list, ts: Number(k.ts) || 0, durMinSec: Number(k.durMinSec) || 0, durMaxSec: Number(k.durMaxSec) || 0 };
     if (k.commentLimit !== undefined) out.commentLimit = Math.max(0, Number(k.commentLimit) || 0);
     if (k.subsMaxAgeDays !== undefined) out.subsMaxAgeDays = Math.max(0, Math.floor(Number(k.subsMaxAgeDays) || 0));
+    if (k.subsHideWatched !== undefined) out.subsHideWatched = !!k.subsHideWatched;
+    if (k.subsHideUpcoming !== undefined) out.subsHideUpcoming = !!k.subsHideUpcoming;
     return out;
   }
   const kwId = (k) => (k.re ? "re:" : "") + k.p;
@@ -209,7 +213,9 @@
       // Only while it's on: off and absent are the same limit, and a record
       // without one then fingerprints exactly as it did before it existed
       // (no device reads that as a change and pushes, or pulls in full).
-      ...(subs > 0 ? { subsMaxAgeDays: subs } : {})
+      ...(subs > 0 ? { subsMaxAgeDays: subs } : {}),
+      ...(k.subsHideWatched ? { subsHideWatched: true } : {}),
+      ...(k.subsHideUpcoming ? { subsHideUpcoming: true } : {})
     });
   }
 
