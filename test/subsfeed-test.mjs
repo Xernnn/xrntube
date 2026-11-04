@@ -71,6 +71,9 @@ pages["m.youtube.com/feed/subscriptions"] = `<!doctype html><html><body><div cla
 </div></body></html>`;
 
 const present = (p, ids) => p.evaluate((list) => list.filter((id) => document.querySelector(`a[href="/watch?v=${id}"]`)), ids);
+// A removed tile takes its grid slot with it: an outer wrapper left with
+// nothing inside is a blank gap in the feed.
+const emptySlots = (p, sel) => p.evaluate((sel) => [...document.querySelectorAll(sel)].filter((w) => !w.querySelector('a[href^="/watch"]')).length, sel);
 const PHONE = ["phoneold001", "phonenew001", "phonewatch1", "phoneupcom1", "phonelate01"];
 const phone = await ctx.newPage();
 await phone.goto("https://m.youtube.com/feed/subscriptions");
@@ -86,6 +89,8 @@ const phoneLater = await present(phone, PHONE);
 JSON.stringify(phoneLater) === JSON.stringify(["phonenew001"])
   ? ok("…and a phone tile whose date arrives after it was first judged is judged again, and goes")
   : fail("phone late-dated tile: " + JSON.stringify(phoneLater));
+const phoneGaps = await emptySlots(phone, "ytm-rich-item-renderer");
+phoneGaps === 0 ? ok("…each with its whole grid slot — no empty ytm-rich-item-renderer left") : fail(`${phoneGaps} empty phone grid slot(s) left behind`);
 
 // ---- the desktop ----
 const lockupTile = (id, { meta, thumb = "" }) => `
@@ -126,6 +131,8 @@ const deskLeft = await present(desk, DESK);
 JSON.stringify(deskLeft) === JSON.stringify(["homeold0001", "desknew0001", "desklive001"])
   ? ok("desktop Subscriptions lockups: old, watched and upcoming go; recent and live stay — and the hidden Home page's old tile stays")
   : fail("desktop Subscriptions: " + JSON.stringify(deskLeft));
+const deskGaps = await emptySlots(desk, "ytd-rich-item-renderer");
+deskGaps === 0 ? ok("…each with its whole grid slot — no empty ytd-rich-item-renderer left") : fail(`${deskGaps} empty desktop grid slot(s) left behind`);
 
 await ctx.close();
 console.log("\nDONE");

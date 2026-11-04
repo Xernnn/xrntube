@@ -1501,13 +1501,20 @@
   // byline, and "1 Year Challenge" reads as a year old (the unit table
   // matches anywhere, years first). So its text is left out, as page-hook.js
   // leaves out the same part of the JSON.
+  const CHANNEL_NAME_LINK = 'a[href^="/@"], a[href^="/channel/"]';
   function tileAgeText(el, videoTitle) {
     const scopes = el.querySelectorAll ? el.querySelectorAll(AGE_SCOPE_SEL) : [];
     if (scopes.length) {
+      // The link's own text is skipped, not cut out of the rest by value: a
+      // channel called "a" would take every "a" out of "2 days ago". (No
+      // cloneNode either — a clone of a YouTube element runs its component.)
       return Array.from(scopes, (n) => {
-        let t = n.textContent || "";
-        for (const a of n.querySelectorAll('a[href^="/@"], a[href^="/channel/"]')) {
-          if (a.textContent) t = t.split(a.textContent).join(" ");
+        if (!n.querySelector(CHANNEL_NAME_LINK)) return n.textContent || "";
+        const walk = document.createTreeWalker(n, NodeFilter.SHOW_TEXT);
+        let t = "";
+        for (let x = walk.nextNode(); x; x = walk.nextNode()) {
+          const a = x.parentElement && x.parentElement.closest(CHANNEL_NAME_LINK);
+          t += a && n.contains(a) ? " " : x.nodeValue;
         }
         return t;
       }).join(" ");
@@ -1543,7 +1550,7 @@
   ].join(",");
   function tileWatchedPct(el) {
     const bar = el.querySelector(WATCHED_BAR_SEL);
-    const m = bar && /width:\s*([\d.]+)%/.exec(bar.getAttribute("style") || "");
+    const m = bar && /(?:^|;)\s*width:\s*([\d.]+)%/.exec(bar.getAttribute("style") || ""); // not max-/min-width
     return m ? Math.min(100, Number(m[1])) : null;
   }
   // A premiere or scheduled stream that hasn't started. The older renderers'

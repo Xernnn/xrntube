@@ -866,6 +866,7 @@ function foldDuplicateChannels(channels) {
       folded.push(k);
     }
     for (const f of ["handle", "ucid"]) if (!m[f]) delete m[f];
+    if (!knowsOneIdentity(keep, m)) delete m.idTries; // paired up by the fold
     m.updated_at = now;
     channels[keep] = m;
   }

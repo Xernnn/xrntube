@@ -79,6 +79,7 @@ const liftedInfo = [
    const filterRec = (window.__btFilters = { durMinSec: 0, durMaxSec: 0, subsMaxAgeDays: 0, subsHideWatched: false, subsHideUpcoming: false });
    const readDurationSec = () => null;`,
   grabFn("subsRulesOn", shared, "shared/block-logic.js"),
+  grabConst("CHANNEL_NAME_LINK"),
   grabFn("tileAgeText"),
   grabConst("SUBS_FEED_PAGE_SEL"),
   grabFn("onSubsFeed"),
@@ -377,6 +378,20 @@ const namedAge = await infoFor(
 namedAge && Math.round(namedAge.ageDays) === 2
   ? ok('a channel called "1 Year Challenge" doesn\'t date its tile a year old: the byline link is left out of the date text')
   : fail(`named-channel tile dated ${JSON.stringify(namedAge)}`);
+// …and the link's own text is what's skipped — not every occurrence of the
+// name: a channel called "a" must not take the a's out of "2 days ago".
+const shortName = await infoFor(
+  `<ytd-rich-item-renderer>
+     <a href="/watch?v=shortname01">An upload</a>
+     <yt-content-metadata-view-model>
+       <div><span><a href="/@a">a</a></span></div>
+       <div><span>24K views</span><span>2 days ago</span></div>
+     </yt-content-metadata-view-model>
+   </ytd-rich-item-renderer>`
+);
+shortName && Math.round(shortName.ageDays) === 2
+  ? ok('a channel called "a" still leaves its tile dated 2 days: only the link\'s own text is left out')
+  : fail(`short-named channel's tile dated ${JSON.stringify(shortName)}`);
 
 // The other two Subscriptions rules read the thumbnail: how far the progress
 // bar runs, and whether the time badge says the video hasn't aired. Each in
@@ -409,10 +424,14 @@ const thumbs = {
   lockupUpcoming: await thumbIn('<yt-thumbnail-bottom-overlay-view-model><badge-shape><div>Upcoming</div></badge-shape></yt-thumbnail-bottom-overlay-view-model>'),
   lockupLive: await thumbIn('<yt-thumbnail-bottom-overlay-view-model><badge-shape><div>LIVE</div></badge-shape></yt-thumbnail-bottom-overlay-view-model>'),
   lockupLength: await thumbIn('<yt-thumbnail-bottom-overlay-view-model><badge-shape><div>12:04</div></badge-shape></yt-thumbnail-bottom-overlay-view-model>'),
+  maxWidthOnly: await thumbIn(
+    '<ytm-thumbnail-overlay-resume-playback-renderer><div class="thumbnail-overlay-resume-playback-progress" style="max-width:100%"></div></ytm-thumbnail-overlay-resume-playback-renderer>'
+  ),
   phoneUpcoming: await thumbIn('<ytm-thumbnail-overlay-time-status-renderer data-style="UPCOMING"><badge-shape>Upcoming</badge-shape></ytm-thumbnail-overlay-time-status-renderer>')
 };
-thumbs.oldWatched.watchedPct === 100 && thumbs.lockupWatched.watchedPct === 37 && thumbs.phoneWatched.watchedPct === 95
-  ? ok("how far you've watched, off all three progress bars (100%, 37%, 95%)")
+thumbs.oldWatched.watchedPct === 100 && thumbs.lockupWatched.watchedPct === 37 && thumbs.phoneWatched.watchedPct === 95 &&
+thumbs.maxWidthOnly.watchedPct === null
+  ? ok("how far you've watched, off all three progress bars (100%, 37%, 95%), and a max-width isn't a width")
   : fail("watched progress: " + JSON.stringify(thumbs));
 thumbs.oldUpcoming.isUpcoming && thumbs.lockupUpcoming.isUpcoming && thumbs.phoneUpcoming.isUpcoming &&
 !thumbs.lockupLive.isUpcoming && !thumbs.lockupLength.isUpcoming && thumbs.lockupLength.watchedPct === null
