@@ -35,6 +35,23 @@ is a `[unit-spellings-across-~15-languages, days]` table, anchored by the
 preceding `<number>` so a short token can't match inside a word
 (`locale-age-test.mjs` guards it).
 
+## The map
+
+What gets hidden shows a map of YouTube above the list of switches. Both are the
+same switches: the map writes through `writeSettings()` and is restyled, never
+rebuilt, by `renderSettings()`, so a toggle keeps keyboard focus. Three spots are
+drawn as "Changed" rather than "Gone" (`MAP_CHANGES`), because they alter YouTube
+without removing anything.
+
+The list stays under the map on purpose: group switches live there, and every test
+that flips a switch reaches it through `.switch[data-key=…]`. The `desc` of a group
+or a switch in `SETTING_GROUPS` isn't shown on the page, but the search there reads
+it, so a word only a description has still finds the switch.
+
+Anything removed is hatched red, on the map, on the Block button and on a video-only
+tag, and a blocked name is struck through. Keep to that one idea rather than adding
+wording: it's what lets the page drop its explanations.
+
 ## Right-click to block
 
 `background.js` registers two `chrome.contextMenus` items on youtube.com

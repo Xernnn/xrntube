@@ -4,39 +4,54 @@
    the options page beside it was themed. */
 :root {
   color-scheme: light dark;
-  --bg: #ffffff;
+  --bg: #edf1f6;
   --panel: #ffffff;
-  --panel-2: #f7f8f9;
-  --ink: #0f0f0f;
-  --ink-2: #5b6270;
-  --ink-3: #868d99;
-  --line: #e2e5ea;
-  --accent: #c00;
-  --accent-ink: #fff;
-  --accent-hover: #a30000;
-  --neutral-btn: #555;
-  --neutral-btn-hover: #3a3a3a;
-  --focus: #2f6fed;
+  --panel-2: #f5f7fa;
+  --ink: #15233f;
+  --ink-2: #4a5a78;
+  --ink-3: #5e6e8c;
+  --line: #15233f;
+  --line-2: #dde4ee;
+  --accent: #c8321f;
+  --focus: #1d5fd1;
   --radius: 10px;
   --radius-sm: 6px;
+  --hatch-a: #fce3de;
+  --hatch-b: #fff5f3;
+  --gone: #a32414;
+  --gone-line: #c8321f;
+  --logo: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath stroke='%2315233F' d='M8 5.5v13L18.5 12 8 5.5Z'/%3E%3Cpath stroke='%23C8321F' d='M4 4l16 16'/%3E%3C/svg%3E");
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1c1f24;
-    --panel: #21252b;
-    --panel-2: #262a30;
-    --ink: #e9ecf1;
-    --ink-2: #a3abb8;
-    --ink-3: #7c8492;
-    --line: #2c3138;
-    --accent: #ff4d4d;
-    --accent-ink: #1c1f24;
-    --accent-hover: #ff6b6b;
-    --neutral-btn: #39404a;
-    --neutral-btn-hover: #454d59;
-    --focus: #6ea0ff;
+    --bg: #0d1422;
+    --panel: #141d30;
+    --panel-2: #1a2539;
+    --ink: #e6ecf7;
+    --ink-2: #aebbd3;
+    --ink-3: #93a1bc;
+    --line: #5d7099;
+    --line-2: #26324b;
+    --accent: #ff8a78;
+    --focus: #8fb4ff;
+    --hatch-a: #3a1b1b;
+    --hatch-b: #2a1618;
+    --gone: #ffa394;
+    --gone-line: #ff8a78;
+    --logo: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath stroke='%23E6ECF7' d='M8 5.5v13L18.5 12 8 5.5Z'/%3E%3Cpath stroke='%23FF8A78' d='M4 4l16 16'/%3E%3C/svg%3E");
   }
+}
+
+/* MiSans Latin by Xiaomi, the official variable cut, shipped as released:
+   https://hyperos.mi.com/font. Its terms ask for a credit inside the software
+   (options, foot of the side nav). It stops at Latin, so a channel name in CJK,
+   Thai or Arabic falls through to the system font. */
+@font-face {
+  font-family: "MiSans Latin VF";
+  src: url("../fonts/MiSansLatinVF.woff2") format("woff2");
+  font-weight: 150 700;
+  font-display: swap;
 }
 
 * { box-sizing: border-box; }
@@ -45,7 +60,7 @@ body {
   width: 320px;
   margin: 0;
   padding: 12px;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: "MiSans Latin VF", system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
   color: var(--ink);
   background: var(--bg);
 }
@@ -64,10 +79,15 @@ header h1 {
   margin: 0;
 }
 
-.logo { font-size: 18px; }
+.logo {
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  background: var(--logo) center / contain no-repeat;
+}
 
 .card {
-  border: 1px solid var(--line);
+  border: 1.5px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel);
   padding: 10px;
@@ -112,26 +132,27 @@ header h1 {
 
 .block-btn {
   align-self: flex-start;
-  background: var(--accent);
-  color: var(--accent-ink);
-  border: none;
-  border-radius: 18px;
+  border-radius: var(--radius-sm);
   padding: 6px 14px;
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
 }
 
-.block-btn:hover { background: var(--accent-hover); }
-
-.block-btn:disabled {
-  background: var(--ink-3);
-  color: var(--panel);
-  cursor: default;
+.block-btn:not(.secondary) {
+  border: 1.5px dashed var(--gone-line);
+  background: repeating-linear-gradient(135deg, var(--hatch-a) 0 5px, var(--hatch-b) 5px 10px);
+  color: var(--gone);
 }
 
-.block-btn.secondary { background: var(--neutral-btn); color: #fff; }
-.block-btn.secondary:hover { background: var(--neutral-btn-hover); }
+.block-btn.secondary { border: 1.5px solid var(--line); background: var(--panel); color: var(--ink); }
+
+.block-btn:disabled {
+  border-color: var(--line-2);
+  background: var(--line-2);
+  color: var(--ink-3);
+  cursor: default;
+}
 
 /* One line on this tab's blocking (popup.js → renderHealth). Quiet when all
    is well; the accent colour only when the early filter looks broken. */
@@ -165,7 +186,7 @@ header h1 {
   cursor: pointer;
 }
 
-.secondary-btn:hover { background: var(--line); }
+.secondary-btn:hover { background: var(--line-2); }
 
 button:focus-visible {
   outline: 2px solid var(--focus);

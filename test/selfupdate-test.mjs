@@ -35,6 +35,22 @@ const dir = mkdtempSync(join(tmpdir(), "xt-update-"));
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const UPDATE_URL = "https://example.invalid/xrntube/update/updates.xml";
 const shipped = packageFiles(EXT_PATH);
+// A stylesheet that names a file the package left out fails with no error: the
+// page just falls back. INCLUDE is a fixed list, so a new folder is easy to miss.
+{
+  const names = new Set(shipped.map(([path]) => path));
+  const missing = [];
+  for (const [path, data] of shipped) {
+    if (!path.endsWith(".css")) continue;
+    for (const [, url] of data.toString("utf8").matchAll(/url\(["']?([^"')]+)["']?\)/g)) {
+      if (/^(data:|https?:|#)/.test(url)) continue;
+      const wanted = new URL(url, "x:/" + path).pathname.slice(1);
+      if (!names.has(wanted)) missing.push(`${path} -> ${wanted}`);
+    }
+  }
+  if (missing.length) fail("a shipped stylesheet loads a file the package leaves out: " + missing.join(", "));
+  else ok("every file a shipped stylesheet loads is in the package");
+}
 const zipBuf = zip(withUpdateUrl(shipped, UPDATE_URL));
 const crx = crx3(zipBuf, privateKey);
 

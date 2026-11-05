@@ -11,7 +11,7 @@ import { deflateRawSync, crc32 } from "zlib";
 import { createHash, createPublicKey, createSign } from "crypto";
 
 // Only what the browser runs: no tests, server, docs or node_modules.
-export const INCLUDE = ["manifest.json", "background", "content", "shared", "popup", "options", "icons"];
+export const INCLUDE = ["manifest.json", "background", "content", "shared", "popup", "options", "icons", "fonts"];
 
 // [[path inside the package, bytes]] for every shipped file, in a stable order.
 export function packageFiles(root) {

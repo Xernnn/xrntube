@@ -391,6 +391,10 @@ extension. Some changes need a page refresh.
 
 ---
 
+The page opens with a map of YouTube: click a part to hide it or bring it back.
+Hatched red is gone, solid is changed, and plain is kept. The full list of switches
+is under the map and stays in step with it.
+
 ## Sync between browsers
 
 Your blocklist lives in the browser. To keep several browsers on one list —
@@ -442,6 +446,10 @@ remote config. The only outbound requests are to youtube.com (pages you were
 visiting anyway, plus the channel-info scrape) and, if you set it up, to your
 own sync server, which is also where a browser that installed the `.crx`
 looks for new versions.
+
+The extension's own pages use [MiSans](https://hyperos.mi.com/font) by Xiaomi,
+free for commercial use and embedded here under its terms. The file ships with
+the extension, so no font is fetched from anywhere.
 
 ---
 

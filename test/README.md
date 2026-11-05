@@ -39,7 +39,7 @@ Each `*-test.mjs` is standalone: it launches its own persistent context
 `FAIL: …` lines, and sets `process.exitCode` non-zero on any failure.
 `EXT_PATH` is derived from the file's location, so the folder can move.
 
-Five files don't follow that shape, and all five **run offline**:
+Six files don't follow that shape, and all six **run offline**:
 
 - `locale-age-test.mjs` and `contextmenu-test.mjs` are **pure Node, no
   browser** — they slice `AGE_UNITS` + `parseAgeDays()` out of
@@ -58,6 +58,8 @@ Five files don't follow that shape, and all five **run offline**:
   page isn't YouTube. On a YouTube page, YouTube's own components upgrade an
   element like `ytd-video-renderer` and wipe its children, so fixtures there
   use an unregistered name (`bt-test-tile`) or a plain `div`.
+- `look-test.mjs` loads the **extension** and only opens its own options page
+  and popup: the map, and what a palette or a phone breaks without an error.
 - `subsfeed-test.mjs` loads the **extension** but never reaches YouTube:
   a Playwright route answers every `www.`/`m.youtube.com` request with a
   synthetic page, so the real content.js scrubs it as it would YouTube. Real
@@ -88,6 +90,11 @@ have seen as few as 1 request. Observed failing once in a four-file sequence
 and passing on the same sequence immediately after. Re-run before believing
 it, and check *which* assertion failed — the curb's own assertions (0 further
 fetches, sentinel gone, notice present) failing would be a real regression.
+
+`settings-test.mjs` — "a Shorts-only search kept paging" allows 4 pages in 9s, and
+YouTube has served 5 once, passing on the retry. Three 30s runs straight after
+stopped at 2 or 3 pages and stayed stopped. The real bug was 6 or 7 pages in 9s and
+never stopping, so count the pages over a longer wait before believing it.
 
 ## What isn't covered
 
@@ -122,6 +129,7 @@ personal data, and gitignored).
 | `datalayer-test` | layer 0's **filter**, offline: a blocked channel's renderer removed and its wrapper spliced out, a description `@mention` left alone, `UC…`-keyed and `@handle`-keyed entries both matching one `browseEndpoint`, both block modes, the allow-list, blocked video ids, keyword + duration bounds, a shelf taken by its header's owner (FULL only), a rich grid's wrapper pruned, and an empty blocklist leaving the response byte-identical; plus the paging brakes — an exhausted surface losing its continuation while a normal response keeps it, and `noteJudgedRound()`'s own thresholds (lifted from content.js: three empty responses stop it, one survivor resets it, a small batch counts for nothing, a watch page never counts at all); and the age rule against Shorts — a dateless Short and a 3-week-old video go while today's upload stays, a plain video-only block still takes Shorts, and a whitelisted Short survives; a playlist lockup taken by `contentType` with its byline at the real thirteen-level depth, which is what the fixture exists to prove; the `hideAutoChapters` strip (every surface of generated chapters goes, a creator's chapters stay byte-identical, off means off); and `/get_watch` served in 7-byte chunks — the player part streams through byte-identical, the watch-next part loses a blocked related tile and its auto chapters; and the Subscriptions age limit — a response stamped `browse_id` `FEsubscriptions` loses its videos of 7+ days while recent, undated, Short and never-block ones stay, the same response stamped Home (or unstamped) keeps everything, and a 0 limit is off; a lockup's length off its bottom-overlay badge and its date off the second metadata row, in the live shape (a length cap and a channel age rule now reach lockups in this layer), without a channel name like "1 Year Challenge" dating it; and the Subscriptions watched (≥90%) and upcoming rules in both shapes, off on Home, each its own switch; the round counter treats a Short the Shorts switch hides as gone (three all-Shorts responses end the paging, not with the switch off, not with one ordinary survivor), and a Short sent as a plain `videoRenderer` (`reelWatchEndpoint`) is a Short to the hook too |
 | `datalayer-live-test` | layer 0's **wiring**, live: the `world: "MAIN"` script actually loads, installs both hooks, leaks no `XrnTube` global, neither world throws on startup, and a real `/youtubei/v1/search` continuation gets renderers described and removed; the popup's health line (`GET_PAGE_HEALTH`, asked of the top frame the way the popup asks) reports the hook present, tiles removed before render, not degraded. Exists because the DOM scrub covers for a dead layer 0 — every other test passes without it |
 | `tilescope-test` | which channels a tile *belongs* to: `tileChannels()` lifted out of content.js and run against synthetic trees on `about:blank` — a search result's description `@mention` is not its uploader, byline collaborators all count, an unhydrated or unknown tile shape falls back to the whole tile, and search's watch card is attributed to its header channel rather than to its first video row; plus what `extractInfo()` makes of a tile — a watch card carrying a “play all” link is neither a video nor a playlist, while a real playlist tile still is, and a Shorts tile is flagged as a Short; a tile inside `ytd-browse[page-subtype="subscriptions"]` is marked on the Subscriptions feed and dated with no channel age rule anywhere, the same tile on Home is neither, and with the limit off nothing is asked; a byline's channel link left out of the date text (a channel called "a" still leaves "2 days ago" whole); and watch progress and "upcoming" read off all three markups' thumbnails (old desktop, lockup, phone), a LIVE or length badge not upcoming, a `max-width` not read as progress, the bar not read with its rule off |
+| `look-test` | how the options page and popup are built, **offline**: one map spot per switch (fails when a new setting has no spot), map and list in step both ways, focus kept through a toggle, a search hiding the map and still reading the descriptions the page doesn't show, the Danger zone keeping its warning and counts, Sync's buttons hidden with nothing connected, the address box matching the other fields, no sideways scroll at phone width with a long progress line, all six pages in the phone's strip, 4.5:1 text in light and dark (grey, hatched, solid, and text on the danger red), and a hovered popup button staying readable |
 | `subsfeed-test` | the Subscriptions rules through the real extension's DOM scrub, **offline** (a route serves synthetic youtube.com pages): on the phone an old, a watched and an upcoming tile go while a recent one stays, and a tile whose date arrives after it was first judged goes too (the phone's late-hydration re-check — fails without the `ytm-*` tags in `VIDEO_RECHECK_SELECTOR`); on the desktop the same on lockups, judged by their own `ytd-browse`, with a hidden Home page's old tile left alone; and no removal leaves an empty grid slot behind |
 | `posts-playlists-test` | a blocked channel's playlists gone from its own Playlists tab + playlist search (both modes); its community posts gone from the Posts tab; and search's channel watch card — a channel card carrying a "play all" link — kept under a video-only block with its video rows emptied, gone under a full one |
 | `members-test` | Join button, members-only tiles, Membership tab all gone; toggle off restores |

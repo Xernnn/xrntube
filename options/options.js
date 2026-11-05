@@ -273,7 +273,6 @@ function renderStats(allChannels, allVideos) {
   $("stat-subs").textContent = allChannels.length
     ? `${known.toLocaleString()} / ${allChannels.length.toLocaleString()}`
     : "0";
-  $("stat-subs-bar").style.width = allChannels.length ? `${(100 * known) / allChannels.length}%` : "0";
   $("stat-reach").textContent = subSum ? fmtCount(subSum) : "—";
 }
 
@@ -388,16 +387,13 @@ function renderList(listEl, emptyEl, moreEl, entries, build, key) {
 
 // ---------- row pieces ----------
 
-// A coloured initial, stable per channel — a list of 5,000 names is far
-// easier to scan with something to anchor the eye.
-function avatarFor(label, seed) {
-  let hash = 0;
-  for (const ch of seed) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
+// An initial: a list of 5,000 names is far easier to scan with something to
+// anchor the eye.
+function avatarFor(label) {
   const initial = [...String(label).replace(/^@/, "").trim()][0] || "?";
   return h("span", {
     class: "avatar",
     "aria-hidden": "true",
-    style: `background:hsl(${Math.abs(hash) % 360} 52% 44%)`,
     text: initial
   });
 }
@@ -519,7 +515,7 @@ function buildChannelRow(id, entry) {
 
   const top = h("div", { class: "row-top" });
   if (selectMode) top.appendChild(rowCheck(key, li));
-  top.appendChild(avatarFor(label, id));
+  top.appendChild(avatarFor(label));
 
   // Two lines, not one: the name reads on its own, and everything that used to
   // compete with it (id, sub count, block mode, local-only) drops to a quiet
@@ -1001,7 +997,7 @@ function renderAllowlist() {
       return h(
         "li",
         null,
-        avatarFor(name || key, key),
+        avatarFor(name || key),
         h("div", { class: "row-main" }, h("div", { class: "item-name", text: name || key }), name && copyable(key)),
         h("button", {
           class: "unblock-btn",
@@ -2053,6 +2049,8 @@ async function writeSettings(next) {
 
 function matchesSettingFilter(group, item) {
   if (!settingsFilter) return true;
+  // The descriptions aren't on the page, but a search still reads them: "pop-out"
+  // has to find the picture-in-picture switch.
   const hay = `${group.label} ${group.desc} ${item.label} ${item.desc}`.toLowerCase();
   return hay.includes(settingsFilter);
 }
@@ -2069,6 +2067,143 @@ function buildToggle(className, checked, onChange, key) {
   slider.className = "slider";
   label.append(cb, slider);
   return { label, cb };
+}
+
+// What the map's switches change on YouTube rather than removes, so it never
+// draws them struck out.
+const MAP_CHANGES = new Set(["logoToSubscriptions", "pipButton", "commentsTwoColumn"]);
+
+// The same switches as the list, each drawn where it sits on YouTube. Built once
+// and only restyled afterwards, so a toggle keeps keyboard focus. Every leaf of
+// SETTING_GROUPS needs a spot here (look-test asserts it).
+function buildSettingsMap() {
+  const spot = (key, label, cls) =>
+    h("button", {
+      class: "xm-hs" + (cls ? " " + cls : ""),
+      type: "button",
+      role: "switch",
+      text: label,
+      dataset: { map: key },
+      onclick: () => writeSettings({ ...currentSettings, [key]: currentSettings[key] === false })
+    });
+  const fixed = (cls) => h("span", { class: "xm-fix" + (cls ? " " + cls : ""), "aria-hidden": "true" });
+  const div = (cls, ...kids) => h("div", { class: cls }, ...kids);
+  const map = (cls, title, ...kids) => h("figure", { class: "xm-map " + cls }, h("figcaption", { text: title }), ...kids);
+  const key = (cls, text) => h("span", { class: "xm-key" }, h("i", { class: cls }), text);
+
+  $("settings-map").append(
+    div("xm-legend", key("gone", "Gone"), key("changed", "Changed"), key("kept", "Kept")),
+    div(
+      "xm-grid",
+      map(
+        "xm-home",
+        "Home",
+        div(
+          "xm-row",
+          spot("logoToSubscriptions", "Logo to Subs", "xm-fit"),
+          fixed(),
+          spot("hideVoiceSearch", "Mic", "xm-fit"),
+          spot("mastheadCreate", "Create", "xm-fit"),
+          spot("mastheadNotifications", "Bell", "xm-fit"),
+          spot("accountButtonOnHover", "Avatar", "xm-fit")
+        ),
+        div(
+          "xm-body",
+          div(
+            "xm-col",
+            spot("sidebarHome", "Home", "xm-grow xm-left"),
+            spot("sidebarShorts", "Shorts", "xm-grow xm-left"),
+            spot("sidebarExplore", "Explore", "xm-grow xm-left"),
+            spot("sidebarMoreFromYouTube", "More from YouTube", "xm-grow xm-left"),
+            spot("sidebarReportHistory", "Report history", "xm-grow xm-left"),
+            spot("sidebarFooter", "Footer", "xm-grow xm-left")
+          ),
+          div(
+            "xm-col",
+            spot("hideSearchSuggestions", "Suggestions"),
+            spot("redirectHomepage", "Home feed", "xm-grow"),
+            spot("shortsFeedTiles", "Shorts tiles", "xm-grow")
+          )
+        )
+      ),
+      map(
+        "xm-watch",
+        "Watch",
+        div(
+          "xm-page",
+          div(
+            "xm-col",
+            div(
+              "xm-player",
+              spot("removeEndScreen", "End screen", "xm-grow"),
+              div("xm-row", spot("hideAutoChapters", "Auto chapters", "xm-grow"), spot("pipButton", "PiP", "xm-fit"))
+            ),
+            div(
+              "xm-wrap",
+              spot("actionShare", "Share"),
+              spot("actionSave", "Save"),
+              spot("actionDownload", "Download"),
+              spot("actionClip", "Clip"),
+              spot("actionThanks", "Thanks"),
+              spot("actionMore", "More …")
+            ),
+            div(
+              "xm-row",
+              spot("hideAskYouTube", "Ask", "xm-grow"),
+              spot("hideVideoSummaries", "Summaries", "xm-grow"),
+              spot("descriptionInfocards", "Channel card", "xm-grow")
+            ),
+            spot("commentsTwoColumn", "Comments in two columns", "xm-grow")
+          ),
+          spot("removeRelated", "Related")
+        )
+      ),
+      map(
+        "xm-channel",
+        "Channel",
+        fixed("xm-banner"),
+        div(
+          "xm-row",
+          fixed("xm-face"),
+          fixed("xm-line"),
+          spot("membershipPrices", "Prices", "xm-fit"),
+          spot("joinButton", "Join", "xm-fit")
+        ),
+        div(
+          "xm-wrap",
+          spot("shortsChannelTab", "Shorts"),
+          spot("tabPosts", "Posts"),
+          spot("tabShows", "Shows"),
+          spot("tabPodcasts", "Podcasts"),
+          spot("tabStore", "Store"),
+          spot("membershipTab", "Membership")
+        ),
+        div("xm-tiles", fixed(), spot("membersOnlyTiles", "Members-only"), fixed())
+      ),
+      map(
+        "xm-else",
+        "Elsewhere",
+        spot("shortsPlayer", "Shorts player", "xm-grow"),
+        spot("blockInEmbeds", "Embeds on other sites", "xm-grow")
+      )
+    ),
+    h("h2", { class: "xm-listhead", text: "All switches" })
+  );
+}
+
+function updateSettingsMap() {
+  const el = $("settings-map");
+  // A search narrows the list, and a map with everything still on it would hide
+  // the matches below the fold.
+  el.hidden = !!settingsFilter;
+  for (const spot of el.querySelectorAll("[data-map]")) {
+    const on = currentSettings[spot.dataset.map] !== false;
+    const changes = MAP_CHANGES.has(spot.dataset.map);
+    spot.classList.toggle("gone", on && !changes);
+    spot.classList.toggle("changed", on && changes);
+    spot.classList.toggle("kept", !on);
+    spot.setAttribute("aria-checked", String(on));
+  }
 }
 
 function renderSettings() {
@@ -2092,9 +2227,7 @@ function renderSettings() {
     title.className = "sgroup-title";
     const h2 = document.createElement("h2");
     h2.textContent = group.label;
-    const sub = document.createElement("p");
-    sub.textContent = group.desc;
-    title.append(h2, sub);
+    title.append(h2);
 
     // The master reflects the group's leaves: on when all are on, off when
     // none are, mixed otherwise. Clicking it sets every leaf in the group.
@@ -2126,10 +2259,7 @@ function renderSettings() {
       const lab = document.createElement("div");
       lab.className = "setting-label";
       lab.textContent = item.label;
-      const desc = document.createElement("div");
-      desc.className = "setting-desc";
-      desc.textContent = item.desc || "";
-      text.append(lab, desc);
+      text.append(lab);
       const { label: sw } = buildToggle(
         "switch",
         currentSettings[item.key] !== false,
@@ -2148,11 +2278,13 @@ function renderSettings() {
   const total = SETTING_GROUPS.reduce((n, g) => n + g.items.length, 0);
   const active = SETTING_GROUPS.reduce((n, g) => n + g.items.filter((it) => currentSettings[it.key] !== false).length, 0);
   $("nav-settings").textContent = `${active}/${total}`;
+  updateSettingsMap();
 }
 
 async function initSettings() {
   const res = await chrome.storage.sync.get({ [SETTINGS_KEY]: null });
   currentSettings = resolveSettings(res[SETTINGS_KEY]);
+  buildSettingsMap();
   renderSettings();
 
   $("settings-search").addEventListener("input", (e) => {
@@ -2308,6 +2440,9 @@ async function renderSyncStatus() {
 
 function initSync() {
   renderSyncStatus();
+  // Only on arrival, not on every storage change: a render clears the password
+  // box, and a background sync would wipe one you were halfway through typing.
+  document.querySelector('.page-tab[data-page="sync"]').addEventListener("click", renderSyncStatus);
 
   const connect = async () => {
     const url = sync.url.value.trim();
