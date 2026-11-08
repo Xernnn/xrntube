@@ -1,4 +1,8 @@
-# XrnTube
+<p align="center">
+  <img src="icons/icon128.png" width="72" height="72" alt="">
+</p>
+
+<h1 align="center">XrnTube</h1>
 
 A browser extension that **deletes** blocked YouTube channels and videos from
 your feed, search results and recommendations. Not a greyed-out "this channel
