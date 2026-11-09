@@ -48,7 +48,9 @@ per blocklist entry, while
 always present regardless of the blocklist. Every call clears all dynamic
 rules and re-adds from scratch, so the ID ranges only need to not collide.
 Rules are **capped** (`DNR_MAX_VIDEO_RULES = 800` — regex-filtered, under
-Chrome's 1000 regex-rule limit; `DNR_MAX_CHANNEL_RULES = 3000` — url-filtered)
+Chrome's 1000 regex-rule limit; `DNR_MAX_CHANNEL_RULES = 3000` — url-filtered,
+`||youtube.com/@foo^`: anchored at the host and closed by `^`, since a bare
+`youtube.com/@foo` is a substring and redirected `@foobar` and `@foo.tv` too)
 and go to the *most recently blocked* entries (`ts` desc); DNR is only the
 no-flash optimisation for direct navigation, and `content.js`'s
 `checkCurrentPageAndRedirect()` / `yt-navigate-start` guards still cover

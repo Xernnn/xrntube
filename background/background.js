@@ -537,7 +537,11 @@ async function rebuildDnrRules(state) {
       priority: 1,
       action: { type: "redirect", redirect: { url: SAFE_LANDING_URL } },
       condition: {
-        urlFilter: "youtube.com" + path,
+        // `||` anchors the host (youtube.com, www., m.), `^` the end of the
+        // key: a slash, a query or the end of the URL, never another letter,
+        // digit, `.`, `-` or `_`. A bare "youtube.com/@foo" is a substring
+        // match, and redirected @foobar, @foo.tv and @foo-bar too.
+        urlFilter: "||youtube.com" + path + "^",
         resourceTypes: ["main_frame"]
       }
     });
