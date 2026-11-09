@@ -214,6 +214,30 @@ async function init() {
   });
 }
 
+// Firefox (Zen) treats an MV3 extension's host permissions as optional: they
+// can be withheld at install or switched off later in about:addons, and then
+// the content scripts never run. Chromium always grants them, so this stays
+// hidden there. The request has to come from the click itself.
+const YOUTUBE_ORIGINS = ["*://*.youtube.com/*"];
+async function checkHostAccess() {
+  const box = document.getElementById("host-access");
+  if (!chrome.permissions || !chrome.permissions.contains) return;
+  let granted = true;
+  try {
+    granted = await chrome.permissions.contains({ origins: YOUTUBE_ORIGINS });
+  } catch {}
+  box.hidden = granted;
+}
+document.getElementById("grant-btn").addEventListener("click", () => {
+  chrome.permissions.request({ origins: YOUTUBE_ORIGINS }).then(
+    (ok) => {
+      if (ok) document.getElementById("host-access").hidden = true;
+    },
+    () => {}
+  );
+});
+checkHostAccess();
+
 document.getElementById("manage-btn").addEventListener("click", () => {
   chrome.runtime.openOptionsPage();
 });

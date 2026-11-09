@@ -50,7 +50,8 @@ await pop.waitForTimeout(1200);
 const counts = await pop.evaluate(() => ({
   channels: document.getElementById("channel-count").textContent,
   videos: document.getElementById("video-count").textContent,
-  noTarget: !document.getElementById("no-target").hidden
+  noTarget: !document.getElementById("no-target").hidden,
+  hostAccessAsked: !document.getElementById("host-access").hidden
 }));
 counts.channels === "1" && counts.videos === "1"
   ? ok(`popup reports the real blocklist size (${counts.channels} channels, ${counts.videos} videos)`)
@@ -60,6 +61,11 @@ counts.channels === "1" && counts.videos === "1"
 counts.noTarget
   ? ok("popup shows the 'open a YouTube page' state when the tab isn't YouTube")
   : fail("popup did not fall back to the no-target state off YouTube");
+// Chromium grants host_permissions at install; only Firefox can withhold
+// them, so the "Allow on YouTube" notice must never show here.
+!counts.hostAccessAsked
+  ? ok("no 'Allow on YouTube' notice where YouTube access is granted")
+  : fail("popup asks for YouTube access although Chromium granted it");
 
 // ---- "Manage blocklist" opens the options page ----
 // openOptionsPage() focuses an already-open options tab rather than adding a

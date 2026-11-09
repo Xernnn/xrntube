@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "XrnTube — Channel & Video Blocker",
-  "version": "2.1.6",
+  "version": "2.1.7",
   "description": "Permanently remove blocked YouTube channels and videos from recommendations, search, and feeds. Syncs across your browsers through your own server.",
   "permissions": [
     "storage",
@@ -14,7 +14,12 @@
     "*://*.youtube.com/*"
   ],
   "background": {
-    "service_worker": "background/background.js"
+    "service_worker": "background/background.js",
+    "scripts": [
+      "shared/constants.js",
+      "background/server-sync.js",
+      "background/background.js"
+    ]
   },
   "action": {
     "default_popup": "popup/popup.html",
@@ -64,5 +69,17 @@
       "run_at": "document_start",
       "all_frames": true
     }
-  ]
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "xrntube@sonn.dev",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
+    }
+  }
 }

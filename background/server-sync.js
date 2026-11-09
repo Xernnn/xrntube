@@ -139,27 +139,36 @@
     const path = since ? `/state?since=${versionNo(since)}` : "/state";
     const r = await request("GET", undefined, null, path);
     if (r.status === 304) return { notModified: true, version: since };
-    let data = emptySnapshot();
+    // The server always sends a document ("{}" for a new user). A reply that
+    // can't be read (the connection dropped mid-download) or doesn't parse
+    // fails the round, and the next poll tries again. Reading it as empty kept
+    // the real ETag, so the merge took every keyword and never-block entry for
+    // deleted over there and pushed that, with a valid If-Match, to every device.
+    let parsed;
     try {
-      const parsed = await r.json();
-      data = {
-        v: SYNC.SCHEMA_VERSION,
-        channels: parsed.channels || {},
-        videos: parsed.videos || {},
-        tombstones: parsed.tombstones || {},
-        // null = the document doesn't carry this record at all (a fresh
-        // server, or one last written by an older version). The three-way
-        // merge must not read that as "every item in it was deleted".
-        keywords: parsed.keywords && Array.isArray(parsed.keywords.list) ? parsed.keywords : null,
-        allowlist:
-          parsed.allowlist && parsed.allowlist.list && typeof parsed.allowlist.list === "object"
-            ? parsed.allowlist
-            : null,
-        settings: parsed.settings && typeof parsed.settings === "object" ? parsed.settings : null
-      };
+      const text = await r.text();
+      parsed = text.trim() ? JSON.parse(text) : {};
     } catch {
-      // Empty or corrupt document — treat as empty; our push heals it.
+      parsed = null;
     }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("the server's reply was cut off or damaged; nothing was changed, and the next sync tries again");
+    }
+    const data = {
+      v: SYNC.SCHEMA_VERSION,
+      channels: parsed.channels || {},
+      videos: parsed.videos || {},
+      tombstones: parsed.tombstones || {},
+      // null = the document doesn't carry this record at all (a fresh
+      // server, or one last written by an older version). The three-way
+      // merge must not read that as "every item in it was deleted".
+      keywords: parsed.keywords && Array.isArray(parsed.keywords.list) ? parsed.keywords : null,
+      allowlist:
+        parsed.allowlist && parsed.allowlist.list && typeof parsed.allowlist.list === "object"
+          ? parsed.allowlist
+          : null,
+      settings: parsed.settings && typeof parsed.settings === "object" ? parsed.settings : null
+    };
     return { data, version: r.headers.get("etag") };
   }
 
