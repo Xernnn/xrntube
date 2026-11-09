@@ -6,6 +6,10 @@ import vm from "vm";
 // can pause a download and act while it is under way.
 //   - a block, an unblock and a keyword added while the list downloads all
 //     survive the round, and reach the server with it
+//   - a list the browser won't store (chrome.storage.sync's 8 KB an item)
+//     fails the round before anything is sent, so the next round doesn't read
+//     what's missing here as deleted; and a bulk never-block, an import or a
+//     restore that won't fit says so instead of reporting it done
 // The real server and two browsers are serversync-test's; syncread-test has
 // the reply that can't be read.
 
@@ -24,7 +28,9 @@ const ORIGIN = "https://sync.example";
 const URL_ = ORIGIN + "/xrntube";
 
 // A chrome.storage area: get in all three shapes, onChanged like the browser's.
-function area(name, data, onChanged) {
+// `perItem` refuses a set with an item over that many bytes (the key plus the
+// value as JSON), whole, as Chrome's storage.sync does at 8192.
+function area(name, data, onChanged, perItem = 0) {
   return {
     data,
     async get(keys) {
@@ -35,6 +41,10 @@ function area(name, data, onChanged) {
       return Object.fromEntries([].concat(keys).filter((k) => k in data).map((k) => [k, structuredClone(data[k])]));
     },
     async set(obj) {
+      const enc = new TextEncoder();
+      if (perItem && Object.entries(obj).some(([k, v]) => enc.encode(k + JSON.stringify(v)).length > perItem)) {
+        throw new Error("QUOTA_BYTES_PER_ITEM quota exceeded");
+      }
       const changes = {};
       for (const [k, v] of Object.entries(obj)) {
         changes[k] = { oldValue: data[k], newValue: structuredClone(v) };
@@ -102,7 +112,10 @@ function server({ doc = {}, version = 1, user = "me", password = "pw" } = {}) {
 // own; each test runs its rounds with SYNC_NOW.
 async function boot({ local = {}, sync = {}, servers = {} } = {}) {
   const onChanged = [];
-  const stores = { local: area("local", structuredClone(local), onChanged), sync: area("sync", structuredClone(sync), onChanged) };
+  const stores = {
+    local: area("local", structuredClone(local), onChanged),
+    sync: area("sync", structuredClone(sync), onChanged, 8192)
+  };
   const requests = [];
   const fetch = async (url, init = {}) => {
     const u = new URL(String(url));
@@ -211,6 +224,66 @@ const kwIds = (k) => ((k && k.list) || []).map((x) => x.p).sort().join(",");
   again.ok && again.notModified && srv.puts.length === puts
     ? ok("the next round finds both sides agreeing: a 304, and nothing to push")
     : fail("the round after: " + JSON.stringify({ again, puts: srv.puts.length - puts }));
+}
+
+// ---- 2. a list too big for synced storage ----
+// chrome.storage.sync holds 8 KB an item, and the never-block list is one
+// item: about 150 channels. The write was swallowed, and everything after it
+// carried on as if it had worked.
+const uc = (i) => "UC" + String(i).padStart(22, "x");
+// As setAllowed() stores them: ~58 bytes each, so 150 are over 8 KB and 100 are not.
+const allowOf = (from, n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [uc(from + i), { note: "", ts: 1762790400000 }]));
+const size = (a) => Object.keys((a && a.list) || {}).length;
+
+// A bulk "Never block" of 200 rows answered ok and saved nothing.
+{
+  const d = await boot({ sync: { bt_allowlist: { list: allowOf(0, 1), ts: 1000 } } });
+  const res = await d.send({ type: "ALLOW_CHANNEL", ids: Array.from({ length: 200 }, (_, i) => uc(1000 + i)) });
+  res.ok === false && /never-block list would be too big/.test(res.error || "") && size(d.sync.bt_allowlist) === 1
+    ? ok(`a bulk never-block of 200 channels is refused, saying why ("${res.error}"), and the list is as it was`)
+    : fail("bulk never-block over the quota: " + JSON.stringify({ res, size: size(d.sync.bt_allowlist) }));
+}
+
+// This device agreed 60 never-block entries with the server; another device
+// has since added 90. The two together don't fit here. The round stored
+// nothing but pushed the merge and kept it as the base, and the next one read
+// the 90 as deleted on this device and deleted them everywhere.
+{
+  const mine = allowOf(0, 60);
+  const srv = server({ version: 7, doc: { channels: {}, videos: {}, tombstones: {}, allowlist: { list: { ...mine, ...allowOf(500, 90) }, ts: 2000 } } });
+  const d = await boot({ servers: { [ORIGIN]: srv }, sync: { bt_allowlist: { list: mine, ts: 1000 } } });
+  await connect(d, { base: { kw: { items: [] }, allow: Object.keys(mine), settings: null } });
+  const first = await d.send({ type: "SYNC_NOW" });
+  const second = await d.send({ type: "SYNC_NOW" });
+  !first.ok && /never-block list won't fit/.test(first.error || "") && /Nothing was changed or sent/.test(first.error)
+    ? ok(`a round whose merge won't fit in synced storage fails, saying so: "${first.error}"`)
+    : fail("round over the quota: " + JSON.stringify(first));
+  !second.ok && srv.puts.length === 0 && size(srv.doc.allowlist) === 150 && d.local.bt_sync_base.allow.length === 60 && size(d.sync.bt_allowlist) === 60
+    ? ok("…pushes nothing and keeps its old base, so the round after it doesn't delete the other device's 90 entries from the server")
+    : fail("after two rounds over the quota: " + JSON.stringify({ second, puts: srv.puts.map((p) => size(p.allowlist)), server: size(srv.doc.allowlist), base: (d.local.bt_sync_base || {}).allow?.length }));
+}
+
+// A backup's never-block list that won't fit doesn't stop its channels.
+{
+  const d = await boot({ sync: { bt_allowlist: { list: allowOf(0, 100), ts: 1000 } } });
+  const res = await d.send({ type: "IMPORT_BLOCKLIST", channels: { "@imported": { name: "Imported" } }, videos: {}, allowlist: allowOf(300, 100) });
+  res.ok && res.added.channels === 1 && res.allowAdded === 0 && /never-block list would be too big/.test(res.allowError || "") && size(d.sync.bt_allowlist) === 100
+    ? ok("an import whose never-block list won't fit brings the channels in and says the never-block list wasn't added")
+    : fail("import over the quota: " + JSON.stringify({ res, size: size(d.sync.bt_allowlist) }));
+}
+
+// Restoring a cleared never-block list onto one that has grown since.
+{
+  const d = await boot({ sync: { bt_allowlist: { list: allowOf(0, 100), ts: 1000 } } });
+  const cleared = await d.send({ type: "DELETE_DATA", allowlist: true });
+  await d.send({ type: "ALLOW_CHANNEL", ids: Object.keys(allowOf(700, 60)) });
+  const res = await d.send({ type: "RESTORE_UNBLOCK", ts: cleared.undoTs });
+  const kept = (await d.send({ type: "GET_RECENT_UNBLOCKS" })).log.some((r) => r.ts === cleared.undoTs);
+  await d.send({ type: "DISALLOW_CHANNEL", ids: Object.keys(allowOf(700, 60)) });
+  const retry = await d.send({ type: "RESTORE_UNBLOCK", ts: cleared.undoTs });
+  res.ok === false && /never-block list would be too big/.test(res.error || "") && kept && retry.ok && size(d.sync.bt_allowlist) === 100
+    ? ok("a restore that won't fit says so and keeps its undo record, which restores once there's room")
+    : fail("restore over the quota: " + JSON.stringify({ res, kept, retry, size: size(d.sync.bt_allowlist) }));
 }
 
 console.log("\nDONE");

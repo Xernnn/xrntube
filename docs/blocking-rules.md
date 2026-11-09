@@ -259,7 +259,12 @@ them fingerprints exactly as it did before they existed.
 *every* block path: a direct block, a collaborator block, a keyword/duration
 filter, an age rule, and the DNR channel-page redirect. `@handle` keys are
 stored lowercased. Background owns the writes (`MSG.ALLOW_CHANNEL` /
-`DISALLOW_CHANNEL` → `setAllowed()`); it's carried in the `GET_BLOCKLIST` /
+`DISALLOW_CHANNEL` → `setAllowed()`). The whole list is one sync-storage
+item, and the browser holds at most 8 KB in one — about 150 channels — so a
+write past that is refused: `saveSynced()` answers with an error saying so,
+which the options page shows (a bulk "Never block" used to report success
+and keep nothing), and a sync round whose merge won't fit fails before it
+sends anything. It's carried in the `GET_BLOCKLIST` /
 `BLOCKLIST_UPDATED` payload and also read live by `content.js` via
 `chrome.storage.onChanged`. `content.js` builds `allowSet` and short-circuits
 in `blockedEntryFor()` (returns `undefined` for an allow-listed key — covers

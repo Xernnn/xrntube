@@ -187,6 +187,20 @@ self.XrnTube.KEYWORDS_KEY = "bt_keywords";
 // channels that must never be hidden, whatever else matches. `ts` drives
 // last-write-wins in the sync merge (same scheme as KEYWORDS_KEY).
 self.XrnTube.ALLOWLIST_KEY = "bt_allowlist";
+// chrome.storage.sync holds at most 8 KB in one item — its key plus its value
+// as JSON — in Chrome and Firefox alike, and refuses the whole write when an
+// item is over. The keyword list and the never-block list are one item each,
+// so either can get there: the never-block list at about 150 channels. Which
+// of `items` ({ key: value }, as passed to set()) are over, by name.
+self.XrnTube.SYNC_ITEM_MAX_BYTES = 8192;
+self.XrnTube.oversizeSyncItems = function (items) {
+  const X = self.XrnTube;
+  const names = { [X.KEYWORDS_KEY]: "keyword list", [X.ALLOWLIST_KEY]: "never-block list", [X.SETTINGS_KEY]: "settings" };
+  const enc = new TextEncoder();
+  return Object.keys(items)
+    .filter((k) => enc.encode(k + JSON.stringify(items[k])).length > X.SYNC_ITEM_MAX_BYTES)
+    .map((k) => names[k] || k);
+};
 // ---------------------------------------------------------------------------
 // Feature toggles.
 //

@@ -52,7 +52,7 @@
 // it a `host` with the few operations it needs, and calls serverSync.init(host).
 // ---------------------------------------------------------------------------
 (() => {
-  const { STORAGE, SYNC, KEYWORDS_KEY, ALLOWLIST_KEY, SETTINGS_KEY, resolveSettings } = self.XrnTube;
+  const { STORAGE, SYNC, KEYWORDS_KEY, ALLOWLIST_KEY, SETTINGS_KEY, resolveSettings, oversizeSyncItems } = self.XrnTube;
 
   let host = null;
 
@@ -480,7 +480,23 @@
       if (kwFingerprint(merged.keywords) !== kwFingerprint(fresh.keywords)) writes[KEYWORDS_KEY] = merged.keywords;
       if (allowFingerprint(merged.allowlist) !== allowFingerprint(fresh.allowlist)) writes[ALLOWLIST_KEY] = merged.allowlist;
       if (stableStringify(merged.settings) !== stableStringify(fresh.settings)) writes[SETTINGS_KEY] = merged.settings;
-      if (Object.keys(writes).length) await chrome.storage.sync.set(writes).catch(() => {});
+      if (Object.keys(writes).length) {
+        try {
+          await chrome.storage.sync.set(writes);
+        } catch (err) {
+          // Pushing this merge, or keeping it as the base, would say this
+          // device holds what it couldn't save, and the next round would read
+          // every item missing here as deleted here — and delete it on every
+          // device. So the round ends before anything is changed or sent.
+          const over = oversizeSyncItems(writes);
+          throw new Error(
+            over.length
+              ? `merged with the server's, the ${over.join(" and the ")} won't fit in this browser's synced storage ` +
+                  "(8 KB an item: about 150 never-block channels). Nothing was changed or sent; remove some entries and sync again"
+              : `this device couldn't save what it merged (${String((err && err.message) || err)}). Nothing was changed or sent, and the next sync tries again`
+          );
+        }
+      }
 
       const changedLocally = await host.applyMerge((cur) => {
         const out = { channels: {}, videos: {}, tombstones: {} };

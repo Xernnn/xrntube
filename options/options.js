@@ -468,9 +468,10 @@ function undoAction(undoTs) {
   return {
     label: "Undo",
     run: async () => {
-      await send({ type: MSG.RESTORE_UNBLOCK, ts: undoTs });
+      const res = await send({ type: MSG.RESTORE_UNBLOCK, ts: undoTs });
       await refresh();
-      toast("Restored.");
+      if (res && res.ok === false) toast("Not all of it came back: " + (res.error || "unknown error"), { error: true, ms: 9000 });
+      else toast("Restored.");
     }
   };
 }
@@ -1010,7 +1011,8 @@ function renderAllowlist() {
               action: {
                 label: "Undo",
                 run: async () => {
-                  await send({ type: MSG.ALLOW_CHANNEL, id: key });
+                  const res = await send({ type: MSG.ALLOW_CHANNEL, id: key });
+                  if (res && res.ok === false) toast(res.error || "That didn't work.", { error: true, ms: 9000 });
                   refresh();
                 }
               }
@@ -1034,8 +1036,12 @@ function initAllowlist() {
       toast("Couldn't read a channel from that — paste an @handle, a UC… ID, or a channel URL.", { error: true });
       return;
     }
+    const res = await send({ type: MSG.ALLOW_CHANNEL, ids: keys });
+    if (res && res.ok === false) {
+      toast("Nothing was added. " + (res.error || ""), { error: true, ms: 9000 });
+      return;
+    }
     input.value = "";
-    await send({ type: MSG.ALLOW_CHANNEL, ids: keys });
     const bad = tokens.length - keys.length;
     toast(`Never block: added ${plural(keys.length, "channel")}.` + (bad > 0 ? ` ${bad} couldn't be read.` : ""));
     refresh();
@@ -1214,6 +1220,13 @@ async function bulkRun(label, run, confirmOpts) {
     res = await run();
   } finally {
     suppressStorageRefresh = false;
+  }
+  if (res && res.ok === false) {
+    // Nothing changed, so the selection stays for another try.
+    bar.querySelectorAll("button").forEach((b) => (b.disabled = false));
+    syncBulkBar();
+    toast(res.error || "That didn't work.", { error: true, ms: 9000 });
+    return;
   }
   selected.clear();
   lastChecked = null;
@@ -1840,6 +1853,7 @@ async function previewAndImport(plan) {
   if (res.allowAdded) bits.push(`${res.allowAdded} never-block`);
   const extra = res.enriched ? ` Updated ${plural(res.enriched, "existing entry", "existing entries")}.` : "";
   toast((bits.length ? `Imported ${bits.join(", ")}.` : "Nothing new to import.") + extra, { ms: 7000 });
+  if (res.allowError) toast("The never-block list wasn't imported. " + res.allowError, { error: true, ms: 9000 });
 
   // An imported UC…-only channel blocks nothing in feeds until its @handle is
   // known, so the lookup starts straight away rather than behind a prompt —

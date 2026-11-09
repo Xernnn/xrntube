@@ -18,7 +18,8 @@ const {
   SUBS_SCRAPE_VERSION,
   subsAttempted,
   knowsOneIdentity,
-  resolveRetryDue
+  resolveRetryDue,
+  oversizeSyncItems
 } = self.XrnTube;
 
 // A cross-device clock: server-sync.js feeds the sync server's Date header back
@@ -226,24 +227,30 @@ async function restoreRecentUnblock(ref) {
     if (!revived) return false;
   });
 
-  if (rec.keywords && rec.keywords.length) {
-    const cur = await getKeywordsRecord();
-    const list = cur.list.slice();
-    for (const k of rec.keywords) {
-      if (!list.some((x) => x.p === k.p && !!x.re === !!k.re)) list.push(k);
+  // A list that won't save keeps the record, so the restore can be tried
+  // again once there's room; the entries above are back either way.
+  let error = null;
+  try {
+    if (rec.keywords && rec.keywords.length) {
+      const cur = await getKeywordsRecord();
+      const list = cur.list.slice();
+      for (const k of rec.keywords) {
+        if (!list.some((x) => x.p === k.p && !!x.re === !!k.re)) list.push(k);
+      }
+      await saveSynced({ [KEYWORDS_KEY]: { ...cur, list, ts: Date.now() } });
     }
-    await chrome.storage.sync.set({ [KEYWORDS_KEY]: { ...cur, list, ts: Date.now() } }).catch(() => {});
+    if (rec.allowlist && Object.keys(rec.allowlist).length) {
+      const cur = await getAllowlist();
+      await saveSynced({ [ALLOWLIST_KEY]: { list: { ...rec.allowlist, ...cur.list }, ts: Date.now() } });
+    }
+    log.splice(index, 1);
+    await chrome.storage.local.set({ [RECENT_UNBLOCK_KEY]: log });
+  } catch (err) {
+    error = String((err && err.message) || err);
   }
-  if (rec.allowlist && Object.keys(rec.allowlist).length) {
-    const cur = await getAllowlist();
-    await chrome.storage.sync
-      .set({ [ALLOWLIST_KEY]: { list: { ...rec.allowlist, ...cur.list }, ts: Date.now() } })
-      .catch(() => {});
-  }
-
-  log.splice(index, 1);
-  await chrome.storage.local.set({ [RECENT_UNBLOCK_KEY]: log });
-  return loadAll();
+  const fresh = await loadAll();
+  fresh.error = error;
+  return fresh;
 }
 
 // The title-keyword record, as the options page writes it (see KEYWORDS_KEY).
@@ -408,8 +415,25 @@ async function setAllowed(keys, on, note) {
     else delete list[norm];
   }
   const next = { list, ts: Date.now() };
-  await chrome.storage.sync.set({ [ALLOWLIST_KEY]: next }).catch(() => {});
+  await saveSynced({ [ALLOWLIST_KEY]: next });
   return next;
+}
+
+// chrome.storage.sync.set() for the keyword and never-block lists, with a
+// refusal turned into an error that says which list and why. Never swallowed:
+// a bulk "Never block" of 150 rows, over the 8 KB the browser stores in one
+// item, answered "added" and kept none of them.
+async function saveSynced(items) {
+  try {
+    await chrome.storage.sync.set(items);
+  } catch (err) {
+    const over = oversizeSyncItems(items);
+    throw new Error(
+      over.length
+        ? `The ${over.join(" and the ")} would be too big: the browser keeps it in its synced storage, at most 8 KB an item (about 150 never-block channels).`
+        : `The browser didn't save it: ${String((err && err.message) || err)}`
+    );
+  }
 }
 
 async function rebuildDnrRules(state) {
@@ -1235,6 +1259,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           let enriched = 0;
           let duplicates = 0;
           let allowAdded = 0;
+          let allowError = null;
           let folded = [];
           await updateStore(async (state) => {
             const { channels, videos } = state;
@@ -1353,7 +1378,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 list[norm] = { note: (v && v.note) || "", ts: Number(v && v.ts) || Date.now() };
                 allowAdded++;
               }
-              if (allowAdded) await chrome.storage.sync.set({ [ALLOWLIST_KEY]: { list, ts: Date.now() } }).catch(() => {});
+              // A list that won't save doesn't stop the channels and videos,
+              // which are most of a backup; the answer says it wasn't added.
+              if (allowAdded) {
+                await saveSynced({ [ALLOWLIST_KEY]: { list, ts: Date.now() } }).catch((err) => {
+                  allowError = err.message;
+                  allowAdded = 0;
+                });
+              }
             }
             folded = foldDuplicateChannels(channels);
             tombstoneFolded(state.tombstones, folded);
@@ -1372,6 +1404,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             enriched,
             duplicates,
             allowAdded,
+            allowError,
             folded: folded.length
           });
           break;
@@ -1392,7 +1425,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case MSG.RESTORE_UNBLOCK: {
           const state = await restoreRecentUnblock(msg.ts != null ? { ts: msg.ts } : { index: msg.index });
           await broadcastUpdate(state);
-          sendResponse({ ok: true });
+          sendResponse(state.error ? { ok: false, error: state.error } : { ok: true });
           break;
         }
         case MSG.CLEAR_RECENT_UNBLOCKS: {
