@@ -10,7 +10,8 @@ is blocked" placeholder — the tile is removed from the page, so a blocked
 channel simply stops existing for you.
 
 Works in Chromium browsers: Chrome, Edge or Brave on the desktop, and on an
-Android phone in a browser that takes extensions, such as Quetta. No account,
+Android phone in a browser that takes extensions, such as Quetta. It also
+runs in Firefox 140+ and Zen. No account,
 no telemetry. Your blocklist stays in your browser, and every browser you use
 stays on the same list through a tiny sync server you run yourself (one
 Python file in `server/`).
@@ -72,7 +73,24 @@ afterwards.
 3. Click **Load unpacked** and select the folder you just unpacked.
 4. Pin the xrntube icon (red, with a play button) to your toolbar if you want the quick-block popup handy.
 
-**2b. On your phone (Quetta or another Chromium browser with extensions)**
+**2b. Zen / Firefox (140 or newer)**
+
+1. Open `about:debugging` → **This Firefox** → **Load Temporary Add-on…** and
+   choose `manifest.json` in the folder (or the `.zip` from `npm run package`,
+   which Firefox takes as an `.xpi`).
+2. If the popup says XrnTube isn't allowed on YouTube, click **Allow on
+   YouTube** (Firefox can withhold an extension's site access, and it can be
+   switched off in `about:addons` → XrnTube → **Permissions**), then reload
+   YouTube.
+
+Firefox removes a temporary add-on when it closes. To keep it, sign the zip
+with an unlisted upload to addons.mozilla.org, or, in a build that allows
+unsigned add-ons, set `xpinstall.signatures.required` to `false` in
+`about:config` and install the file. The `.crx` self-update below is
+Chromium-only: a temporary add-on still reloads itself when its folder's
+version changes, and an installed `.xpi` updates by installing a newer one.
+
+**2c. On your phone (Quetta or another Chromium browser with extensions)**
 
 The phone installs a signed `.crx` from your sync server once, and from then
 on fetches every new version from there by itself.

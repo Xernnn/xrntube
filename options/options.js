@@ -2523,8 +2523,11 @@ const UPDATE_RESULT = {
   no_update: () => "Up to date.",
   throttled: () => "The browser checked a moment ago and won't again yet. Try in a few minutes; it also checks on its own.",
   no_update_url: () => "This copy has no update address to check.",
-  unreachable: () => "Couldn't reach the update server. The browser also checks on its own, every few hours."
+  unreachable: () => "Couldn't reach the update server. The browser also checks on its own, every few hours.",
+  unsupported: () => "This browser can't be asked to check now; it looks for new versions on its own."
 };
+// Firefox and its forks (Zen) have browser.runtime.getBrowserInfo; Chromium doesn't.
+const IS_GECKO = typeof browser !== "undefined" && !!(browser.runtime && browser.runtime.getBrowserInfo);
 
 async function initUpdates() {
   const blurb = $("update-blurb");
@@ -2532,7 +2535,11 @@ async function initUpdates() {
   const button = $("update-check");
   const { version, update_url: updateUrl } = chrome.runtime.getManifest();
   const { installType } = await chrome.management.getSelf();
-  if (installType === "development") {
+  if (installType === "development" && IS_GECKO) {
+    blurb.textContent =
+      `Version ${version}, loaded as a temporary add-on. It reloads itself when its folder gets a new ` +
+      "version, and the browser removes it when it closes. For a copy that stays, install a signed .xpi.";
+  } else if (installType === "development") {
     blurb.textContent =
       `Version ${version}, loaded unpacked from a folder. It reloads itself when that folder gets a new ` +
       "version (npm run release, or a pull). A copy loaded from a .zip never does: install the .crx from " +
