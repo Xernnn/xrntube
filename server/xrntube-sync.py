@@ -81,25 +81,30 @@ def client_address(handler):
     return peer
 
 
-def locked_out(addr):
-    """Whether this address has used up its wrong logins for now."""
+def take_attempt(addr, counted):
+    """Whether this address may try a password now (False: it has used up its wrong logins).
+
+    A counted attempt — one that carries a login — is recorded as a wrong one here, before its
+    password is checked, under the same lock as the limit: with the limit checked first and the
+    failure added after bcrypt, requests sent at once all got past a count of zero while the first
+    were still hashing, far more than FAIL_LIMIT guesses. A right password clears the address's
+    record (login()), its own attempt with it."""
     now = time.monotonic()
     with fail_lock:
         recent = [t for t in failures.get(addr, ()) if now - t < FAIL_WINDOW_S]
+        if len(recent) >= FAIL_LIMIT:
+            failures[addr] = recent
+            return False
+        if counted:
+            if len(failures) > 10000:  # a flood from many addresses: forget the stale ones
+                for a in [a for a, ts in failures.items() if now - ts[-1] >= FAIL_WINDOW_S]:
+                    del failures[a]
+            recent.append(now)
         if recent:
             failures[addr] = recent
         else:
             failures.pop(addr, None)
-        return len(recent) >= FAIL_LIMIT
-
-
-def note_failure(addr):
-    now = time.monotonic()
-    with fail_lock:
-        if len(failures) > 10000:  # a flood from many addresses: forget the stale ones
-            for a in [a for a, ts in failures.items() if now - ts[-1] >= FAIL_WINDOW_S]:
-                del failures[a]
-        failures.setdefault(addr, []).append(now)
+        return True
 
 
 def users_mtime():
@@ -288,15 +293,15 @@ class Handler(BaseHTTPRequestHandler):
     def login(self):
         # Ten wrong passwords from one address in 15 minutes lock it out until they age out, as
         # xrnloops-sync and xrnrule-sync do: the delay alone still let a guesser try ~1800 an hour.
+        # Each login counts against the address before it is checked (take_attempt).
         addr = client_address(self)
-        if locked_out(addr):
+        auth = self.headers.get("Authorization")
+        if not take_attempt(addr, counted=bool(auth)):
             time.sleep(FAIL_DELAY_S)
             self.send(429, "too many wrong passwords; try again later", headers={"Retry-After": str(FAIL_WINDOW_S)})
             return None
-        user = check_login(self.headers.get("Authorization"))
+        user = check_login(auth)
         if not user:
-            if self.headers.get("Authorization"):
-                note_failure(addr)
             time.sleep(FAIL_DELAY_S)
             self.send(401, "login required", headers={"WWW-Authenticate": 'Basic realm="XrnTube"'})
             return None

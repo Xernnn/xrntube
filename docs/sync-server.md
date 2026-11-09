@@ -28,7 +28,12 @@ matter whether the proxy in front strips it.
 - **Login**: HTTP Basic against an htpasswd file of bcrypt hashes — Radicale's
   file works as-is, so a home server's calendar password can be the sync
   password. 2 s pause after a wrong password; a right one is cached for 10
-  minutes so a phone-class CPU doesn't run bcrypt on every sync.
+  minutes so a phone-class CPU doesn't run bcrypt on every sync. Ten wrong
+  passwords from one address (the first `X-Forwarded-For` hop, from a
+  loopback proxy) within 15 minutes get it a 429 until they age out, the
+  right password included. Each login is counted before its password is
+  checked: counted after bcrypt, on this one-thread-per-request server, a
+  burst sent at once all got past the limit (18 of 30 in serversync-test).
 - **CORS**: any origin, `Authorization` / `If-Match` allowed, `ETag` and
   `Date` exposed — the version the merge reads, and the clock it stamps with.
   An unexposed header can't be read by the extension at all: before `Date`

@@ -17,6 +17,7 @@ import { chromium } from "playwright";
 //   - the server keeps earlier copies, and restoring one through the options
 //     page brings back what a "delete everything" took, on both devices
 //   - /update/ hands out the update files without a login, and nothing else
+//   - wrong passwords sent all at once still get only ten guesses an address
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -29,9 +30,19 @@ const EXT_PATH = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const dir = mkdtempSync(join(tmpdir(), "xt-sync-"));
 const USER = "me";
 const PASS = "pässword-123"; // non-ASCII on purpose: Basic auth must survive it
+// A second login with a costlier hash, as a real htpasswd's is: a guess at it
+// is still being checked while the next ones arrive.
+const SLOW_USER = "slowhash";
 writeFileSync(
   join(dir, "users"),
-  execFileSync("python3", ["-c", `import bcrypt,sys; print("${USER}:" + bcrypt.hashpw(sys.argv[1].encode(), bcrypt.gensalt(4)).decode())`, PASS])
+  execFileSync("python3", [
+    "-c",
+    "import bcrypt,sys\nfor u, pw, cost in ((sys.argv[1], sys.argv[2], 4), (sys.argv[3], sys.argv[4], 10)):\n    print(u + ':' + bcrypt.hashpw(pw.encode(), bcrypt.gensalt(cost)).decode())",
+    USER,
+    PASS,
+    SLOW_USER,
+    "slow-pass"
+  ])
 );
 const PORT = 5300 + Math.floor(Math.random() * 500);
 const server = spawn("python3", [join(EXT_PATH, "server/xrntube-sync.py"), "--port", String(PORT), "--data", join(dir, "data"), "--users", join(dir, "users")], {
@@ -348,6 +359,18 @@ try {
   wrong.every((s) => s === 401) && lockedRight === 429 && otherAddr === 200
     ? ok("ten wrong passwords lock that address out (429 even for the right one); other addresses still sign in")
     : fail(`lockout: wrong ${wrong}, then right ${lockedRight}, other address ${otherAddr}`);
+
+  // The count was checked before bcrypt and added to after it, on a server
+  // that runs each request in its own thread: thirty guesses sent at once all
+  // got past a count of zero, and all thirty were checked.
+  const burst = await Promise.all(
+    Array.from({ length: 30 }, () => state({ ...basic(SLOW_USER, "guess"), "X-Forwarded-For": "203.0.113.9" }))
+  );
+  const checked = burst.filter((s) => s === 401).length;
+  const turnedAway = burst.filter((s) => s === 429).length;
+  checked === 10 && turnedAway === 20
+    ? ok("thirty wrong passwords sent at once from one address: ten are checked, the other twenty turned away (429)")
+    : fail(`thirty wrong passwords at once: ${checked} checked (401), ${turnedAway} turned away (429)`);
 
 } catch (e) {
   fail(e.stack || String(e));
