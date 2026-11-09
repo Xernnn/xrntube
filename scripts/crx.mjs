@@ -147,3 +147,24 @@ export function compareVersions(a, b) {
   }
   return 0;
 }
+
+// The version `npm run release` publishes, given the one the server has live
+// (null when it has none) and manifest.json's. A browser takes only a version
+// higher than its own, so one the server already has is bumped past. One the
+// server is already beyond means this checkout is behind what was shipped:
+// bumped, its older code would go out under a newer number, and every
+// browser would install it within hours. That one is refused.
+export function releaseVersion(live, local) {
+  const order = live ? compareVersions(live, local) : -1;
+  if (order < 0) return { version: local, bumped: false };
+  if (order > 0) {
+    throw new Error(
+      `The server already has ${live}, newer than this checkout's ${local}. Releasing would ship this older code ` +
+        `as a newer version, and every browser would install it. Update this checkout to the code ${live} came from ` +
+        "(git pull, or the branch it was released from), then release again."
+    );
+  }
+  const parts = String(live).split(".");
+  parts[parts.length - 1] = String(Number(parts[parts.length - 1]) + 1);
+  return { version: parts.join("."), bumped: true };
+}

@@ -7,7 +7,9 @@
 //   node scripts/package.mjs --release           (npm run release) sign
 //       dist/xrntube-<version>.crx and publish it with dist/updates.xml on the
 //       sync server, where every browser that installed the .crx looks for new
-//       versions on its own. A version the server already has is bumped first.
+//       versions on its own. A version the server already has is bumped first;
+//       one older than the server's stops the release (scripts/crx.mjs →
+//       releaseVersion).
 //
 // --release reads ~/.config/xrntube/release.json:
 //   { "server": "https://<host>/xrntube", "ssh": "<ssh-host>" }
@@ -21,7 +23,7 @@ import { join, relative } from "path";
 import { homedir } from "os";
 import { execFileSync } from "child_process";
 import { generateKeyPairSync, createPrivateKey } from "crypto";
-import { packageFiles, withUpdateUrl, zip, crx3, extensionId, updateManifest, compareVersions } from "./crx.mjs";
+import { packageFiles, withUpdateUrl, zip, crx3, extensionId, updateManifest, releaseVersion } from "./crx.mjs";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const MANIFEST = join(ROOT, "manifest.json");
@@ -92,15 +94,21 @@ async function release() {
   const id = extensionId(key);
 
   // A browser only takes a version newer than the one it has, so publishing
-  // the same number twice would reach nobody. Bump past whatever is live.
+  // the same number twice would reach nobody: that one is bumped. A server
+  // already past this checkout stops the release here, before anything is
+  // built or changed.
   const live = await liveVersion(server);
-  if (live && compareVersions(live, version()) >= 0) {
-    const parts = live.split(".");
-    parts[parts.length - 1] = String(Number(parts[parts.length - 1]) + 1);
-    const next = parts.join(".");
+  let plan;
+  try {
+    plan = releaseVersion(live, version());
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+  if (plan.bumped) {
     const text = readFileSync(MANIFEST, "utf8");
-    writeFileSync(MANIFEST, text.replace(/("version"\s*:\s*")[^"]*(")/, `$1${next}$2`));
-    console.log(`the server already has ${live}: manifest.json is now ${next}`);
+    writeFileSync(MANIFEST, text.replace(/("version"\s*:\s*")[^"]*(")/, `$1${plan.version}$2`));
+    console.log(`the server already has ${live}: manifest.json is now ${plan.version}`);
   }
   const v = version();
 

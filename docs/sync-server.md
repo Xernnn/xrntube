@@ -135,9 +135,12 @@ the same for every user. No blocklist ever goes there.
    tailnet, then the LAN), the first that answers being used — and the
    signing key `~/.config/xrntube/xrntube.pem` (made on the first release;
    neither is in the repo);
-2. asks the server which version is live and, if it isn't older than
+2. asks the server which version is live and, if it's the same as
    `manifest.json`'s, bumps `manifest.json`'s last number past it — a browser
-   only takes a higher version;
+   only takes a higher version. If the server's is *newer*, it stops, with
+   nothing built or changed: this checkout is behind what was shipped, and
+   bumping it would hand every browser older code under a newer number
+   (`releaseVersion()` in `scripts/crx.mjs`);
 3. signs `dist/xrntube-<version>.crx` (the zip plus that `update_url`) and
    writes `dist/updates.xml`;
 4. over ssh, puts the `.crx` (as itself and as `xrntube.crx`, the link a new
