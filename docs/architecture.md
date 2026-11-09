@@ -203,7 +203,10 @@ the "What gets hidden" switches) have no tombstones, so they merge three ways
 against `bt_sync_base` — what this device and the server agreed on at the end
 of the last cycle: in the base and gone from one side means deleted there,
 not in the base means added. Item by item for keywords and never-block keys,
-switch by switch for settings, value by value for the keyword bounds
+switch by switch for settings (a switch only a newer version knows rides
+through untouched, the server's value standing: dropped, as `resolveSettings()`
+drops it, it made an older and a newer device push the list at each other
+every cycle), value by value for the keyword bounds
 (`durMinSec`, `durMaxSec`, `commentLimit`). No base — a device's first sync,
 a connect to another server or user, or a server whose version went
 *backwards* (reset or restored) — means nothing counts as deleted. A

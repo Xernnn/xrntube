@@ -19,6 +19,8 @@ import vm from "vm";
 //     than a little, and doesn't wobble with each reply; and a change is
 //     never stamped before what it supersedes, so an unblock or a block made
 //     after the clock moved back still wins
+//   - a switch only a newer version knows rides through this one's merge:
+//     not stripped, and no push over it
 // The real server and two browsers are serversync-test's; syncread-test has
 // the reply that can't be read.
 
@@ -175,7 +177,7 @@ async function boot({ local = {}, sync = {}, servers = {} } = {}) {
   for (const [name, src] of SOURCES) vm.runInContext(src, ctx, { filename: name });
   const send = (msg) => new Promise((resolve) => onMessage(msg, {}, resolve));
   await send({ type: "GET_SYNC_STATUS" }); // init() has read its (empty) config by now
-  return { chrome, send, local: stores.local.data, sync: stores.sync.data, requests };
+  return { chrome, send, X: ctx.XrnTube, local: stores.local.data, sync: stores.sync.data, requests };
 }
 
 // Connected and agreed with the server at version 6 on `base`; set straight
@@ -426,6 +428,41 @@ const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null 
   res.ok && !ch["@fast"] && ch["@gone"] && !srv.doc.channels["@fast"] && srv.doc.channels["@gone"]
     ? ok("an unblock of an entry stamped ahead, and a block over a tombstone stamped ahead, both stand after a sync, here and on the server")
     : fail("stamps after a clock moved back: " + JSON.stringify({ res, here: Object.keys(ch), server: Object.keys(srv.doc.channels || {}) }));
+}
+
+// ---- 6. a switch this version doesn't know ----
+// A newer version adds a switch and pushes it. resolveSettings() keeps only
+// the switches this version knows, so the merge left the new one out, found
+// the server's copy different, and pushed it stripped; the newer device put it
+// back, and the two pushed the whole list at each other every few minutes.
+{
+  const srv = server({ version: 7 });
+  const d = await boot({ servers: { [ORIGIN]: srv } });
+  const defaults = d.X.resolveSettings({});
+  const newer = { ...defaults, futureSwitch: false };
+  srv.doc = { channels: {}, videos: {}, tombstones: {}, keywords: { list: [], ts: 0 }, allowlist: { list: {}, ts: 0 }, settings: newer };
+  await d.chrome.storage.sync.set({ bt_settings: defaults });
+  await connect(d, { base: { kw: { items: [] }, allow: [], settings: defaults } });
+  const first = await d.send({ type: "SYNC_NOW" });
+  const quiet = srv.puts.length === 0 && srv.doc.settings.futureSwitch === false;
+  // This version's options page writes the switches it knows, and only those.
+  await d.chrome.storage.sync.set({ bt_settings: { ...defaults, actionClip: false } });
+  await d.send({ type: "SYNC_NOW" });
+  const carried = srv.doc.settings;
+  await d.send({ type: "SYNC_NOW" });
+  first.ok && quiet && srv.puts.length === 1 && carried.futureSwitch === false && carried.actionClip === false
+    ? ok("a newer version's switch rides through: no push over it, and a push for this device's own switch carries it along")
+    : fail("unknown switch: " + JSON.stringify({ first, quiet, puts: srv.puts.length, futureSwitch: carried && carried.futureSwitch, actionClip: carried && carried.actionClip }));
+
+  // A first sync takes the server's switches whole, the newer one included.
+  srv.doc.settings = { ...newer };
+  const d2 = await boot({ servers: { [ORIGIN]: srv } });
+  await connect(d2);
+  const puts = srv.puts.length;
+  const res = await d2.send({ type: "SYNC_NOW" });
+  res.ok && srv.puts.length === puts && d2.sync.bt_settings && d2.sync.bt_settings.futureSwitch === false
+    ? ok("…and a device's first sync keeps it too, with nothing to push")
+    : fail("unknown switch, first sync: " + JSON.stringify({ res, puts: srv.puts.length - puts, settings: d2.sync.bt_settings }));
 }
 
 console.log("\nDONE");

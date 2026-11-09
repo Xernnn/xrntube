@@ -54,8 +54,18 @@
 // it a `host` with the few operations it needs, and calls serverSync.init(host).
 // ---------------------------------------------------------------------------
 (() => {
-  const { STORAGE, SYNC, KEYWORDS_KEY, ALLOWLIST_KEY, SETTINGS_KEY, resolveSettings, oversizeSyncItems, safeSyncAddress } =
-    self.XrnTube;
+  const {
+    STORAGE,
+    SYNC,
+    KEYWORDS_KEY,
+    ALLOWLIST_KEY,
+    SETTINGS_KEY,
+    DEFAULT_SETTINGS,
+    LEGACY_SETTING_MAP,
+    resolveSettings,
+    oversizeSyncItems,
+    safeSyncAddress
+  } = self.XrnTube;
 
   let host = null;
 
@@ -255,8 +265,22 @@
     return {
       keywords: readKeywords(r[KEYWORDS_KEY]),
       allowlist: readAllowlist(r[ALLOWLIST_KEY]),
-      settings: resolveSettings(r[SETTINGS_KEY])
+      settings: readSettings(r[SETTINGS_KEY])
     };
+  }
+
+  // The switches this version knows, resolved (resolveSettings()), plus any it
+  // doesn't — a newer version's — as stored. resolveSettings() alone dropped
+  // those, so a device a version behind left a new switch out of its merge,
+  // found the server's copy different and pushed it stripped; the newer device
+  // put it back on its next round, and the two pushed the whole list at each
+  // other every few minutes.
+  const unknownSetting = (k) =>
+    !Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, k) && !Object.prototype.hasOwnProperty.call(LEGACY_SETTING_MAP, k);
+  function readSettings(raw) {
+    const out = resolveSettings(raw);
+    if (raw && typeof raw === "object") for (const [k, v] of Object.entries(raw)) if (unknownSetting(k)) out[k] = v;
+    return out;
   }
 
   // ---- three-way merge for the small records ---------------------------
@@ -339,12 +363,16 @@
 
   // Settings are one shared set. On a device's first sync the server's set
   // wins whole — connecting a new device adopts the others' choices rather
-  // than imposing its defaults on them; after that, switch by switch.
+  // than imposing its defaults on them; after that, switch by switch. A
+  // switch this version doesn't know it can't change either, so the server's
+  // value stands whenever there is one, and this device's copy only fills in
+  // when the server's set has none (an older device wrote it last).
   function mergeSettings(local, remote, base) {
     if (!remote) return local;
-    if (!base) return resolveSettings(remote);
+    if (!base) return readSettings(remote);
     const out = {};
-    for (const k of Object.keys(local)) out[k] = mergeValue(local[k], remote[k], base[k]);
+    for (const k of Object.keys(local)) out[k] = unknownSetting(k) ? local[k] : mergeValue(local[k], remote[k], base[k]);
+    for (const [k, v] of Object.entries(remote)) if (unknownSetting(k)) out[k] = v;
     return out;
   }
 
