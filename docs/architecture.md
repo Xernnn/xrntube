@@ -95,7 +95,9 @@ write too (a 5,000-entry "delete all" restored through `addEntry()` would
 hit the write quota a hundred entries in).
 Every blocked entry also carries `updated_at` (bumped on every mutation,
 stamped from `syncedNow()` — `Date.now()` plus the sync server's clock
-offset), and `removeEntry()` writes a **tombstone** to `chrome.storage.local`
+offset — and by `stampAfter()` never at or before the stamp of what it
+supersedes, so an unblock can't lose to the block it undid when the clock
+moves back), and `removeEntry()` writes a **tombstone** to `chrome.storage.local`
 (`bt_tombstones`, `{ "channel:<key>"|"video:<id>": deletedAtMs }`, pruned
 after `TOMBSTONE_TTL_MS` — a year: a device that syncs again after the TTL no
 longer sees the deletion and pushes the entry back); both exist so the sync
@@ -185,7 +187,12 @@ list is merged inside `host.applyMerge()` — in the store's queue, so no block
 or unblock lands between that read and the write (then `broadcastUpdate(…,
 { fromSync: true })`, so it doesn't loop into another push). A **412** means
 another device wrote in between: the cycle simply runs again on the newer
-copy. The server's `Date` header sets the clock offset. It never touches
+copy. The server's `Date` header sets the clock offset (the server exposes
+it to these CORS requests; before it did, the offset was never set), taken
+as the middle of its second at the middle of the round trip, and only when it
+moves the offset by more than `SYNC.CLOCK_SLACK_MS` (2 s) — read afresh
+each request it wobbled by a second, which could stamp an unblock before the
+block it undid. It never touches
 blocklist storage directly — only through `host`.
 
 Two merges. **Channels and videos**: per-entry LWW on `updated_at` with

@@ -15,6 +15,10 @@ import vm from "vm";
 //     server, or one that was reset, still merges as a first sync
 //   - the saved password goes only to the server and user it was saved for,
 //     and only over https (plain http just to this machine)
+//   - the server's clock is taken over the device's when they differ by more
+//     than a little, and doesn't wobble with each reply; and a change is
+//     never stamped before what it supersedes, so an unblock or a block made
+//     after the clock moved back still wins
 // The real server and two browsers are serversync-test's; syncread-test has
 // the reply that can't be read.
 
@@ -64,9 +68,10 @@ function area(name, data, onChanged, perItem = 0) {
 }
 
 // The sync server: one document, versioned, behind one login. pause() holds
-// the next GET /state until release().
+// the next GET /state until release(). With `skew` (ms) set, every reply has a
+// Date header that far off this machine's clock, as a real server's would.
 function server({ doc = {}, version = 1, user = "me", password = "pw" } = {}) {
-  const s = { doc: structuredClone(doc), version, puts: [], gate: null };
+  const s = { doc: structuredClone(doc), version, puts: [], gate: null, skew: null };
   s.pause = () => {
     let arrived;
     let release;
@@ -79,6 +84,11 @@ function server({ doc = {}, version = 1, user = "me", password = "pw" } = {}) {
     return hold;
   };
   s.handle = async (u, init) => {
+    const res = await answer(u, init);
+    if (s.skew !== null) res.headers.set("date", new Date(Date.now() + s.skew).toUTCString());
+    return res;
+  };
+  const answer = async (u, init) => {
     const method = init.method || "GET";
     const path = u.pathname.replace(/^\/xrntube/, "");
     const headers = init.headers || {};
@@ -366,6 +376,56 @@ const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null 
   !res.ok && /https/.test(res.error || "") && !d.requests.length
     ? ok(`a connection saved with http:// to another machine sends nothing: "${res.error}"`)
     : fail("saved http connection: " + JSON.stringify({ res, requests: d.requests }));
+}
+
+// ---- 5. whose clock ----
+// The offset was read afresh off every reply's Date header, which is in whole
+// seconds, so it wobbled by up to a second from one request to the next.
+{
+  const srv = server({ version: 7, doc: kwRecords(["a"]) });
+  const d = await boot({ servers: { [ORIGIN]: srv } });
+  await connect(d);
+  const offset = () => d.local.bt_sync.clockOffset;
+  srv.skew = 700;
+  await d.send({ type: "SYNC_NOW" });
+  const near = offset();
+  srv.skew = 3600e3;
+  await d.send({ type: "SYNC_NOW" });
+  const far = offset();
+  srv.skew = 3600e3 + 900;
+  await d.send({ type: "SYNC_NOW" });
+  await d.send({ type: "SYNC_NOW" });
+  const steady = offset();
+  await d.send({ type: "BLOCK_CHANNEL", id: "@stamped", name: "Stamped" });
+  const at = d.local.bt_blocklist.channels["@stamped"].updated_at;
+  near === 0 && Math.abs(far - 3600e3) < 1500 && steady === far && Math.abs(at - (Date.now() + far)) < 2000
+    ? ok(`a server clock 0.7 s off is left alone; one an hour off is taken (offset ${Math.round(far / 1000)} s) and held through a reply 0.9 s further off, and blocks are stamped by it`)
+    : fail("clock offset: " + JSON.stringify({ near, far, steady, stampedFromNow: at - Date.now() }));
+}
+
+// An entry stamped an hour ahead: this device's clock ran fast when it was
+// blocked, and has since been put right (or the server's clock taken over).
+// Unblocking it now stamped the tombstone an hour before the entry, the
+// entry won the next merge, and the unblock came undone; a block over a
+// tombstone stamped ahead was undone the same way.
+{
+  const ahead = Date.now() + 3600e3;
+  const srv = server({
+    version: 7,
+    doc: { channels: { "@fast": entry("Fast", ahead) }, videos: {}, tombstones: { "channel:@gone": ahead }, allowlist: { list: {}, ts: 0 } }
+  });
+  const d = await boot({
+    servers: { [ORIGIN]: srv },
+    local: { bt_blocklist: { channels: { "@fast": entry("Fast", ahead) }, videos: {} }, bt_tombstones: { "channel:@gone": ahead } }
+  });
+  await connect(d);
+  await d.send({ type: "UNBLOCK_CHANNEL", id: "@fast" });
+  await d.send({ type: "BLOCK_CHANNEL", id: "@gone", name: "Back" });
+  const res = await d.send({ type: "SYNC_NOW" });
+  const ch = d.local.bt_blocklist.channels;
+  res.ok && !ch["@fast"] && ch["@gone"] && !srv.doc.channels["@fast"] && srv.doc.channels["@gone"]
+    ? ok("an unblock of an entry stamped ahead, and a block over a tombstone stamped ahead, both stand after a sync, here and on the server")
+    : fail("stamps after a clock moved back: " + JSON.stringify({ res, here: Object.keys(ch), server: Object.keys(srv.doc.channels || {}) }));
 }
 
 console.log("\nDONE");

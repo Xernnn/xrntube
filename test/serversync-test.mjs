@@ -147,6 +147,29 @@ try {
     ? ok("status reports the server, no error, and the right count")
     : fail("status: " + JSON.stringify(st));
 
+  // ---- the server's clock decides, not the device's ----
+  // Entries merge last-write-wins on updated_at, so a device whose clock runs
+  // ahead wins every merge until real time catches up. The server's Date
+  // header corrects it — but these are CORS requests, a header the server
+  // doesn't expose can't be read, and the correction never happened. A's
+  // clock an hour fast: after a sync, what it stamps is the server's time.
+  const swA = A.ctx.serviceWorkers()[0];
+  await swA.evaluate(() => {
+    self.btRealNow = Date.now;
+    Date.now = () => self.btRealNow() + 3600e3;
+  });
+  try {
+    await A.send({ type: "SYNC_NOW" });
+    await A.send({ type: "IMPORT_BLOCKLIST", channels: { "@clockcheck": { name: "Clock check" } }, videos: {} });
+  } finally {
+    await swA.evaluate(() => (Date.now = self.btRealNow));
+  }
+  const { bt_sync: cfgA, bt_blocklist: blA } = await A.p.evaluate(() => chrome.storage.local.get(["bt_sync", "bt_blocklist"]));
+  const clockStamp = blA.channels["@clockcheck"].updated_at;
+  Math.abs(cfgA.clockOffset + 3600e3) < 5000 && Math.abs(clockStamp - Date.now()) < 10000
+    ? ok(`a device clock an hour fast is corrected by the server's Date header (offset ${Math.round(cfgA.clockOffset / 1000)} s), and what it stamps is the server's time`)
+    : fail(`clock: offset ${cfgA.clockOffset} ms, an entry stamped ${Math.round((clockStamp - Date.now()) / 1000)} s from now`);
+
   // ---- settings: one shared set, merged switch by switch ----
   const setSwitch = (d, key, on) =>
     d.p.evaluate(

@@ -30,6 +30,16 @@ let clockOffset = 0;
 function syncedNow() {
   return Date.now() + clockOffset;
 }
+// The stamp for a change to something stamped `after` — an unblock of an
+// entry, a block or a restore over a tombstone, an edit of an entry: never at
+// or before it. Last-write-wins then keeps this device's own order of events
+// even when its clock moves back (the server's taking over from a device clock
+// that ran fast, or the device's set back), where an unblock could otherwise
+// lose to the block it undid, and the entry come back on the next sync.
+function stampAfter(after) {
+  return Math.max(syncedNow(), (Number(after) || 0) + 1);
+}
+const entryStamp = (e) => (e ? e.updated_at || e.ts || 0 : 0);
 
 // ---------- the blocklist store (chrome.storage.local) ----------
 // Every blocked channel and video, under one local key, read and written
@@ -118,7 +128,7 @@ async function addEntry(kind, id, label, extra) {
   const bucket = kind === "channel" ? "channels" : "videos";
   return updateStore((s) => {
     if (s[bucket][id]) return false; // already blocked
-    const now = syncedNow();
+    const now = stampAfter(s.tombstones[kind + ":" + id]);
     s[bucket][id] = {
       [kind === "channel" ? "name" : "title"]: label || "",
       ts: now,
@@ -140,7 +150,7 @@ async function removeEntry(kind, id) {
     // Record the deletion so the sync merge propagates it instead of another
     // device's stale copy re-adding the entry — even one this device doesn't
     // hold.
-    s.tombstones[kind + ":" + id] = syncedNow();
+    s.tombstones[kind + ":" + id] = stampAfter(entryStamp(removed));
   });
   state.undoTs = removed ? await pushRecentUnblock({ t: "one", kind, id, entry: removed }) : null;
   return state;
@@ -213,13 +223,12 @@ async function restoreRecentUnblock(ref) {
     add[rec.kind === "channel" ? "channel" : "video"][rec.id] = rec.entry || {};
   }
 
-  const now = syncedNow();
   await updateStore((s) => {
     let revived = 0;
     for (const [kind, map, target] of [["channel", add.channel, s.channels], ["video", add.video, s.videos]]) {
       for (const [id, entry] of Object.entries(map)) {
         if (target[id]) continue;
-        target[id] = { ...entry, updated_at: now };
+        target[id] = { ...entry, updated_at: stampAfter(s.tombstones[kind + ":" + id]) };
         delete s.tombstones[kind + ":" + id];
         revived++;
       }
@@ -276,16 +285,15 @@ async function deleteData(req) {
     chIds = pick(s.channels, req.channels);
     vidIds = pick(s.videos, req.videos);
     if (!chIds.length && !vidIds.length) return false;
-    const now = syncedNow();
     for (const id of chIds) {
       record.channels[id] = s.channels[id];
       delete s.channels[id];
-      s.tombstones["channel:" + id] = now;
+      s.tombstones["channel:" + id] = stampAfter(entryStamp(record.channels[id]));
     }
     for (const id of vidIds) {
       record.videos[id] = s.videos[id];
       delete s.videos[id];
-      s.tombstones["video:" + id] = now;
+      s.tombstones["video:" + id] = stampAfter(entryStamp(record.videos[id]));
     }
   });
 
@@ -324,11 +332,10 @@ async function deleteData(req) {
 function mutateEntries(kind, ids, mutate) {
   const bucket = kind === "channel" ? "channels" : "videos";
   return updateStore((s) => {
-    const now = syncedNow();
     let n = 0;
     for (const id of ids) {
       if (!s[bucket][id]) continue;
-      s[bucket][id] = { ...mutate(s[bucket][id]), updated_at: now };
+      s[bucket][id] = { ...mutate(s[bucket][id]), updated_at: stampAfter(entryStamp(s[bucket][id])) };
       n++;
     }
     if (!n) return false;
@@ -1318,7 +1325,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               channels[id] = {
                 name: entry.name || "",
                 ts: Number(entry.ts) || now,
-                updated_at: now,
+                updated_at: stampAfter(state.tombstones["channel:" + id]),
                 mode: entry.mode === CHANNEL_MODE.EXCEPT_WHITELIST ? CHANNEL_MODE.EXCEPT_WHITELIST : CHANNEL_MODE.FULL,
                 whitelist: entry.whitelist && typeof entry.whitelist === "object" ? entry.whitelist : {}
               };
@@ -1363,7 +1370,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 continue;
               }
               added.videos++;
-              videos[id] = { title: entry.title || "", ts: Number(entry.ts) || now, updated_at: now };
+              videos[id] = { title: entry.title || "", ts: Number(entry.ts) || now, updated_at: stampAfter(state.tombstones["video:" + id]) };
               if (entry.hidden) videos[id].hidden = true;
               clearedTombs.push("video:" + id);
             }

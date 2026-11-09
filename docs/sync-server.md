@@ -29,7 +29,10 @@ matter whether the proxy in front strips it.
   file works as-is, so a home server's calendar password can be the sync
   password. 2 s pause after a wrong password; a right one is cached for 10
   minutes so a phone-class CPU doesn't run bcrypt on every sync.
-- **CORS**: any origin, `Authorization` / `If-Match` allowed, `ETag` exposed.
+- **CORS**: any origin, `Authorization` / `If-Match` allowed, `ETag` and
+  `Date` exposed — the version the merge reads, and the clock it stamps with.
+  An unexposed header can't be read by the extension at all: before `Date`
+  was listed, no device ever took the server's clock.
   The extension sends no cookies, so it needs no host permission for the
   server's address — which therefore never appears in the manifest or the repo.
 - **gzip** both ways: the extension compresses its PUT (`CompressionStream`);

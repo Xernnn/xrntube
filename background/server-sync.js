@@ -21,8 +21,10 @@
 // tombstones so an unblock on one device is not silently resurrected by a
 // stale copy on another. Timestamps come from the server's `Date` header (fed
 // back to background.js via host.setClockOffset) rather than the device clock,
-// so skew between devices can't decide a merge. Tombstones past
-// STORAGE.TOMBSTONE_TTL_MS are dropped on each cycle.
+// so skew between devices can't decide a merge — which needs the server to
+// expose Date to these CORS requests (Access-Control-Expose-Headers), and is
+// taken only when it moves the offset past SYNC.CLOCK_SLACK_MS (see request()).
+// Tombstones past STORAGE.TOMBSTONE_TTL_MS are dropped on each cycle.
 //
 // Keywords, the never-block list and settings have no tombstones; they merge
 // three ways against STORAGE.SYNC_BASE_KEY (see mergeItems). Item by item, so
@@ -116,14 +118,21 @@
         headers["Content-Encoding"] = "gzip";
       }
     }
+    const sent = Date.now();
     const r = await fetch(cfg.url.replace(/\/+$/, "") + path, { method, headers, body: payload, cache: "no-store" });
 
-    // Trust the server's clock over the device's for merge timestamps. Kept in
-    // memory here; persisted with the rest of cfg at the end of the cycle.
-    const dateHeader = r.headers.get("date");
-    if (dateHeader) {
-      const offset = new Date(dateHeader).getTime() - Date.now();
-      if (Number.isFinite(offset)) {
+    // Trust the server's clock over the device's for merge timestamps. Date is
+    // in whole seconds, so it's read as the middle of its second at the middle
+    // of the round trip, and taken only when that moves the offset by more
+    // than SYNC.CLOCK_SLACK_MS: read afresh on every request, the offset
+    // wobbled by up to a second, and a stamp could come out earlier than one
+    // this device had just made — an unblock losing to the block it undid.
+    // Kept in memory here; persisted with the rest of cfg at the end of the
+    // cycle.
+    const date = Date.parse(r.headers.get("date") || "");
+    if (Number.isFinite(date)) {
+      const offset = Math.round(date + 500 - (sent + Date.now()) / 2);
+      if (Math.abs(offset - (cfg.clockOffset || 0)) > SYNC.CLOCK_SLACK_MS) {
         cfg.clockOffset = offset;
         if (host) host.setClockOffset(offset);
       }

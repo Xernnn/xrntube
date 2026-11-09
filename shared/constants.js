@@ -375,5 +375,6 @@ self.XrnTube.SYNC = {
   POLL_PERIOD_MIN: 3, // how often each device pulls (no realtime channel)
   POLL_FRESH_MS: 60 * 1000, // a poll this soon after a pull has nothing to add
   FULL_PULL_MS: 6 * 60 * 60 * 1000, // pull the whole document at least this often, changed or not
-  PUSH_DEBOUNCE_MS: 4000 // coalesce a burst of local edits into one push
+  PUSH_DEBOUNCE_MS: 4000, // coalesce a burst of local edits into one push
+  CLOCK_SLACK_MS: 2000 // the server's clock is taken over the device's only when they differ by more
 };

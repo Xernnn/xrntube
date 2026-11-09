@@ -58,6 +58,11 @@ FAIL_LIMIT = 10  # wrong logins from one address within FAIL_WINDOW_S, then 429 
 FAIL_WINDOW_S = 15 * 60
 AUTH_CACHE_S = 600  # a bcrypt check costs ~0.3s on a phone; don't pay it per request
 PREFIX = "/xrntube"
+# What the extension may read off a reply. Its requests are CORS (it holds no host permission for
+# this server), so any other header is hidden from it: ETag is the version it merges against, and
+# Date the clock its merges stamp with — unexposed, it read no Date at all, and each device's own
+# clock decided which copy of an entry was the newer.
+EXPOSE_HEADERS = "ETag, Date"
 
 args = None
 lock = threading.Lock()
@@ -257,7 +262,7 @@ class Handler(BaseHTTPRequestHandler):
         if code == 304:  # no body, so neither a type nor a length for one
             self.send_response(304)
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Expose-Headers", "ETag")
+            self.send_header("Access-Control-Expose-Headers", EXPOSE_HEADERS)
             self.send_header("Cache-Control", "no-store")
             for k, v in (headers or {}).items():
                 self.send_header(k, v)
@@ -270,7 +275,7 @@ class Handler(BaseHTTPRequestHandler):
             headers = {**(headers or {}), "Content-Encoding": "gzip"}
         self.send_response(code)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Expose-Headers", "ETag")
+        self.send_header("Access-Control-Expose-Headers", EXPOSE_HEADERS)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
