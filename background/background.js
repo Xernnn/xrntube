@@ -1,6 +1,11 @@
 // The MV3 service worker. constants.js and server-sync.js are plain scripts
-// sharing `self`, so they're loaded first.
-importScripts("../shared/constants.js", "./server-sync.js");
+// sharing `self`, so they're loaded first. Chromium runs this as a service
+// worker and needs importScripts; Firefox (Zen) runs it as an event page, with
+// the two listed before it in the manifest's background.scripts, and has no
+// importScripts there.
+if (typeof importScripts === "function" && !(self.XrnTube && self.XrnTube.serverSync)) {
+  importScripts("../shared/constants.js", "./server-sync.js");
+}
 
 const {
   MSG,
@@ -1653,7 +1658,11 @@ async function checkForUpdate() {
   if (offered === undefined) return { status: "unreachable", version: running.version, installType };
   if (!versionNewer(offered, running.version)) return { status: "no_update", version: running.version, installType };
   // "update_available" (onUpdateAvailable follows once it's downloaded),
-  // "no_update", or "throttled" when asked too often.
+  // "no_update", or "throttled" when asked too often. Firefox has no
+  // requestUpdateCheck: it reads gecko.update_url on its own schedule.
+  if (typeof chrome.runtime.requestUpdateCheck !== "function") {
+    return { status: "unsupported", version: running.version, installType };
+  }
   const res = await chrome.runtime.requestUpdateCheck();
   return { status: res.status, version: res.version || offered, installType };
 }
@@ -1690,7 +1699,9 @@ chrome.alarms.get(UPDATE_ALARM).then((a) => {
 // the laptop picks up a new version the next time anything wakes it. Not on
 // the start that installs this code (no active worker yet): that code is the
 // folder's, and its version isn't stored until the install event, after this.
-if (self.registration.active) {
+// Firefox runs this as an event page: no service worker registration, no
+// cached worker code, so every start is "this code" and the check is safe.
+if (!self.registration || self.registration.active) {
   chrome.management.getSelf().then((s) => {
     if (s.installType === "development") checkForUpdate();
   });
