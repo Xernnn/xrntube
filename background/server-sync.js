@@ -432,14 +432,13 @@
     }
     running = true;
     try {
-      const local = await host.loadAll(); // { channels, videos }
-      const localTombs = await host.getTombstones(); // { "kind:id": ts }
+      const local = await host.read(); // { channels, videos, tombstones: { "kind:id": ts } }
       const rec = await readLocalRecords();
       const localSnapshot = {
         v: SYNC.SCHEMA_VERSION,
         channels: local.channels,
         videos: local.videos,
-        tombstones: { ...localTombs },
+        tombstones: local.tombstones,
         keywords: rec.keywords,
         allowlist: rec.allowlist,
         settings: rec.settings
@@ -465,38 +464,32 @@
       let base = await loadBase();
       if (base && cfg.lastVersion && versionNo(version) < versionNo(cfg.lastVersion)) base = null;
 
+      // The download takes a while, and a block, an unblock or a keyword
+      // added meanwhile is in storage, not in `local` or `rec`. Merging those
+      // and writing the result back dropped the block and undid the unblock.
+      // So the merge is worked out again from storage as it is when it's
+      // written: the small records read just before they're written, the
+      // list inside host.applyMerge(), which no block or unblock can cut into.
+      const fresh = await readLocalRecords();
       const merged = emptySnapshot();
-      merged.keywords = mergeKeywords(rec.keywords, remote.keywords, base && base.kw);
-      merged.allowlist = mergeAllowlist(rec.allowlist, remote.allowlist, base && base.allow);
-      merged.settings = mergeSettings(rec.settings, remote.settings, base && base.settings);
+      merged.keywords = mergeKeywords(fresh.keywords, remote.keywords, base && base.kw);
+      merged.allowlist = mergeAllowlist(fresh.allowlist, remote.allowlist, base && base.allow);
+      merged.settings = mergeSettings(fresh.settings, remote.settings, base && base.settings);
 
       const writes = {};
-      if (kwFingerprint(merged.keywords) !== kwFingerprint(rec.keywords)) writes[KEYWORDS_KEY] = merged.keywords;
-      if (allowFingerprint(merged.allowlist) !== allowFingerprint(rec.allowlist)) writes[ALLOWLIST_KEY] = merged.allowlist;
-      if (stableStringify(merged.settings) !== stableStringify(rec.settings)) writes[SETTINGS_KEY] = merged.settings;
+      if (kwFingerprint(merged.keywords) !== kwFingerprint(fresh.keywords)) writes[KEYWORDS_KEY] = merged.keywords;
+      if (allowFingerprint(merged.allowlist) !== allowFingerprint(fresh.allowlist)) writes[ALLOWLIST_KEY] = merged.allowlist;
+      if (stableStringify(merged.settings) !== stableStringify(fresh.settings)) writes[SETTINGS_KEY] = merged.settings;
       if (Object.keys(writes).length) await chrome.storage.sync.set(writes).catch(() => {});
 
-      mergeKind(
-        "channel",
-        local.channels,
-        localTombs,
-        remote.channels,
-        remote.tombstones,
-        merged.channels,
-        merged.tombstones
-      );
-      mergeKind("video", local.videos, localTombs, remote.videos, remote.tombstones, merged.videos, merged.tombstones);
-      pruneTombstones(merged.tombstones, host.now());
-
-      let changedLocally = false;
-      if (!sameBlocklistCore(localSnapshot, merged)) {
-        await host.applyMergedState({
-          channels: merged.channels,
-          videos: merged.videos,
-          tombstones: merged.tombstones
-        });
-        changedLocally = true;
-      }
+      const changedLocally = await host.applyMerge((cur) => {
+        const out = { channels: {}, videos: {}, tombstones: {} };
+        mergeKind("channel", cur.channels, cur.tombstones, remote.channels, remote.tombstones, out.channels, out.tombstones);
+        mergeKind("video", cur.videos, cur.tombstones, remote.videos, remote.tombstones, out.videos, out.tombstones);
+        pruneTombstones(out.tombstones, host.now());
+        Object.assign(merged, out);
+        return sameBlocklistCore(cur, out) ? null : out;
+      });
 
       let pushed = false;
       if (!sameBlocklist(remote, merged)) {

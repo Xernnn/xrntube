@@ -25,10 +25,14 @@ store** is one `chrome.storage.local` key, `bt_blocklist` =
 `updateStore(change)`, a one-at-a-time queue that loads the store, lets
 `change` mutate it (returning `false` skips the write) and saves it — without
 the queue, two writers that each read the whole list and wrote it back would
-drop one another's edit. `addEntry` / `removeEntry` / `mutateEntries` /
-`applyChannelInfo` / `deleteData` / the restore and the import are all
-`updateStore` callers; `writeFullState()` (the sync merge's whole-list
-replace) is one too. Until v2 the blocklist lived in `chrome.storage.sync` as
+drop one another's edit. The tombstones (`bt_tombstones`, below) are loaded
+and saved in the same step, as `state.tombstones`, so nothing sees an entry
+gone without the tombstone that records it. `addEntry` / `removeEntry` /
+`mutateEntries` / `applyChannelInfo` / `deleteData` / the restore and the
+import are all `updateStore` callers, and so is the sync merge
+(`syncHost.applyMerge()`), which works its result out inside the queue from
+the store as it is then — not from a copy read before the download, which
+dropped a block made meanwhile and undid an unblock. Until v2 the blocklist lived in `chrome.storage.sync` as
 50-entry chunks with a local-only overflow, forced by its 8KB-per-item and
 512-item limits — the cause of two silent-write bugs. `migrateFromSyncChunks()`
 folds that layout into the new key on the first `loadAll()`, and removes the
@@ -62,7 +66,7 @@ one-channel form — `FETCH_CHANNEL_SUBS` / `BULK_FETCH_CHANNEL_INFO` and the
 sweep (below), which use `applyChannelInfo()` for one write per batch, and `ALLOW_CHANNEL` /
 `DISALLOW_CHANNEL` for the `bt_allowlist` "Never-block" override — see
 "Channel allow-list"). `IMPORT_BLOCKLIST` merges in memory and does one
-`writeFullState()` (never `addEntry`-per-entry — a multi-thousand-entry
+`updateStore()` write (never `addEntry`-per-entry — a multi-thousand-entry
 import would blow `chrome.storage.sync`'s write-rate quota and take minutes)
 and carries across the optional per-entry extras (`hidden`,
 `blockOlderThanDays`, `subs`). It matches an incoming channel against
@@ -81,8 +85,8 @@ take `ids` as well as `id` (`idsOf(msg)`): `mutateEntries()` and
 `setAllowed()` are one write for the whole selection — a per-entry loop is a
 whole-list write and a DNR rebuild per row.
 **`DELETE_DATA`** `{ channels: [ids] | "all", videos: [ids] | "all",
-keywords, allowlist }` removes any mix of those in one `writeFullState()`
-plus one tombstone write, and pushes **one** undo record holding everything
+keywords, allowlist }` removes any mix of those, and tombstones them, in one
+`updateStore()` write, and pushes **one** undo record holding everything
 it removed (keywords and the never-block list included). Every removal answers with
 `undoTs`, the record's stamp, which `RESTORE_UNBLOCK { ts }` restores by —
 an index shifts the moment anything else is removed, which made "Undo" on a
@@ -168,9 +172,13 @@ alarm, every `SYNC.POLL_PERIOD_MIN`) / `configure({ url, user, password })`
 `historyItem(name)`. The one `cycle()`: GET the document (`?since=` the
 version it last agreed on, when nothing changed locally since — a 304 ends
 the cycle there) → merge → apply
-locally via `host.applyMergedState()` (then `broadcastUpdate(…, { fromSync:
-true })`, so it doesn't loop into another push) → PUT if the merge differs from
-the remote, with `If-Match` set to the version it read. A **412** means
+locally → PUT if the merge differs from the remote, with `If-Match` set to
+the version it read. The merge is worked out again from what this device
+holds when it is written, since the download can take a while: the keywords,
+never-block list and settings are read just before they're written, and the
+list is merged inside `host.applyMerge()` — in the store's queue, so no block
+or unblock lands between that read and the write (then `broadcastUpdate(…,
+{ fromSync: true })`, so it doesn't loop into another push). A **412** means
 another device wrote in between: the cycle simply runs again on the newer
 copy. The server's `Date` header sets the clock offset. It never touches
 blocklist storage directly — only through `host`.

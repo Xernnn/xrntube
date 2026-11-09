@@ -41,7 +41,10 @@ function syncedNow() {
 //
 // Every write goes through updateStore(), one at a time: two writers that each
 // read the whole list and wrote it back could otherwise drop one another's
-// change (a block landing while a sub-count lookup saves, say).
+// change (a block landing while a sub-count lookup saves, say). The
+// tombstones (below) are read and written in the same step, so no writer —
+// the sync merge included — sees an entry gone without the tombstone that
+// records its removal, or the other way round.
 const BLOCKLIST_KEY = STORAGE.BLOCKLIST_KEY;
 let migrated = null;
 
@@ -52,16 +55,28 @@ async function loadAll() {
   return { channels: bl.channels || {}, videos: bl.videos || {} };
 }
 
+// The list and its tombstones, in one read.
+async function readStore() {
+  await (migrated || (migrated = migrateFromSyncChunks()));
+  const r = await chrome.storage.local.get([BLOCKLIST_KEY, STORAGE.TOMBSTONE_KEY]);
+  const bl = r[BLOCKLIST_KEY] || {};
+  return { channels: bl.channels || {}, videos: bl.videos || {}, tombstones: r[STORAGE.TOMBSTONE_KEY] || {} };
+}
+
 let storeQueue = Promise.resolve();
-// Runs `change(state)` on a fresh copy of the store, then saves it — unless
-// `change` returns false. Resolves to the state, with what `change` returned
-// as `.result`.
+// Runs `change(state)` on a fresh copy of the store — `state.channels`,
+// `state.videos`, `state.tombstones` — then saves all three in one write,
+// unless `change` returns false. Resolves to the state, with what `change`
+// returned as `.result`.
 function updateStore(change) {
   const run = storeQueue.then(async () => {
-    const state = await loadAll();
+    const state = await readStore();
     const result = await change(state);
     if (result !== false) {
-      await chrome.storage.local.set({ [BLOCKLIST_KEY]: { channels: state.channels, videos: state.videos } });
+      await chrome.storage.local.set({
+        [BLOCKLIST_KEY]: { channels: state.channels, videos: state.videos },
+        [STORAGE.TOMBSTONE_KEY]: pruneTombstones({ ...state.tombstones })
+      });
     }
     state.result = result;
     return state;
@@ -69,13 +84,6 @@ function updateStore(change) {
   storeQueue = run.catch(() => {});
   return run;
 }
-
-// Replace the whole list — the sync merge, which computes it whole.
-const writeFullState = (channels, videos) =>
-  updateStore((s) => {
-    s.channels = channels;
-    s.videos = videos;
-  });
 
 // Up to v1, the blocklist lived in chrome.storage.sync as `bt_meta` plus
 // `bt_ch_<n>` / `bt_vid_<n>` chunks, with a local `bt_overflow` for what didn't
@@ -107,7 +115,7 @@ async function migrateFromSyncChunks() {
 
 async function addEntry(kind, id, label, extra) {
   const bucket = kind === "channel" ? "channels" : "videos";
-  const state = await updateStore((s) => {
+  return updateStore((s) => {
     if (s[bucket][id]) return false; // already blocked
     const now = syncedNow();
     s[bucket][id] = {
@@ -116,11 +124,10 @@ async function addEntry(kind, id, label, extra) {
       updated_at: now, // bumped on every mutation; drives last-write-wins in server-sync.js
       ...(extra || {})
     };
+    // Re-blocking supersedes any earlier unblock — drop its tombstone so the
+    // sync merge doesn't treat this entry as deleted on the next cycle.
+    delete s.tombstones[kind + ":" + id];
   });
-  // Re-blocking supersedes any earlier unblock — drop its tombstone so the
-  // sync merge doesn't treat this entry as deleted on the next cycle.
-  if (state.result !== false) await clearTombstone(kind, id);
-  return state;
 }
 
 async function removeEntry(kind, id) {
@@ -128,12 +135,12 @@ async function removeEntry(kind, id) {
   let removed;
   const state = await updateStore((s) => {
     removed = s[bucket][id]; // snapshot for the undo log
-    if (!removed) return false;
     delete s[bucket][id];
+    // Record the deletion so the sync merge propagates it instead of another
+    // device's stale copy re-adding the entry — even one this device doesn't
+    // hold.
+    s.tombstones[kind + ":" + id] = syncedNow();
   });
-  // Record the deletion so the sync merge propagates it instead of another
-  // device's stale copy re-adding the entry.
-  await writeTombstone(kind, id);
   state.undoTs = removed ? await pushRecentUnblock({ t: "one", kind, id, entry: removed }) : null;
   return state;
 }
@@ -206,22 +213,18 @@ async function restoreRecentUnblock(ref) {
   }
 
   const now = syncedNow();
-  const revived = [];
   await updateStore((s) => {
+    let revived = 0;
     for (const [kind, map, target] of [["channel", add.channel, s.channels], ["video", add.video, s.videos]]) {
       for (const [id, entry] of Object.entries(map)) {
         if (target[id]) continue;
         target[id] = { ...entry, updated_at: now };
-        revived.push(kind + ":" + id);
+        delete s.tombstones[kind + ":" + id];
+        revived++;
       }
     }
-    if (!revived.length) return false;
+    if (!revived) return false;
   });
-  if (revived.length) {
-    const tombs = await getTombstones();
-    for (const k of revived) delete tombs[k];
-    await setTombstones(tombs);
-  }
 
   if (rec.keywords && rec.keywords.length) {
     const cur = await getKeywordsRecord();
@@ -266,22 +269,18 @@ async function deleteData(req) {
     chIds = pick(s.channels, req.channels);
     vidIds = pick(s.videos, req.videos);
     if (!chIds.length && !vidIds.length) return false;
+    const now = syncedNow();
     for (const id of chIds) {
       record.channels[id] = s.channels[id];
       delete s.channels[id];
+      s.tombstones["channel:" + id] = now;
     }
     for (const id of vidIds) {
       record.videos[id] = s.videos[id];
       delete s.videos[id];
+      s.tombstones["video:" + id] = now;
     }
   });
-  if (chIds.length || vidIds.length) {
-    const now = syncedNow();
-    const tombs = await getTombstones();
-    for (const id of chIds) tombs["channel:" + id] = now;
-    for (const id of vidIds) tombs["video:" + id] = now;
-    await setTombstones(tombs);
-  }
 
   let keywordCount = 0;
   if (req.keywords) {
@@ -338,11 +337,7 @@ const idsOf = (msg) => (Array.isArray(msg.ids) ? msg.ids : msg.id != null ? [msg
 // A deletion has to outlive the entry itself so the sync merge in server-sync.js
 // can tell "this device never had it" from "this device deleted it" — otherwise
 // another device's stale copy silently re-adds an unblocked channel/video.
-
-async function getTombstones() {
-  const res = await chrome.storage.local.get(STORAGE.TOMBSTONE_KEY);
-  return res[STORAGE.TOMBSTONE_KEY] || {};
-}
+// Written only through updateStore(), with the list (`state.tombstones`).
 
 function pruneTombstones(tombs) {
   const cutoff = syncedNow() - STORAGE.TOMBSTONE_TTL_MS;
@@ -350,24 +345,6 @@ function pruneTombstones(tombs) {
     if ((tombs[k] || 0) < cutoff) delete tombs[k];
   }
   return tombs;
-}
-
-async function setTombstones(tombs) {
-  await chrome.storage.local.set({ [STORAGE.TOMBSTONE_KEY]: pruneTombstones({ ...(tombs || {}) }) });
-}
-
-async function writeTombstone(kind, id) {
-  const tombs = await getTombstones();
-  tombs[kind + ":" + id] = syncedNow();
-  await setTombstones(tombs);
-}
-
-async function clearTombstone(kind, id) {
-  const tombs = await getTombstones();
-  if (tombs[kind + ":" + id] !== undefined) {
-    delete tombs[kind + ":" + id];
-    await setTombstones(tombs);
-  }
 }
 
 // ---------- declarativeNetRequest: instant redirect on direct navigation ----------
@@ -826,7 +803,7 @@ async function enrichChannelIdentity(key) {
 // identities. Fold each such group into its earliest entry: the stricter mode
 // wins, video-only exceptions combine, and whatever the survivor lacks comes
 // from the rest. Mutates `channels`; returns the keys folded away, which need
-// tombstones so other devices drop them too.
+// tombstones so other devices drop them too (tombstoneFolded()).
 function foldDuplicateChannels(channels) {
   const norm = (k) => (k && k[0] === "@" ? k.toLowerCase() : k);
   const parent = new Map();
@@ -878,12 +855,9 @@ function foldDuplicateChannels(channels) {
   return folded;
 }
 
-async function tombstoneAll(kind, keys) {
-  if (!keys.length) return;
-  const tombs = await getTombstones();
+function tombstoneFolded(tombs, keys) {
   const now = syncedNow();
-  for (const k of keys) tombs[kind + ":" + k] = now;
-  await setTombstones(tombs);
+  for (const k of keys) tombs["channel:" + k] = now;
 }
 
 // Merge a { id: {subs, handle, name, ucid} } map into the blocklist in one
@@ -920,7 +894,6 @@ async function applyChannelInfo(map) {
     return n;
   };
 
-  let folded = [];
   await updateStore((s) => {
     let n = 0;
     for (const id of ids) {
@@ -930,9 +903,8 @@ async function applyChannelInfo(map) {
     }
     if (!n) return false;
     // A lookup is what pairs a channel's two identities.
-    folded = foldDuplicateChannels(s.channels);
+    tombstoneFolded(s.tombstones, foldDuplicateChannels(s.channels));
   });
-  await tombstoneAll("channel", folded);
   return ids.length;
 }
 
@@ -1384,19 +1356,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               if (allowAdded) await chrome.storage.sync.set({ [ALLOWLIST_KEY]: { list, ts: Date.now() } }).catch(() => {});
             }
             folded = foldDuplicateChannels(channels);
+            tombstoneFolded(state.tombstones, folded);
+            for (const k of clearedTombs) delete state.tombstones[k];
           });
-          await tombstoneAll("channel", folded);
-          if (clearedTombs.length) {
-            const tombs = await getTombstones();
-            let touched = false;
-            for (const k of clearedTombs) {
-              if (tombs[k] !== undefined) {
-                delete tombs[k];
-                touched = true;
-              }
-            }
-            if (touched) await setTombstones(tombs);
-          }
 
           const fresh = await loadAll();
           await broadcastUpdate(fresh);
@@ -1568,24 +1530,29 @@ if (chrome.contextMenus) {
 
 // ---------- sync through your own server (background/server-sync.js) ----------
 // server-sync.js never touches blocklist storage itself — it goes through this
-// host object. applyMergedState() is the merge's write path: replace the list
-// and the tombstones, then broadcast with fromSync so it doesn't loop back into
-// a push.
+// host object. applyMerge() is the merge's write path: `merge(store)` is
+// handed { channels, videos, tombstones } as they are at that moment, inside
+// the queue every block and unblock goes through, and returns what replaces
+// them (or null: no change). The merge used to be worked out from the list as
+// it was before the download and written back whole after it, so a block made
+// meanwhile vanished and an unblock came undone. Then it broadcasts with
+// fromSync so the write doesn't loop back into a push. Resolves to whether it
+// wrote.
 const syncHost = {
-  loadAll: async () => {
-    const s = await loadAll();
-    return { channels: s.channels, videos: s.videos };
-  },
-  getTombstones,
+  read: readStore,
   now: syncedNow,
   setClockOffset: (ms) => {
     if (Number.isFinite(ms)) clockOffset = ms;
   },
-  applyMergedState: async ({ channels, videos, tombstones }) => {
-    await writeFullState(channels, videos);
-    await setTombstones(tombstones);
-    const state = await loadAll();
+  applyMerge: async (merge) => {
+    const state = await updateStore((s) => {
+      const next = merge({ channels: s.channels, videos: s.videos, tombstones: s.tombstones });
+      if (!next) return false;
+      Object.assign(s, { channels: next.channels, videos: next.videos, tombstones: next.tombstones });
+    });
+    if (state.result === false) return false;
     await broadcastUpdate(state, { fromSync: true });
+    return true;
   }
 };
 
