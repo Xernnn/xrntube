@@ -10,6 +10,9 @@ import vm from "vm";
 //     fails the round before anything is sent, so the next round doesn't read
 //     what's missing here as deleted; and a bulk never-block, an import or a
 //     restore that won't fit says so instead of reporting it done
+//   - reconnecting to the same server and user (a new password after a 401)
+//     keeps the merge base, so deletions made elsewhere stay deleted; another
+//     server, or one that was reset, still merges as a first sync
 // The real server and two browsers are serversync-test's; syncread-test has
 // the reply that can't be read.
 
@@ -284,6 +287,39 @@ const size = (a) => Object.keys((a && a.list) || {}).length;
   res.ok === false && /never-block list would be too big/.test(res.error || "") && kept && retry.ok && size(d.sync.bt_allowlist) === 100
     ? ok("a restore that won't fit says so and keeps its undo record, which restores once there's room")
     : fail("restore over the quota: " + JSON.stringify({ res, kept, retry, size: size(d.sync.bt_allowlist) }));
+}
+
+// ---- 3. reconnecting ----
+// Agreed on keywords a and b at version 6; another device has since deleted
+// b. Then the password changes: rounds get 401 until it's typed again.
+// configure() dropped the base on every connect, so the round after the new
+// password was a first sync — a union — and b came back, on every device.
+const kwRecords = (list) => ({ channels: {}, videos: {}, tombstones: {}, keywords: { list: list.map((p) => ({ p })), ts: 2000 }, allowlist: { list: {}, ts: 0 } });
+const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null } };
+{
+  const srv = server({ version: 7, password: "new-pw", doc: kwRecords(["a"]) });
+  const d = await boot({ servers: { [ORIGIN]: srv }, sync: { bt_keywords: { list: [{ p: "a" }, { p: "b" }], ts: 1000 } } });
+  await connect(d, agreedAB);
+  const refused = await d.send({ type: "SYNC_NOW" });
+  const res = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_ + "/", user: "me", password: "new-pw" } });
+  refused.status === 401 && res.ok && kwIds(d.sync.bt_keywords) === "a" && kwIds(srv.doc.keywords) === "a"
+    ? ok("a new password for the same server and user keeps the base: a keyword deleted on another device stays deleted, here and on the server")
+    : fail("reconnect to the same server: " + JSON.stringify({ refused, res, here: kwIds(d.sync.bt_keywords), server: kwIds(srv.doc.keywords) }));
+}
+// The base belongs to the copy it was agreed with: another server, or the
+// same one reset (its version went backwards), merges as a first sync.
+{
+  const other = server({ version: 3, doc: kwRecords(["a"]) });
+  const d = await boot({ servers: { "https://other.example": other }, sync: { bt_keywords: { list: [{ p: "a" }, { p: "b" }], ts: 1000 } } });
+  await connect(d, agreedAB);
+  const res = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: "https://other.example/xrntube", user: "me", password: "pw" } });
+  const reset = server({ version: 2, doc: kwRecords(["a"]) });
+  const d2 = await boot({ servers: { [ORIGIN]: reset }, sync: { bt_keywords: { list: [{ p: "a" }, { p: "b" }], ts: 1000 } } });
+  await connect(d2, agreedAB);
+  const res2 = await d2.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_, user: "me", password: "pw" } });
+  res.ok && kwIds(other.doc.keywords) === "a,b" && res2.ok && kwIds(reset.doc.keywords) === "a,b"
+    ? ok("…while another server, or the same one reset to an older version, takes this device's keywords as a first sync does")
+    : fail("first-sync merges: " + JSON.stringify({ res, other: kwIds(other.doc.keywords), res2, reset: kwIds(reset.doc.keywords) }));
 }
 
 console.log("\nDONE");

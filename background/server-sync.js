@@ -578,20 +578,28 @@
     async configure(conn) {
       clearTimeout(pushTimer);
       await loadCfg();
-      // A different server (or none) — whatever we agreed with the old one is
-      // no base for merging with the new one.
-      await chrome.storage.local.remove(STORAGE.SYNC_BASE_KEY);
-      if (!conn || !conn.url) {
-        Object.assign(cfg, { url: null, user: null, password: null, lastVersion: null, lastError: null });
+      const url = conn && conn.url ? String(conn.url).trim().replace(/\/+$/, "") : null;
+      const user = url ? String(conn.user || "").trim() : null;
+      // The same server and user — a new password after a run of 401s, say —
+      // is the same copy, and what this device agreed with it is still the
+      // base (and lastVersion, which tells a reset server by its version going
+      // backwards). Dropping it made the next round a first sync, a union,
+      // which brought back everything deleted elsewhere since. A different
+      // server, or none, has nothing to do with what the old one agreed.
+      if (!url || url !== cfg.url || user !== cfg.user) {
+        await chrome.storage.local.remove(STORAGE.SYNC_BASE_KEY);
+        Object.assign(cfg, { lastVersion: null, agreedFp: null });
+      }
+      if (!url) {
+        Object.assign(cfg, { url: null, user: null, password: null, lastError: null });
         await persistCfg();
         return { ok: true, enabled: false };
       }
       Object.assign(cfg, {
-        url: String(conn.url).trim().replace(/\/+$/, ""),
-        user: String(conn.user || "").trim(),
+        url,
+        user,
         // No password given on reconnect keeps the saved one.
         password: conn.password !== undefined ? String(conn.password) : cfg.password || "",
-        lastVersion: null,
         lastError: null
       });
       await persistCfg();

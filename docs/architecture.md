@@ -191,8 +191,11 @@ of the last cycle: in the base and gone from one side means deleted there,
 not in the base means added. Item by item for keywords and never-block keys,
 switch by switch for settings, value by value for the keyword bounds
 (`durMinSec`, `durMaxSec`, `commentLimit`). No base — a device's first sync,
-a reconnect, or a server whose version went *backwards* (reset or restored) —
-means nothing counts as deleted: lists union, and settings take the server's
+a connect to another server or user, or a server whose version went
+*backwards* (reset or restored) — means nothing counts as deleted. A
+reconnect to the same server and user (a new password, say) keeps the base
+and `lastVersion`: it is the same copy, and dropping the base there brought
+back everything deleted elsewhere since. Without one, lists union, and settings take the server's
 set whole, so a newly connected device adopts the others' switches. Settings,
 keywords and the allow-list are written straight to `chrome.storage.sync` by
 whoever edits them; background.js's `storage.onChanged` is what calls
