@@ -353,6 +353,21 @@ self.XrnTube.resolveSettings = function (stored) {
   return out;
 };
 
+// Where the sync password may be sent. It is the server's login, which the
+// server reads from Radicale's htpasswd, so it is the calendar password too,
+// and Basic auth over plain http hands it to anyone on the way. So: https, or
+// plain http to this machine only. server-sync.js enforces it; the options
+// page says so before asking.
+self.XrnTube.safeSyncAddress = function (url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  return u.protocol === "https:" || (u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname));
+};
+
 // Sync through your own server (background/server-sync.js).
 self.XrnTube.SYNC = {
   SCHEMA_VERSION: 1,

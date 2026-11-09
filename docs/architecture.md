@@ -164,7 +164,12 @@ can't reach the worker). Options → Sync → **Check now** sends
 
 Sync with the user's own server (`server/xrntube-sync.py`; protocol and
 deployment in [sync-server.md](sync-server.md)). The address, user name and
-password live in `chrome.storage.local` `bt_sync` (never in sync storage). It
+password live in `chrome.storage.local` `bt_sync` (never in sync storage). The
+password is the server's login, so the calendar's too: it goes only to the
+address and user it was saved for (a connect anywhere else with the password
+box empty is refused) and only over https, plain http being allowed to
+localhost / 127.0.0.1 alone (`safeSyncAddress()`, checked on connect and on
+every request). It
 exposes `self.XrnTube.serverSync` with `init(host)` / `onLocalChange()`
 (debounced push, from `broadcastUpdate()`) / `onPoll()` (the `bt-sync-poll`
 alarm, every `SYNC.POLL_PERIOD_MIN`) / `configure({ url, user, password })`

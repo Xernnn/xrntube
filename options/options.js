@@ -9,7 +9,8 @@ const {
   knowsOneIdentity,
   resolveRetryDue,
   RESOLVE_MAX_TRIES,
-  resolveSettings
+  resolveSettings,
+  safeSyncAddress
 } = self.XrnTube;
 
 const $ = (id) => document.getElementById(id);
@@ -2462,13 +2463,18 @@ function initSync() {
     const url = sync.url.value.trim();
     const user = sync.user.value.trim();
     const password = sync.password.value;
-    if (!/^https?:\/\/[^/]+/i.test(url) || !user) {
-      toast("Enter the server's address (https://…) and your user name.", { error: true });
+    // The worker refuses both of these too; this says so before asking it.
+    if (!/^https?:\/\/[^/]+/i.test(url) || !safeSyncAddress(url) || !user) {
+      toast("Enter the server's address, starting with https:// (plain http:// only for localhost), and your user name.", {
+        error: true
+      });
       return;
     }
     const status = await send({ type: MSG.GET_SYNC_STATUS });
-    if (!password && !(status && status.enabled)) {
-      toast("Enter your password.", { error: true });
+    // The saved password goes only to the server and user it was saved for.
+    const sameLogin = status && status.enabled && status.url === url.replace(/\/+$/, "") && status.user === user;
+    if (!password && !sameLogin) {
+      toast(status && status.enabled ? "Enter the password for this server and user." : "Enter your password.", { error: true });
       sync.password.focus();
       return;
     }
@@ -2476,7 +2482,7 @@ function initSync() {
     sync.save.textContent = "Connecting…";
     const res = await send({
       type: MSG.SET_SYNC_CONFIG,
-      // An empty password field on a connected device keeps the saved one.
+      // An empty password field keeps the saved one (same server and user only).
       conn: { url, user, password: password || undefined }
     });
     sync.save.disabled = false;

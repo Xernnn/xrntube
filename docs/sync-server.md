@@ -110,7 +110,10 @@ internet with it. That happened once, to a calendar; `tailscale funnel status`
 must say "Funnel on" afterwards.
 
 Then on each device: options → **Sync** → the address including the mount
-(`https://<host>/xrntube`), the user name, the password → **Connect**.
+(`https://<host>/xrntube`), the user name, the password → **Connect**. The
+extension refuses a plain `http://` address unless it is `localhost` or
+`127.0.0.1` (Basic auth would show the password to the network), and sends
+the saved password only to the address and user it was saved for.
 
 ## Updates
 

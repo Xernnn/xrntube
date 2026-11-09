@@ -13,6 +13,8 @@ import vm from "vm";
 //   - reconnecting to the same server and user (a new password after a 401)
 //     keeps the merge base, so deletions made elsewhere stay deleted; another
 //     server, or one that was reset, still merges as a first sync
+//   - the saved password goes only to the server and user it was saved for,
+//     and only over https (plain http just to this machine)
 // The real server and two browsers are serversync-test's; syncread-test has
 // the reply that can't be read.
 
@@ -320,6 +322,50 @@ const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null 
   res.ok && kwIds(other.doc.keywords) === "a,b" && res2.ok && kwIds(reset.doc.keywords) === "a,b"
     ? ok("…while another server, or the same one reset to an older version, takes this device's keywords as a first sync does")
     : fail("first-sync merges: " + JSON.stringify({ res, other: kwIds(other.doc.keywords), res2, reset: kwIds(reset.doc.keywords) }));
+}
+
+// ---- 4. where the saved password may go ----
+// It is the server login, which is also the calendar's. With the password box
+// left empty, Reconnect sent the saved one to whatever address was typed, and
+// took http:// too, which shows it to the network.
+{
+  const srv = server({ version: 7, doc: kwRecords(["a"]) });
+  const local = { 5233: server({ doc: kwRecords(["a"]) }) };
+  const d = await boot({
+    servers: { [ORIGIN]: srv, "http://127.0.0.1:5233": local[5233], "http://localhost:5233": local[5233] },
+    sync: { bt_keywords: { list: [{ p: "a" }], ts: 1000 } }
+  });
+  await connect(d, agreedAB);
+  const elsewhere = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: "https://elsewhere.example/xrntube", user: "me" } });
+  const otherUser = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_, user: "someone" } });
+  const plain = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: "http://192.168.1.5:5233/xrntube", user: "me", password: "pw" } });
+  const after = d.local.bt_sync;
+  !elsewhere.ok && /password/.test(elsewhere.error || "") && !otherUser.ok && !plain.ok && /https/.test(plain.error || "") &&
+  !d.requests.length && after.url === URL_ && after.user === "me" && after.password === "pw" && d.local.bt_sync_base
+    ? ok("no password typed, another address or user is refused; http:// to another machine is refused even with one — nothing is sent, and the connection stands")
+    : fail("refusals: " + JSON.stringify({ elsewhere, otherUser, plain, requests: d.requests, url: after.url, user: after.user }));
+
+  const same = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_ + "/", user: "me" } });
+  same.ok && d.requests.length && d.requests.every((r) => r.url.startsWith(URL_ + "/") && r.auth)
+    ? ok("the same address and user with the box left empty reconnects with the saved password")
+    : fail("reconnect with the saved password: " + JSON.stringify({ same, requests: d.requests }));
+
+  d.requests.length = 0;
+  const loop = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: "http://127.0.0.1:5233/xrntube", user: "me", password: "pw" } });
+  const named = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: "http://localhost:5233/xrntube", user: "me", password: "pw" } });
+  loop.ok && named.ok && d.requests.length >= 2
+    ? ok("plain http:// to 127.0.0.1 or localhost connects (a server on this machine)")
+    : fail("http to this machine: " + JSON.stringify({ loop, named, requests: d.requests }));
+}
+// Saved before this check existed: the round refuses to send the password.
+{
+  const lan = server({ doc: kwRecords(["a"]) });
+  const d = await boot({ servers: { "http://192.168.1.5:5233": lan } });
+  await connect(d, { sync: { url: "http://192.168.1.5:5233/xrntube" } });
+  const res = await d.send({ type: "SYNC_NOW" });
+  !res.ok && /https/.test(res.error || "") && !d.requests.length
+    ? ok(`a connection saved with http:// to another machine sends nothing: "${res.error}"`)
+    : fail("saved http connection: " + JSON.stringify({ res, requests: d.requests }));
 }
 
 console.log("\nDONE");

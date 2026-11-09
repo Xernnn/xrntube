@@ -54,7 +54,7 @@ async function device(reply) {
   };
   const ctx = vm.createContext({
     console, setTimeout, clearTimeout, structuredClone, TextEncoder, TextDecoder, btoa, atob, crypto,
-    Response, ReadableStream, Blob, CompressionStream, fetch,
+    Response, ReadableStream, Blob, CompressionStream, URL, fetch,
     chrome: { storage: { local, sync } }
   });
   ctx.self = ctx;

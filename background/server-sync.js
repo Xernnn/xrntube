@@ -52,7 +52,8 @@
 // it a `host` with the few operations it needs, and calls serverSync.init(host).
 // ---------------------------------------------------------------------------
 (() => {
-  const { STORAGE, SYNC, KEYWORDS_KEY, ALLOWLIST_KEY, SETTINGS_KEY, resolveSettings, oversizeSyncItems } = self.XrnTube;
+  const { STORAGE, SYNC, KEYWORDS_KEY, ALLOWLIST_KEY, SETTINGS_KEY, resolveSettings, oversizeSyncItems, safeSyncAddress } =
+    self.XrnTube;
 
   let host = null;
 
@@ -91,6 +92,9 @@
   // ---- the server --------------------------------------------------------
   const enabled = () => !!(cfg && cfg.url && cfg.user);
 
+  // See safeSyncAddress() in shared/constants.js.
+  const UNSAFE_ADDRESS = "the server's address must start with https:// (plain http:// only for localhost): over plain http the password would cross the network readable";
+
   function authHeader() {
     // btoa() takes Latin-1 only; encode first so any password works.
     const bytes = new TextEncoder().encode(`${cfg.user}:${cfg.password || ""}`);
@@ -98,6 +102,8 @@
   }
 
   async function request(method, body, ifMatch, path = "/state") {
+    // configure() refuses such an address; this covers one saved before it did.
+    if (!safeSyncAddress(cfg.url)) throw new Error(UNSAFE_ADDRESS + ". Reconnect with the https address");
     const headers = { Authorization: authHeader() };
     if (ifMatch) headers["If-Match"] = ifMatch;
     let payload;
@@ -576,17 +582,26 @@
     // options page: connect with { url, user, password }, or pass null to
     // disconnect this device.
     async configure(conn) {
-      clearTimeout(pushTimer);
       await loadCfg();
       const url = conn && conn.url ? String(conn.url).trim().replace(/\/+$/, "") : null;
       const user = url ? String(conn.user || "").trim() : null;
+      const same = !!url && url === cfg.url && user === cfg.user;
+      // Refused before anything changes, so the connection already there stands.
+      if (url && !safeSyncAddress(url)) return { ok: false, error: UNSAFE_ADDRESS, enabled: enabled() };
+      // An empty password box reuses the saved password only where it was
+      // saved: sent to any address typed with the box left empty, it was
+      // handed to whoever runs that one.
+      if (url && conn.password === undefined && !same) {
+        return { ok: false, error: "type the password: the saved one is only sent to the server and user it was saved for", enabled: enabled() };
+      }
+      clearTimeout(pushTimer);
       // The same server and user — a new password after a run of 401s, say —
       // is the same copy, and what this device agreed with it is still the
       // base (and lastVersion, which tells a reset server by its version going
       // backwards). Dropping it made the next round a first sync, a union,
       // which brought back everything deleted elsewhere since. A different
       // server, or none, has nothing to do with what the old one agreed.
-      if (!url || url !== cfg.url || user !== cfg.user) {
+      if (!same) {
         await chrome.storage.local.remove(STORAGE.SYNC_BASE_KEY);
         Object.assign(cfg, { lastVersion: null, agreedFp: null });
       }
@@ -598,7 +613,7 @@
       Object.assign(cfg, {
         url,
         user,
-        // No password given on reconnect keeps the saved one.
+        // No password given keeps the saved one (the same server and user: above).
         password: conn.password !== undefined ? String(conn.password) : cfg.password || "",
         lastError: null
       });
