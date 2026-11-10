@@ -25,10 +25,14 @@ store** is one `chrome.storage.local` key, `bt_blocklist` =
 `updateStore(change)`, a one-at-a-time queue that loads the store, lets
 `change` mutate it (returning `false` skips the write) and saves it — without
 the queue, two writers that each read the whole list and wrote it back would
-drop one another's edit. `addEntry` / `removeEntry` / `mutateEntries` /
-`applyChannelInfo` / `deleteData` / the restore and the import are all
-`updateStore` callers; `writeFullState()` (the sync merge's whole-list
-replace) is one too. Until v2 the blocklist lived in `chrome.storage.sync` as
+drop one another's edit. The tombstones (`bt_tombstones`, below) are loaded
+and saved in the same step, as `state.tombstones`, so nothing sees an entry
+gone without the tombstone that records it. `addEntry` / `removeEntry` /
+`mutateEntries` / `applyChannelInfo` / `deleteData` / the restore and the
+import are all `updateStore` callers, and so is the sync merge
+(`syncHost.applyMerge()`), which works its result out inside the queue from
+the store as it is then — not from a copy read before the download, which
+dropped a block made meanwhile and undid an unblock. Until v2 the blocklist lived in `chrome.storage.sync` as
 50-entry chunks with a local-only overflow, forced by its 8KB-per-item and
 512-item limits — the cause of two silent-write bugs. `migrateFromSyncChunks()`
 folds that layout into the new key on the first `loadAll()`, and removes the
@@ -44,7 +48,9 @@ per blocklist entry, while
 always present regardless of the blocklist. Every call clears all dynamic
 rules and re-adds from scratch, so the ID ranges only need to not collide.
 Rules are **capped** (`DNR_MAX_VIDEO_RULES = 800` — regex-filtered, under
-Chrome's 1000 regex-rule limit; `DNR_MAX_CHANNEL_RULES = 3000` — url-filtered)
+Chrome's 1000 regex-rule limit; `DNR_MAX_CHANNEL_RULES = 3000` — url-filtered,
+`||youtube.com/@foo^`: anchored at the host and closed by `^`, since a bare
+`youtube.com/@foo` is a substring and redirected `@foobar` and `@foo.tv` too)
 and go to the *most recently blocked* entries (`ts` desc); DNR is only the
 no-flash optimisation for direct navigation, and `content.js`'s
 `checkCurrentPageAndRedirect()` / `yt-navigate-start` guards still cover
@@ -62,7 +68,7 @@ one-channel form — `FETCH_CHANNEL_SUBS` / `BULK_FETCH_CHANNEL_INFO` and the
 sweep (below), which use `applyChannelInfo()` for one write per batch, and `ALLOW_CHANNEL` /
 `DISALLOW_CHANNEL` for the `bt_allowlist` "Never-block" override — see
 "Channel allow-list"). `IMPORT_BLOCKLIST` merges in memory and does one
-`writeFullState()` (never `addEntry`-per-entry — a multi-thousand-entry
+`updateStore()` write (never `addEntry`-per-entry — a multi-thousand-entry
 import would blow `chrome.storage.sync`'s write-rate quota and take minutes)
 and carries across the optional per-entry extras (`hidden`,
 `blockOlderThanDays`, `subs`). It matches an incoming channel against
@@ -81,8 +87,8 @@ take `ids` as well as `id` (`idsOf(msg)`): `mutateEntries()` and
 `setAllowed()` are one write for the whole selection — a per-entry loop is a
 whole-list write and a DNR rebuild per row.
 **`DELETE_DATA`** `{ channels: [ids] | "all", videos: [ids] | "all",
-keywords, allowlist }` removes any mix of those in one `writeFullState()`
-plus one tombstone write, and pushes **one** undo record holding everything
+keywords, allowlist }` removes any mix of those, and tombstones them, in one
+`updateStore()` write, and pushes **one** undo record holding everything
 it removed (keywords and the never-block list included). Every removal answers with
 `undoTs`, the record's stamp, which `RESTORE_UNBLOCK { ts }` restores by —
 an index shifts the moment anything else is removed, which made "Undo" on a
@@ -91,7 +97,9 @@ write too (a 5,000-entry "delete all" restored through `addEntry()` would
 hit the write quota a hundred entries in).
 Every blocked entry also carries `updated_at` (bumped on every mutation,
 stamped from `syncedNow()` — `Date.now()` plus the sync server's clock
-offset), and `removeEntry()` writes a **tombstone** to `chrome.storage.local`
+offset — and by `stampAfter()` never at or before the stamp of what it
+supersedes, so an unblock can't lose to the block it undid when the clock
+moves back), and `removeEntry()` writes a **tombstone** to `chrome.storage.local`
 (`bt_tombstones`, `{ "channel:<key>"|"video:<id>": deletedAtMs }`, pruned
 after `TOMBSTONE_TTL_MS` — a year: a device that syncs again after the TTL no
 longer sees the deletion and pushes the entry back); both exist so the sync
@@ -160,7 +168,12 @@ can't reach the worker). Options → Sync → **Check now** sends
 
 Sync with the user's own server (`server/xrntube-sync.py`; protocol and
 deployment in [sync-server.md](sync-server.md)). The address, user name and
-password live in `chrome.storage.local` `bt_sync` (never in sync storage). It
+password live in `chrome.storage.local` `bt_sync` (never in sync storage). The
+password is the server's login, so the calendar's too: it goes only to the
+address and user it was saved for (a connect anywhere else with the password
+box empty is refused) and only over https, plain http being allowed to
+localhost / 127.0.0.1 alone (`safeSyncAddress()`, checked on connect and on
+every request). It
 exposes `self.XrnTube.serverSync` with `init(host)` / `onLocalChange()`
 (debounced push, from `broadcastUpdate()`) / `onPoll()` (the `bt-sync-poll`
 alarm, every `SYNC.POLL_PERIOD_MIN`) / `configure({ url, user, password })`
@@ -168,11 +181,20 @@ alarm, every `SYNC.POLL_PERIOD_MIN`) / `configure({ url, user, password })`
 `historyItem(name)`. The one `cycle()`: GET the document (`?since=` the
 version it last agreed on, when nothing changed locally since — a 304 ends
 the cycle there) → merge → apply
-locally via `host.applyMergedState()` (then `broadcastUpdate(…, { fromSync:
-true })`, so it doesn't loop into another push) → PUT if the merge differs from
-the remote, with `If-Match` set to the version it read. A **412** means
+locally → PUT if the merge differs from the remote, with `If-Match` set to
+the version it read. The merge is worked out again from what this device
+holds when it is written, since the download can take a while: the keywords,
+never-block list and settings are read just before they're written, and the
+list is merged inside `host.applyMerge()` — in the store's queue, so no block
+or unblock lands between that read and the write (then `broadcastUpdate(…,
+{ fromSync: true })`, so it doesn't loop into another push). A **412** means
 another device wrote in between: the cycle simply runs again on the newer
-copy. The server's `Date` header sets the clock offset. It never touches
+copy. The server's `Date` header sets the clock offset (the server exposes
+it to these CORS requests; before it did, the offset was never set), taken
+as the middle of its second at the middle of the round trip, and only when it
+moves the offset by more than `SYNC.CLOCK_SLACK_MS` (2 s) — read afresh
+each request it wobbled by a second, which could stamp an unblock before the
+block it undid. It never touches
 blocklist storage directly — only through `host`.
 
 Two merges. **Channels and videos**: per-entry LWW on `updated_at` with
@@ -181,10 +203,16 @@ the "What gets hidden" switches) have no tombstones, so they merge three ways
 against `bt_sync_base` — what this device and the server agreed on at the end
 of the last cycle: in the base and gone from one side means deleted there,
 not in the base means added. Item by item for keywords and never-block keys,
-switch by switch for settings, value by value for the keyword bounds
+switch by switch for settings (a switch only a newer version knows rides
+through untouched, the server's value standing: dropped, as `resolveSettings()`
+drops it, it made an older and a newer device push the list at each other
+every cycle), value by value for the keyword bounds
 (`durMinSec`, `durMaxSec`, `commentLimit`). No base — a device's first sync,
-a reconnect, or a server whose version went *backwards* (reset or restored) —
-means nothing counts as deleted: lists union, and settings take the server's
+a connect to another server or user, or a server whose version went
+*backwards* (reset or restored) — means nothing counts as deleted. A
+reconnect to the same server and user (a new password, say) keeps the base
+and `lastVersion`: it is the same copy, and dropping the base there brought
+back everything deleted elsewhere since. Without one, lists union, and settings take the server's
 set whole, so a newly connected device adopts the others' switches. Settings,
 keywords and the allow-list are written straight to `chrome.storage.sync` by
 whoever edits them; background.js's `storage.onChanged` is what calls

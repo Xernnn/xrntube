@@ -54,13 +54,14 @@ async function device(reply) {
   };
   const ctx = vm.createContext({
     console, setTimeout, clearTimeout, structuredClone, TextEncoder, TextDecoder, btoa, atob, crypto,
-    Response, ReadableStream, Blob, CompressionStream, fetch,
+    Response, ReadableStream, Blob, CompressionStream, URL, fetch,
     chrome: { storage: { local, sync } }
   });
   ctx.self = ctx;
   for (const [name, src] of SOURCES) vm.runInContext(src, ctx, { filename: name });
   const s = ctx.XrnTube.serverSync;
-  await s.init({ now: () => Date.now(), setClockOffset() {}, loadAll: async () => ({ channels: {}, videos: {} }), getTombstones: async () => ({}), applyMergedState: async () => {} });
+  const empty = () => ({ channels: {}, videos: {}, tombstones: {} });
+  await s.init({ now: () => Date.now(), setClockOffset() {}, read: async () => empty(), applyMerge: async (merge) => !!merge(empty()) });
   // Connected only now, so init() didn't start a round of its own.
   await local.set({
     bt_sync: { url: "https://example.invalid/xrntube", user: "me", password: "pw", lastVersion: '"6"', agreedFp: "older" },

@@ -4,13 +4,15 @@ import { join, dirname } from "path";
 import { createHash, createPublicKey, generateKeyPairSync, verify } from "crypto";
 import { inflateRawSync } from "zlib";
 import { chromium } from "playwright";
-import { packageFiles, withUpdateUrl, zip, crx3, extensionId, updateManifest, compareVersions, CRX3_SIGNED_PREFIX } from "../scripts/crx.mjs";
+import { packageFiles, withUpdateUrl, zip, crx3, extensionId, updateManifest, compareVersions, releaseVersion, CRX3_SIGNED_PREFIX } from "../scripts/crx.mjs";
 
 // The extension updating itself, offline:
 //   - the signed .crx `npm run release` builds: a CRX3 header whose
 //     signature verifies over the zip, an ID derived from the key, every
 //     shipped file inside, update_url in its manifest (and not in the zip's),
 //     and an updates.xml that names that ID, version and file
+//   - the version a release goes out as: bumped past the server's when it's
+//     the same, refused when the server's is newer than this checkout's
 //   - an installed copy reads updates.xml before asking the browser, and asks
 //     only when it lists a newer version (the browser throttles its checks)
 //   - an unpacked copy (the laptop) reloads itself when its folder's manifest
@@ -139,6 +141,30 @@ try {
   compareVersions("2.1.0", "2.0.13") > 0 && compareVersions("2.1", "2.1.0") === 0 && compareVersions("2.0.9", "2.0.10") < 0
     ? ok("versions compare numerically, part by part")
     : fail("compareVersions");
+
+  // ---- 1a. the version a release goes out as ----
+  // The bump fired whenever the server's version wasn't older (>= 0), so a
+  // release from a checkout behind the server — 2.1.6 here with 2.1.7 live —
+  // shipped the older code as 2.1.8, to every browser within the hour.
+  const released = (live, local) => {
+    try {
+      return releaseVersion(live, local);
+    } catch (e) {
+      return { refused: e.message };
+    }
+  };
+  const relFirst = released(null, "2.1.7");
+  const relAhead = released("2.1.6", "2.1.7");
+  const relSame = released("2.1.7", "2.1.7");
+  const relTenth = released("2.1.9", "2.1.9");
+  const relBehind = released("2.1.7", "2.1.6");
+  relFirst.version === "2.1.7" && !relFirst.bumped && relAhead.version === "2.1.7" && !relAhead.bumped &&
+  relSame.version === "2.1.8" && relSame.bumped && relTenth.version === "2.1.10"
+    ? ok("a release goes out as manifest.json's version, bumped past the server's only when the server already has it (2.1.7 → 2.1.8, 2.1.9 → 2.1.10)")
+    : fail("release version: " + JSON.stringify({ relFirst, relAhead, relSame, relTenth }));
+  !relBehind.version && /already has 2\.1\.7, newer than this checkout's 2\.1\.6/.test(relBehind.refused || "")
+    ? ok(`a checkout behind the server's version is refused, not bumped: "${relBehind.refused}"`)
+    : fail("release from a checkout behind the server: " + JSON.stringify(relBehind));
 
   // ---- 1b. an installed copy asks the server before the browser ----
   // The browser backs requestUpdateCheck() off after every check, so an hourly

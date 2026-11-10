@@ -9,7 +9,8 @@ const {
   knowsOneIdentity,
   resolveRetryDue,
   RESOLVE_MAX_TRIES,
-  resolveSettings
+  resolveSettings,
+  safeSyncAddress
 } = self.XrnTube;
 
 const $ = (id) => document.getElementById(id);
@@ -468,9 +469,10 @@ function undoAction(undoTs) {
   return {
     label: "Undo",
     run: async () => {
-      await send({ type: MSG.RESTORE_UNBLOCK, ts: undoTs });
+      const res = await send({ type: MSG.RESTORE_UNBLOCK, ts: undoTs });
       await refresh();
-      toast("Restored.");
+      if (res && res.ok === false) toast("Not all of it came back: " + (res.error || "unknown error"), { error: true, ms: 9000 });
+      else toast("Restored.");
     }
   };
 }
@@ -1010,7 +1012,8 @@ function renderAllowlist() {
               action: {
                 label: "Undo",
                 run: async () => {
-                  await send({ type: MSG.ALLOW_CHANNEL, id: key });
+                  const res = await send({ type: MSG.ALLOW_CHANNEL, id: key });
+                  if (res && res.ok === false) toast(res.error || "That didn't work.", { error: true, ms: 9000 });
                   refresh();
                 }
               }
@@ -1034,8 +1037,12 @@ function initAllowlist() {
       toast("Couldn't read a channel from that — paste an @handle, a UC… ID, or a channel URL.", { error: true });
       return;
     }
+    const res = await send({ type: MSG.ALLOW_CHANNEL, ids: keys });
+    if (res && res.ok === false) {
+      toast("Nothing was added. " + (res.error || ""), { error: true, ms: 9000 });
+      return;
+    }
     input.value = "";
-    await send({ type: MSG.ALLOW_CHANNEL, ids: keys });
     const bad = tokens.length - keys.length;
     toast(`Never block: added ${plural(keys.length, "channel")}.` + (bad > 0 ? ` ${bad} couldn't be read.` : ""));
     refresh();
@@ -1214,6 +1221,13 @@ async function bulkRun(label, run, confirmOpts) {
     res = await run();
   } finally {
     suppressStorageRefresh = false;
+  }
+  if (res && res.ok === false) {
+    // Nothing changed, so the selection stays for another try.
+    bar.querySelectorAll("button").forEach((b) => (b.disabled = false));
+    syncBulkBar();
+    toast(res.error || "That didn't work.", { error: true, ms: 9000 });
+    return;
   }
   selected.clear();
   lastChecked = null;
@@ -1840,6 +1854,7 @@ async function previewAndImport(plan) {
   if (res.allowAdded) bits.push(`${res.allowAdded} never-block`);
   const extra = res.enriched ? ` Updated ${plural(res.enriched, "existing entry", "existing entries")}.` : "";
   toast((bits.length ? `Imported ${bits.join(", ")}.` : "Nothing new to import.") + extra, { ms: 7000 });
+  if (res.allowError) toast("The never-block list wasn't imported. " + res.allowError, { error: true, ms: 9000 });
 
   // An imported UC…-only channel blocks nothing in feeds until its @handle is
   // known, so the lookup starts straight away rather than behind a prompt —
@@ -2448,13 +2463,18 @@ function initSync() {
     const url = sync.url.value.trim();
     const user = sync.user.value.trim();
     const password = sync.password.value;
-    if (!/^https?:\/\/[^/]+/i.test(url) || !user) {
-      toast("Enter the server's address (https://…) and your user name.", { error: true });
+    // The worker refuses both of these too; this says so before asking it.
+    if (!/^https?:\/\/[^/]+/i.test(url) || !safeSyncAddress(url) || !user) {
+      toast("Enter the server's address, starting with https:// (plain http:// only for localhost), and your user name.", {
+        error: true
+      });
       return;
     }
     const status = await send({ type: MSG.GET_SYNC_STATUS });
-    if (!password && !(status && status.enabled)) {
-      toast("Enter your password.", { error: true });
+    // The saved password goes only to the server and user it was saved for.
+    const sameLogin = status && status.enabled && status.url === url.replace(/\/+$/, "") && status.user === user;
+    if (!password && !sameLogin) {
+      toast(status && status.enabled ? "Enter the password for this server and user." : "Enter your password.", { error: true });
       sync.password.focus();
       return;
     }
@@ -2462,7 +2482,7 @@ function initSync() {
     sync.save.textContent = "Connecting…";
     const res = await send({
       type: MSG.SET_SYNC_CONFIG,
-      // An empty password field on a connected device keeps the saved one.
+      // An empty password field keeps the saved one (same server and user only).
       conn: { url, user, password: password || undefined }
     });
     sync.save.disabled = false;

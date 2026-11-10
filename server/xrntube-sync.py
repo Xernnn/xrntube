@@ -58,6 +58,11 @@ FAIL_LIMIT = 10  # wrong logins from one address within FAIL_WINDOW_S, then 429 
 FAIL_WINDOW_S = 15 * 60
 AUTH_CACHE_S = 600  # a bcrypt check costs ~0.3s on a phone; don't pay it per request
 PREFIX = "/xrntube"
+# What the extension may read off a reply. Its requests are CORS (it holds no host permission for
+# this server), so any other header is hidden from it: ETag is the version it merges against, and
+# Date the clock its merges stamp with — unexposed, it read no Date at all, and each device's own
+# clock decided which copy of an entry was the newer.
+EXPOSE_HEADERS = "ETag, Date"
 
 args = None
 lock = threading.Lock()
@@ -76,25 +81,30 @@ def client_address(handler):
     return peer
 
 
-def locked_out(addr):
-    """Whether this address has used up its wrong logins for now."""
+def take_attempt(addr, counted):
+    """Whether this address may try a password now (False: it has used up its wrong logins).
+
+    A counted attempt — one that carries a login — is recorded as a wrong one here, before its
+    password is checked, under the same lock as the limit: with the limit checked first and the
+    failure added after bcrypt, requests sent at once all got past a count of zero while the first
+    were still hashing, far more than FAIL_LIMIT guesses. A right password clears the address's
+    record (login()), its own attempt with it."""
     now = time.monotonic()
     with fail_lock:
         recent = [t for t in failures.get(addr, ()) if now - t < FAIL_WINDOW_S]
+        if len(recent) >= FAIL_LIMIT:
+            failures[addr] = recent
+            return False
+        if counted:
+            if len(failures) > 10000:  # a flood from many addresses: forget the stale ones
+                for a in [a for a, ts in failures.items() if now - ts[-1] >= FAIL_WINDOW_S]:
+                    del failures[a]
+            recent.append(now)
         if recent:
             failures[addr] = recent
         else:
             failures.pop(addr, None)
-        return len(recent) >= FAIL_LIMIT
-
-
-def note_failure(addr):
-    now = time.monotonic()
-    with fail_lock:
-        if len(failures) > 10000:  # a flood from many addresses: forget the stale ones
-            for a in [a for a, ts in failures.items() if now - ts[-1] >= FAIL_WINDOW_S]:
-                del failures[a]
-        failures.setdefault(addr, []).append(now)
+        return True
 
 
 def users_mtime():
@@ -257,7 +267,7 @@ class Handler(BaseHTTPRequestHandler):
         if code == 304:  # no body, so neither a type nor a length for one
             self.send_response(304)
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Expose-Headers", "ETag")
+            self.send_header("Access-Control-Expose-Headers", EXPOSE_HEADERS)
             self.send_header("Cache-Control", "no-store")
             for k, v in (headers or {}).items():
                 self.send_header(k, v)
@@ -270,7 +280,7 @@ class Handler(BaseHTTPRequestHandler):
             headers = {**(headers or {}), "Content-Encoding": "gzip"}
         self.send_response(code)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Expose-Headers", "ETag")
+        self.send_header("Access-Control-Expose-Headers", EXPOSE_HEADERS)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -283,15 +293,15 @@ class Handler(BaseHTTPRequestHandler):
     def login(self):
         # Ten wrong passwords from one address in 15 minutes lock it out until they age out, as
         # xrnloops-sync and xrnrule-sync do: the delay alone still let a guesser try ~1800 an hour.
+        # Each login counts against the address before it is checked (take_attempt).
         addr = client_address(self)
-        if locked_out(addr):
+        auth = self.headers.get("Authorization")
+        if not take_attempt(addr, counted=bool(auth)):
             time.sleep(FAIL_DELAY_S)
             self.send(429, "too many wrong passwords; try again later", headers={"Retry-After": str(FAIL_WINDOW_S)})
             return None
-        user = check_login(self.headers.get("Authorization"))
+        user = check_login(auth)
         if not user:
-            if self.headers.get("Authorization"):
-                note_failure(addr)
             time.sleep(FAIL_DELAY_S)
             self.send(401, "login required", headers={"WWW-Authenticate": 'Basic realm="XrnTube"'})
             return None

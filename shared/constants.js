@@ -187,6 +187,20 @@ self.XrnTube.KEYWORDS_KEY = "bt_keywords";
 // channels that must never be hidden, whatever else matches. `ts` drives
 // last-write-wins in the sync merge (same scheme as KEYWORDS_KEY).
 self.XrnTube.ALLOWLIST_KEY = "bt_allowlist";
+// chrome.storage.sync holds at most 8 KB in one item — its key plus its value
+// as JSON — in Chrome and Firefox alike, and refuses the whole write when an
+// item is over. The keyword list and the never-block list are one item each,
+// so either can get there: the never-block list at about 150 channels. Which
+// of `items` ({ key: value }, as passed to set()) are over, by name.
+self.XrnTube.SYNC_ITEM_MAX_BYTES = 8192;
+self.XrnTube.oversizeSyncItems = function (items) {
+  const X = self.XrnTube;
+  const names = { [X.KEYWORDS_KEY]: "keyword list", [X.ALLOWLIST_KEY]: "never-block list", [X.SETTINGS_KEY]: "settings" };
+  const enc = new TextEncoder();
+  return Object.keys(items)
+    .filter((k) => enc.encode(k + JSON.stringify(items[k])).length > X.SYNC_ITEM_MAX_BYTES)
+    .map((k) => names[k] || k);
+};
 // ---------------------------------------------------------------------------
 // Feature toggles.
 //
@@ -339,6 +353,21 @@ self.XrnTube.resolveSettings = function (stored) {
   return out;
 };
 
+// Where the sync password may be sent. It is the server's login, which the
+// server reads from Radicale's htpasswd, so it is the calendar password too,
+// and Basic auth over plain http hands it to anyone on the way. So: https, or
+// plain http to this machine only. server-sync.js enforces it; the options
+// page says so before asking.
+self.XrnTube.safeSyncAddress = function (url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  return u.protocol === "https:" || (u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname));
+};
+
 // Sync through your own server (background/server-sync.js).
 self.XrnTube.SYNC = {
   SCHEMA_VERSION: 1,
@@ -346,5 +375,6 @@ self.XrnTube.SYNC = {
   POLL_PERIOD_MIN: 3, // how often each device pulls (no realtime channel)
   POLL_FRESH_MS: 60 * 1000, // a poll this soon after a pull has nothing to add
   FULL_PULL_MS: 6 * 60 * 60 * 1000, // pull the whole document at least this often, changed or not
-  PUSH_DEBOUNCE_MS: 4000 // coalesce a burst of local edits into one push
+  PUSH_DEBOUNCE_MS: 4000, // coalesce a burst of local edits into one push
+  CLOCK_SLACK_MS: 2000 // the server's clock is taken over the device's only when they differ by more
 };

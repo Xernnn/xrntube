@@ -28,8 +28,16 @@ matter whether the proxy in front strips it.
 - **Login**: HTTP Basic against an htpasswd file of bcrypt hashes — Radicale's
   file works as-is, so a home server's calendar password can be the sync
   password. 2 s pause after a wrong password; a right one is cached for 10
-  minutes so a phone-class CPU doesn't run bcrypt on every sync.
-- **CORS**: any origin, `Authorization` / `If-Match` allowed, `ETag` exposed.
+  minutes so a phone-class CPU doesn't run bcrypt on every sync. Ten wrong
+  passwords from one address (the first `X-Forwarded-For` hop, from a
+  loopback proxy) within 15 minutes get it a 429 until they age out, the
+  right password included. Each login is counted before its password is
+  checked: counted after bcrypt, on this one-thread-per-request server, a
+  burst sent at once all got past the limit (18 of 30 in serversync-test).
+- **CORS**: any origin, `Authorization` / `If-Match` allowed, `ETag` and
+  `Date` exposed — the version the merge reads, and the clock it stamps with.
+  An unexposed header can't be read by the extension at all: before `Date`
+  was listed, no device ever took the server's clock.
   The extension sends no cookies, so it needs no host permission for the
   server's address — which therefore never appears in the manifest or the repo.
 - **gzip** both ways: the extension compresses its PUT (`CompressionStream`);
@@ -110,7 +118,10 @@ internet with it. That happened once, to a calendar; `tailscale funnel status`
 must say "Funnel on" afterwards.
 
 Then on each device: options → **Sync** → the address including the mount
-(`https://<host>/xrntube`), the user name, the password → **Connect**.
+(`https://<host>/xrntube`), the user name, the password → **Connect**. The
+extension refuses a plain `http://` address unless it is `localhost` or
+`127.0.0.1` (Basic auth would show the password to the network), and sends
+the saved password only to the address and user it was saved for.
 
 ## Updates
 
@@ -129,9 +140,12 @@ the same for every user. No blocklist ever goes there.
    tailnet, then the LAN), the first that answers being used — and the
    signing key `~/.config/xrntube/xrntube.pem` (made on the first release;
    neither is in the repo);
-2. asks the server which version is live and, if it isn't older than
+2. asks the server which version is live and, if it's the same as
    `manifest.json`'s, bumps `manifest.json`'s last number past it — a browser
-   only takes a higher version;
+   only takes a higher version. If the server's is *newer*, it stops, with
+   nothing built or changed: this checkout is behind what was shipped, and
+   bumping it would hand every browser older code under a newer number
+   (`releaseVersion()` in `scripts/crx.mjs`);
 3. signs `dist/xrntube-<version>.crx` (the zip plus that `update_url`) and
    writes `dist/updates.xml`;
 4. over ssh, puts the `.crx` (as itself and as `xrntube.crx`, the link a new

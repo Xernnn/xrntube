@@ -21,8 +21,10 @@
 // tombstones so an unblock on one device is not silently resurrected by a
 // stale copy on another. Timestamps come from the server's `Date` header (fed
 // back to background.js via host.setClockOffset) rather than the device clock,
-// so skew between devices can't decide a merge. Tombstones past
-// STORAGE.TOMBSTONE_TTL_MS are dropped on each cycle.
+// so skew between devices can't decide a merge — which needs the server to
+// expose Date to these CORS requests (Access-Control-Expose-Headers), and is
+// taken only when it moves the offset past SYNC.CLOCK_SLACK_MS (see request()).
+// Tombstones past STORAGE.TOMBSTONE_TTL_MS are dropped on each cycle.
 //
 // Keywords, the never-block list and settings have no tombstones; they merge
 // three ways against STORAGE.SYNC_BASE_KEY (see mergeItems). Item by item, so
@@ -52,7 +54,18 @@
 // it a `host` with the few operations it needs, and calls serverSync.init(host).
 // ---------------------------------------------------------------------------
 (() => {
-  const { STORAGE, SYNC, KEYWORDS_KEY, ALLOWLIST_KEY, SETTINGS_KEY, resolveSettings } = self.XrnTube;
+  const {
+    STORAGE,
+    SYNC,
+    KEYWORDS_KEY,
+    ALLOWLIST_KEY,
+    SETTINGS_KEY,
+    DEFAULT_SETTINGS,
+    LEGACY_SETTING_MAP,
+    resolveSettings,
+    oversizeSyncItems,
+    safeSyncAddress
+  } = self.XrnTube;
 
   let host = null;
 
@@ -91,6 +104,9 @@
   // ---- the server --------------------------------------------------------
   const enabled = () => !!(cfg && cfg.url && cfg.user);
 
+  // See safeSyncAddress() in shared/constants.js.
+  const UNSAFE_ADDRESS = "the server's address must start with https:// (plain http:// only for localhost): over plain http the password would cross the network readable";
+
   function authHeader() {
     // btoa() takes Latin-1 only; encode first so any password works.
     const bytes = new TextEncoder().encode(`${cfg.user}:${cfg.password || ""}`);
@@ -98,6 +114,8 @@
   }
 
   async function request(method, body, ifMatch, path = "/state") {
+    // configure() refuses such an address; this covers one saved before it did.
+    if (!safeSyncAddress(cfg.url)) throw new Error(UNSAFE_ADDRESS + ". Reconnect with the https address");
     const headers = { Authorization: authHeader() };
     if (ifMatch) headers["If-Match"] = ifMatch;
     let payload;
@@ -110,14 +128,21 @@
         headers["Content-Encoding"] = "gzip";
       }
     }
+    const sent = Date.now();
     const r = await fetch(cfg.url.replace(/\/+$/, "") + path, { method, headers, body: payload, cache: "no-store" });
 
-    // Trust the server's clock over the device's for merge timestamps. Kept in
-    // memory here; persisted with the rest of cfg at the end of the cycle.
-    const dateHeader = r.headers.get("date");
-    if (dateHeader) {
-      const offset = new Date(dateHeader).getTime() - Date.now();
-      if (Number.isFinite(offset)) {
+    // Trust the server's clock over the device's for merge timestamps. Date is
+    // in whole seconds, so it's read as the middle of its second at the middle
+    // of the round trip, and taken only when that moves the offset by more
+    // than SYNC.CLOCK_SLACK_MS: read afresh on every request, the offset
+    // wobbled by up to a second, and a stamp could come out earlier than one
+    // this device had just made — an unblock losing to the block it undid.
+    // Kept in memory here; persisted with the rest of cfg at the end of the
+    // cycle.
+    const date = Date.parse(r.headers.get("date") || "");
+    if (Number.isFinite(date)) {
+      const offset = Math.round(date + 500 - (sent + Date.now()) / 2);
+      if (Math.abs(offset - (cfg.clockOffset || 0)) > SYNC.CLOCK_SLACK_MS) {
         cfg.clockOffset = offset;
         if (host) host.setClockOffset(offset);
       }
@@ -240,8 +265,22 @@
     return {
       keywords: readKeywords(r[KEYWORDS_KEY]),
       allowlist: readAllowlist(r[ALLOWLIST_KEY]),
-      settings: resolveSettings(r[SETTINGS_KEY])
+      settings: readSettings(r[SETTINGS_KEY])
     };
+  }
+
+  // The switches this version knows, resolved (resolveSettings()), plus any it
+  // doesn't — a newer version's — as stored. resolveSettings() alone dropped
+  // those, so a device a version behind left a new switch out of its merge,
+  // found the server's copy different and pushed it stripped; the newer device
+  // put it back on its next round, and the two pushed the whole list at each
+  // other every few minutes.
+  const unknownSetting = (k) =>
+    !Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, k) && !Object.prototype.hasOwnProperty.call(LEGACY_SETTING_MAP, k);
+  function readSettings(raw) {
+    const out = resolveSettings(raw);
+    if (raw && typeof raw === "object") for (const [k, v] of Object.entries(raw)) if (unknownSetting(k)) out[k] = v;
+    return out;
   }
 
   // ---- three-way merge for the small records ---------------------------
@@ -324,12 +363,16 @@
 
   // Settings are one shared set. On a device's first sync the server's set
   // wins whole — connecting a new device adopts the others' choices rather
-  // than imposing its defaults on them; after that, switch by switch.
+  // than imposing its defaults on them; after that, switch by switch. A
+  // switch this version doesn't know it can't change either, so the server's
+  // value stands whenever there is one, and this device's copy only fills in
+  // when the server's set has none (an older device wrote it last).
   function mergeSettings(local, remote, base) {
     if (!remote) return local;
-    if (!base) return resolveSettings(remote);
+    if (!base) return readSettings(remote);
     const out = {};
-    for (const k of Object.keys(local)) out[k] = mergeValue(local[k], remote[k], base[k]);
+    for (const k of Object.keys(local)) out[k] = unknownSetting(k) ? local[k] : mergeValue(local[k], remote[k], base[k]);
+    for (const [k, v] of Object.entries(remote)) if (unknownSetting(k)) out[k] = v;
     return out;
   }
 
@@ -432,14 +475,13 @@
     }
     running = true;
     try {
-      const local = await host.loadAll(); // { channels, videos }
-      const localTombs = await host.getTombstones(); // { "kind:id": ts }
+      const local = await host.read(); // { channels, videos, tombstones: { "kind:id": ts } }
       const rec = await readLocalRecords();
       const localSnapshot = {
         v: SYNC.SCHEMA_VERSION,
         channels: local.channels,
         videos: local.videos,
-        tombstones: { ...localTombs },
+        tombstones: local.tombstones,
         keywords: rec.keywords,
         allowlist: rec.allowlist,
         settings: rec.settings
@@ -465,38 +507,48 @@
       let base = await loadBase();
       if (base && cfg.lastVersion && versionNo(version) < versionNo(cfg.lastVersion)) base = null;
 
+      // The download takes a while, and a block, an unblock or a keyword
+      // added meanwhile is in storage, not in `local` or `rec`. Merging those
+      // and writing the result back dropped the block and undid the unblock.
+      // So the merge is worked out again from storage as it is when it's
+      // written: the small records read just before they're written, the
+      // list inside host.applyMerge(), which no block or unblock can cut into.
+      const fresh = await readLocalRecords();
       const merged = emptySnapshot();
-      merged.keywords = mergeKeywords(rec.keywords, remote.keywords, base && base.kw);
-      merged.allowlist = mergeAllowlist(rec.allowlist, remote.allowlist, base && base.allow);
-      merged.settings = mergeSettings(rec.settings, remote.settings, base && base.settings);
+      merged.keywords = mergeKeywords(fresh.keywords, remote.keywords, base && base.kw);
+      merged.allowlist = mergeAllowlist(fresh.allowlist, remote.allowlist, base && base.allow);
+      merged.settings = mergeSettings(fresh.settings, remote.settings, base && base.settings);
 
       const writes = {};
-      if (kwFingerprint(merged.keywords) !== kwFingerprint(rec.keywords)) writes[KEYWORDS_KEY] = merged.keywords;
-      if (allowFingerprint(merged.allowlist) !== allowFingerprint(rec.allowlist)) writes[ALLOWLIST_KEY] = merged.allowlist;
-      if (stableStringify(merged.settings) !== stableStringify(rec.settings)) writes[SETTINGS_KEY] = merged.settings;
-      if (Object.keys(writes).length) await chrome.storage.sync.set(writes).catch(() => {});
-
-      mergeKind(
-        "channel",
-        local.channels,
-        localTombs,
-        remote.channels,
-        remote.tombstones,
-        merged.channels,
-        merged.tombstones
-      );
-      mergeKind("video", local.videos, localTombs, remote.videos, remote.tombstones, merged.videos, merged.tombstones);
-      pruneTombstones(merged.tombstones, host.now());
-
-      let changedLocally = false;
-      if (!sameBlocklistCore(localSnapshot, merged)) {
-        await host.applyMergedState({
-          channels: merged.channels,
-          videos: merged.videos,
-          tombstones: merged.tombstones
-        });
-        changedLocally = true;
+      if (kwFingerprint(merged.keywords) !== kwFingerprint(fresh.keywords)) writes[KEYWORDS_KEY] = merged.keywords;
+      if (allowFingerprint(merged.allowlist) !== allowFingerprint(fresh.allowlist)) writes[ALLOWLIST_KEY] = merged.allowlist;
+      if (stableStringify(merged.settings) !== stableStringify(fresh.settings)) writes[SETTINGS_KEY] = merged.settings;
+      if (Object.keys(writes).length) {
+        try {
+          await chrome.storage.sync.set(writes);
+        } catch (err) {
+          // Pushing this merge, or keeping it as the base, would say this
+          // device holds what it couldn't save, and the next round would read
+          // every item missing here as deleted here — and delete it on every
+          // device. So the round ends before anything is changed or sent.
+          const over = oversizeSyncItems(writes);
+          throw new Error(
+            over.length
+              ? `merged with the server's, the ${over.join(" and the ")} won't fit in this browser's synced storage ` +
+                  "(8 KB an item: about 150 never-block channels). Nothing was changed or sent; remove some entries and sync again"
+              : `this device couldn't save what it merged (${String((err && err.message) || err)}). Nothing was changed or sent, and the next sync tries again`
+          );
+        }
       }
+
+      const changedLocally = await host.applyMerge((cur) => {
+        const out = { channels: {}, videos: {}, tombstones: {} };
+        mergeKind("channel", cur.channels, cur.tombstones, remote.channels, remote.tombstones, out.channels, out.tombstones);
+        mergeKind("video", cur.videos, cur.tombstones, remote.videos, remote.tombstones, out.videos, out.tombstones);
+        pruneTombstones(out.tombstones, host.now());
+        Object.assign(merged, out);
+        return sameBlocklistCore(cur, out) ? null : out;
+      });
 
       let pushed = false;
       if (!sameBlocklist(remote, merged)) {
@@ -567,22 +619,39 @@
     // options page: connect with { url, user, password }, or pass null to
     // disconnect this device.
     async configure(conn) {
-      clearTimeout(pushTimer);
       await loadCfg();
-      // A different server (or none) — whatever we agreed with the old one is
-      // no base for merging with the new one.
-      await chrome.storage.local.remove(STORAGE.SYNC_BASE_KEY);
-      if (!conn || !conn.url) {
-        Object.assign(cfg, { url: null, user: null, password: null, lastVersion: null, lastError: null });
+      const url = conn && conn.url ? String(conn.url).trim().replace(/\/+$/, "") : null;
+      const user = url ? String(conn.user || "").trim() : null;
+      const same = !!url && url === cfg.url && user === cfg.user;
+      // Refused before anything changes, so the connection already there stands.
+      if (url && !safeSyncAddress(url)) return { ok: false, error: UNSAFE_ADDRESS, enabled: enabled() };
+      // An empty password box reuses the saved password only where it was
+      // saved: sent to any address typed with the box left empty, it was
+      // handed to whoever runs that one.
+      if (url && conn.password === undefined && !same) {
+        return { ok: false, error: "type the password: the saved one is only sent to the server and user it was saved for", enabled: enabled() };
+      }
+      clearTimeout(pushTimer);
+      // The same server and user — a new password after a run of 401s, say —
+      // is the same copy, and what this device agreed with it is still the
+      // base (and lastVersion, which tells a reset server by its version going
+      // backwards). Dropping it made the next round a first sync, a union,
+      // which brought back everything deleted elsewhere since. A different
+      // server, or none, has nothing to do with what the old one agreed.
+      if (!same) {
+        await chrome.storage.local.remove(STORAGE.SYNC_BASE_KEY);
+        Object.assign(cfg, { lastVersion: null, agreedFp: null });
+      }
+      if (!url) {
+        Object.assign(cfg, { url: null, user: null, password: null, lastError: null });
         await persistCfg();
         return { ok: true, enabled: false };
       }
       Object.assign(cfg, {
-        url: String(conn.url).trim().replace(/\/+$/, ""),
-        user: String(conn.user || "").trim(),
-        // No password given on reconnect keeps the saved one.
+        url,
+        user,
+        // No password given keeps the saved one (the same server and user: above).
         password: conn.password !== undefined ? String(conn.password) : cfg.password || "",
-        lastVersion: null,
         lastError: null
       });
       await persistCfg();
