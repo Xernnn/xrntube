@@ -77,10 +77,13 @@ self.XrnTube = self.XrnTube || {};
     return m[3] ? +m[1] * 3600 + +m[2] * 60 + +m[3] : +m[1] * 60 + +m[2];
   }
 
-  const CHANNEL_HREF_RE = /^\/(channel\/UC[\w-]{22}|@[\w.-]+)/;
+  // `%` is part of a handle: one with letters outside ASCII arrives
+  // percent-encoded, or spelled out and encoded here (asciiUrlText() in
+  // shared/constants.js). Without it /@caf%C3%A9 read as "@caf".
+  const CHANNEL_HREF_RE = /^\/(channel\/UC[\w-]{22}|@[\w.%-]+)/;
 
   function normalizeChannelKey(href) {
-    const m = String(href || "").match(CHANNEL_HREF_RE);
+    const m = self.XrnTube.asciiUrlText(href).match(CHANNEL_HREF_RE);
     if (!m) return null;
     const path = m[1];
     return path.startsWith("channel/") ? path.slice("channel/".length) : path; // "UC..." or "@handle"

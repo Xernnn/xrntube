@@ -838,11 +838,13 @@ function extractVideoId(text) {
 
 // "@handle" | "UC…" | a channel URL -> a normalized channel key, or null.
 function extractChannelKey(text) {
-  const s = (text || "").trim();
+  // A handle with letters outside ASCII is keyed percent-encoded, typed or
+  // pasted (asciiUrlText() in shared/constants.js).
+  const s = self.XrnTube.asciiUrlText(text).trim();
   if (!s) return null;
   let m = s.match(/(UC[\w-]{22})/);
   if (m) return m[1];
-  m = s.match(/@[\w.-]{2,}/);
+  m = s.match(/@[\w.%-]{2,}/);
   if (m) return m[0].toLowerCase();
   return null;
 }
@@ -1546,7 +1548,8 @@ function convertOldBlockTube(raw) {
     return out;
   };
 
-  const channelIdOf = (s) => {
+  const channelIdOf = (line) => {
+    const s = self.XrnTube.asciiUrlText(line);
     if (CHANNEL_KEY_RE.test(s)) return s;
     const m = s.match(/youtube\.com\/(?:channel\/(UC[\w-]{22})|(@[\w.\-%]+))/i);
     return m ? m[1] || m[2] : null;

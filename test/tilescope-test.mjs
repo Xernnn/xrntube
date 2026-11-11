@@ -45,6 +45,14 @@ const grabFn = (name, text = src, where = "content.js") =>
   grabFrom(text, where, new RegExp(`\\n  function ${name}\\([\\s\\S]*?\\n  \\}\\n`), `function ${name}`);
 
 const lifted = [
+  // normalizeChannelKey() reads a handle through asciiUrlText().
+  "self.XrnTube = {};" +
+    grabFrom(
+      readFileSync(new URL("../shared/constants.js", import.meta.url), "utf8"),
+      "shared/constants.js",
+      /\nself\.XrnTube\.asciiUrlText = function[\s\S]*?\n\};\n/,
+      "asciiUrlText()"
+    ),
   grabConst("CHANNEL_HREF_RE", shared, "shared/block-logic.js"),
   grabConst("CHANNEL_CARD_TAGS"),
   grabConst("BYLINE_SEL"),

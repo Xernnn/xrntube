@@ -800,7 +800,8 @@ async function resolveVideoChannel(videoId) {
     // the miss so a page that keeps re-checking doesn't keep re-fetching.
     if (res.ok) {
       const data = await res.json();
-      const m = String(data.author_url || "").match(/\/(channel\/UC[\w-]{22}|@[\w.-]+)/);
+      // `%`: a handle with letters outside ASCII (asciiUrlText() in shared/constants.js).
+      const m = self.XrnTube.asciiUrlText(data.author_url).match(/\/(channel\/UC[\w-]{22}|@[\w.%-]+)/);
       if (m) key = m[1].startsWith("channel/") ? m[1].slice("channel/".length) : m[1];
     }
   } catch (e) {
@@ -1527,7 +1528,8 @@ function setUpContextMenus() {
 // Same URL shapes the nav guard covers (see content.js) — a link can be any of
 // them, and /c/ and /user/ name neither identity so they can't be keyed.
 const CTX_VIDEO_RE = /(?:[?&]v=|\/(?:shorts|live|embed|v)\/)([\w-]{11})/;
-const CTX_CHANNEL_RE = /youtube\.com\/(channel\/UC[\w-]{22}|@[\w.-]+)/;
+// (`%`: a handle with letters outside ASCII, which a link's URL has encoded.)
+const CTX_CHANNEL_RE = /youtube\.com\/(channel\/UC[\w-]{22}|@[\w.%-]+)/;
 
 function ctxTargetFrom(info) {
   const url = info.linkUrl || info.srcUrl || info.pageUrl || "";

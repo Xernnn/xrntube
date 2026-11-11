@@ -353,6 +353,22 @@ self.XrnTube.resolveSettings = function (stored) {
   return out;
 };
 
+// A channel's @handle may hold letters outside ASCII: YouTube takes the letters
+// of 75 languages, and the Latin middle dot. A link carries those
+// percent-encoded (/@caf%C3%A9), and that form is the channel's key: it is
+// what the address bar, a tile's link and an imported list all hold, and plain
+// ASCII, as a network redirect rule must be. This puts text that spells such
+// letters out (/@café: YouTube's JSON, or what someone typed) into that form,
+// and leaves everything else as it is. Every reader of a handle takes `%` as
+// part of it; one that stopped there keyed @café as @caf, another channel.
+self.XrnTube.asciiUrlText = function (text) {
+  try {
+    return String(text || "").replace(/[^\x00-\x7f]+/g, (run) => encodeURIComponent(run));
+  } catch {
+    return ""; // half a surrogate pair: nothing a link could name
+  }
+};
+
 // Where the sync password may be sent. It is the server's login, which the
 // server reads from Radicale's htpasswd, so it is the calendar password too,
 // and Basic auth over plain http hands it to anyone on the way. So: https, or

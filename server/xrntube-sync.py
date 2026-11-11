@@ -40,12 +40,14 @@ import argparse
 import base64
 import gzip
 import hashlib
+import ipaddress
 import json
 import os
 import re
 import sys
 import threading
 import time
+import zlib
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
@@ -72,13 +74,23 @@ failures = {}  # client address -> monotonic times of its recent wrong logins
 
 
 def client_address(handler):
-    """The caller's address. Behind the local proxy (Funnel) that's the first X-Forwarded-For hop;
-    the header is only trusted from a loopback peer, since anyone else could make it up."""
+    """Who a wrong login is counted for. Behind the local proxy (Funnel) that's the last
+    X-Forwarded-For hop, the one the proxy added: anything before it came from the caller, who
+    could make up a new address for every guess. The header is only trusted from a loopback peer,
+    for the same reason. An IPv6 address counts as its /64: a line comes with at least that many,
+    so counted one by one its owner had a new address for every guess and never reached the limit."""
     peer = handler.client_address[0]
     forwarded = handler.headers.get("X-Forwarded-For")
-    if forwarded and peer in ("127.0.0.1", "::1"):
-        return forwarded.split(",")[0].strip()
-    return peer
+    addr = forwarded.split(",")[-1].strip() if forwarded and peer in ("127.0.0.1", "::1") else peer
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return addr
+    if ip.version == 4:
+        return addr
+    if ip.ipv4_mapped:
+        return str(ip.ipv4_mapped)
+    return f"{ipaddress.IPv6Address(int(ip) >> 64 << 64)}/64"
 
 
 def take_attempt(addr, counted):
@@ -394,7 +406,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(413, "body missing or too large")
         raw = self.rfile.read(length)
         if (self.headers.get("Content-Encoding") or "").lower() == "gzip":
-            raw = gzip.decompress(raw)
+            # Inflated with the limit the plain body has: MAX_BODY above is the compressed length,
+            # and a few KB of gzip can hold gigabytes. A body that isn't gzip is answered, too;
+            # gzip.decompress() raised here, and the connection closed with no reply.
+            try:
+                raw = zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(raw, MAX_BODY + 1)
+            except zlib.error:
+                return self.send(400, "body is not gzip")
+            if len(raw) > MAX_BODY:
+                return self.send(413, "body missing or too large")
         try:
             data = json.loads(raw)
             if not isinstance(data, dict):

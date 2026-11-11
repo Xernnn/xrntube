@@ -8,6 +8,9 @@ import { chromium } from "playwright";
 //   - …and no other channel's: the rule was the bare substring
 //     "youtube.com/@foo", which also matched @foobar, @foo.tv and @foo-bar
 //   - a blocked UC id's page, and its tabs, redirect too
+//   - a handle with letters outside ASCII is keyed percent-encoded
+//     (@caf%C3%A9; see handle-key-test): its page redirects, and a blocked
+//     @foo doesn't take @fooé's with it
 //   - nothing off youtube.com does: another host named like it, or a link
 //     to the channel inside some other site's URL (a redirect rule acts only
 //     where the extension has host access, youtube.com, and the rule's `||`
@@ -33,7 +36,7 @@ try {
   const UC = "UCdnrtest" + "x".repeat(15);
   // An import, not BLOCK_CHANNEL: no lookup on youtube.com afterwards.
   const res = await p.evaluate(
-    (uc) => chrome.runtime.sendMessage({ type: "IMPORT_BLOCKLIST", channels: { "@foo": { name: "Foo" }, [uc]: { name: "By id" } }, videos: {} }),
+    (uc) => chrome.runtime.sendMessage({ type: "IMPORT_BLOCKLIST", channels: { "@foo": { name: "Foo" }, [uc]: { name: "By id" }, "@caf%C3%A9": { name: "Café" } }, videos: {} }),
     UC
   );
   if (!res || !res.ok) throw new Error("import: " + JSON.stringify(res));
@@ -53,7 +56,9 @@ try {
     "https://www.youtube.com/@foo?si=abc",
     "https://www.youtube.com/@FOO",
     `https://www.youtube.com/channel/${UC}`,
-    `https://www.youtube.com/channel/${UC}/videos`
+    `https://www.youtube.com/channel/${UC}/videos`,
+    "https://www.youtube.com/@caf%C3%A9",
+    "https://m.youtube.com/@caf%C3%A9/videos"
   ]);
   const missed = Object.keys(blocked).filter((u) => !blocked[u]);
   !missed.length
@@ -65,6 +70,8 @@ try {
     "https://www.youtube.com/@foo.tv",
     "https://www.youtube.com/@foo-bar",
     "https://www.youtube.com/@foo_2",
+    "https://www.youtube.com/@foo%C3%A9",
+    "https://www.youtube.com/@caf",
     "https://m.youtube.com/@foobar/videos"
   ]);
   const caught = Object.keys(others).filter((u) => others[u]);
