@@ -303,6 +303,7 @@ LOG_ESCAPES = str.maketrans({**{c: f"\\x{c:02x}" for c in (*range(0x20), *range(
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "xrntube-sync/1"
+    sys_version = ""  # the Server header named the Python version too
     timeout = 120  # seconds of silence before a connection is dropped, so a stalled client can't hold a thread
 
     def log_message(self, fmt, *a):

@@ -29,6 +29,7 @@ import { chromium } from "playwright";
 //   - a user name that isn't there costs a bcrypt check like a wrong password
 //   - a request line that doesn't parse gets its 400
 //   - the log shows a caller's control characters escaped
+//   - no answer names the Python version
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -508,6 +509,16 @@ try {
   !raw.length && logged.includes("203.0.113.70\\x1b]0;hi\\x07") && logged.includes("/a\\x0d2026-11-06")
     ? ok("the log shows a caller's control characters escaped, so a \\r can't start a made-up line")
     : fail(`log: ${JSON.stringify(logged.slice(0, 400))}`);
+
+  // ---- no answer names the Python version ----
+  // The Server header said "xrntube-sync/1 Python/3.x.y", error pages included.
+  const serverHeaders = [
+    (await fetch(`${URL_}/health`)).headers.get("server"),
+    (await rawReply("PATCH /health HTTP/1.0\r\n\r\n")).match(/^server:(.*)$/im)?.[1] // http.server's own 501
+  ];
+  serverHeaders.every((h) => h && !/python/i.test(h))
+    ? ok(`no answer names the Python version (Server: ${serverHeaders[0].trim()})`)
+    : fail(`the Server header: ${JSON.stringify(serverHeaders)}`);
 
   // Last, since it locks this address out: ten wrong passwords (sent at once, each held 2 s) and
   // even the right one gets 429 for 15 minutes. Basic auth from a loopback peer with a forwarded
