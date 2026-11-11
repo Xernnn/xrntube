@@ -46,6 +46,7 @@ import re
 import sys
 import threading
 import time
+import zlib
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
@@ -394,7 +395,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(413, "body missing or too large")
         raw = self.rfile.read(length)
         if (self.headers.get("Content-Encoding") or "").lower() == "gzip":
-            raw = gzip.decompress(raw)
+            # Inflated with the limit the plain body has: MAX_BODY above is the compressed length,
+            # and a few KB of gzip can hold gigabytes. A body that isn't gzip is answered, too;
+            # gzip.decompress() raised here, and the connection closed with no reply.
+            try:
+                raw = zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(raw, MAX_BODY + 1)
+            except zlib.error:
+                return self.send(400, "body is not gzip")
+            if len(raw) > MAX_BODY:
+                return self.send(413, "body missing or too large")
         try:
             data = json.loads(raw)
             if not isinstance(data, dict):

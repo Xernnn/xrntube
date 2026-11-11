@@ -2,6 +2,7 @@ import { spawn, execFileSync } from "child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { gzipSync } from "zlib";
 import { chromium } from "playwright";
 
 // Sync through your own server, end to end and offline: the real
@@ -17,6 +18,8 @@ import { chromium } from "playwright";
 //   - the server keeps earlier copies, and restoring one through the options
 //     page brings back what a "delete everything" took, on both devices
 //   - /update/ hands out the update files without a login, and nothing else
+//   - a PUT that says gzip and isn't gets an answer, and one that inflates
+//     past the size limit is refused before it is inflated in full
 //   - wrong passwords sent all at once still get only ten guesses an address
 // Needs python3 with `bcrypt` (the server's one dependency).
 
@@ -346,6 +349,29 @@ try {
   JSON.stringify(restoredA) === JSON.stringify(beforeWipe)
     ? ok(`restoring that copy on B brings all ${beforeWipe.length} channels back on both devices, past A's tombstones`)
     : fail(`restore: preview=${JSON.stringify(previewText.slice(0, 120))} A=${restoredA} B=${restoredB} want=${beforeWipe}`);
+
+  // ---- a gzipped PUT is inflated with the same limit as a plain one ----
+  // The limit (32 MB) was checked on the compressed length only, so a few KB
+  // of gzip inflated to whatever they held, in memory; and a body that wasn't
+  // gzip at all raised in the handler, which dropped the connection with no
+  // reply. If-Match names a version the server isn't at, so nothing is stored
+  // either way: before, both got as far as that check or died on the way.
+  const put = (body) =>
+    fetch(`${URL_}/state`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Basic " + Buffer.from(`${USER}:${PASS}`).toString("base64"),
+        "Content-Encoding": "gzip",
+        "If-Match": '"999999"'
+      },
+      body
+    }).then((r) => r.status, (e) => "no reply: " + ((e.cause && e.cause.code) || e.message));
+  const notGzip = await put(Buffer.from('{"channels":{}}'));
+  const bomb = await put(gzipSync(Buffer.from(JSON.stringify({ pad: "x".repeat(33 * 1024 * 1024) }))));
+  const fits = await put(gzipSync(Buffer.from('{"channels":{}}')));
+  notGzip === 400 && bomb === 413 && fits === 412
+    ? ok("a PUT marked gzip that isn't is answered 400, one that inflates past 32 MB is refused (413), and a real one goes on to the version check")
+    : fail(`gzipped PUT: not gzip ${notGzip} (want 400), 33 MB inflated ${bomb} (want 413), a real one ${fits} (want 412)`);
 
   // Last, since it locks this address out: ten wrong passwords (sent at once, each held 2 s) and
   // even the right one gets 429 for 15 minutes. Basic auth from a loopback peer with a forwarded
