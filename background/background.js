@@ -19,7 +19,8 @@ const {
   subsAttempted,
   knowsOneIdentity,
   resolveRetryDue,
-  oversizeSyncItems
+  oversizeSyncItems,
+  cutHandleOf
 } = self.XrnTube;
 
 // A cross-device clock: server-sync.js feeds the sync server's Date header back
@@ -896,6 +897,39 @@ function tombstoneFolded(tombs, keys) {
   for (const k of keys) tombs["channel:" + k] = now;
 }
 
+// A channel a version before 2.1.9 stored under the start of its @handle, and
+// whose own name spells the whole handle out (cutHandleOf() in
+// shared/constants.js), moves to the key it should have had. What the lookup
+// after the block wrote (a UC id, a handle, the sub count, "gone") was about
+// whoever holds the cut handle, so it goes, and the next lookup asks about the
+// right channel. The cut key gets a tombstone, so other devices drop it too.
+// Resolves to whether anything moved.
+async function repairCutHandles() {
+  const state = await updateStore((s) => {
+    const taken = new Set();
+    for (const [key, e] of Object.entries(s.channels)) {
+      for (const id of [key, e.handle]) if (id && id[0] === "@") taken.add(String(id).toLowerCase());
+    }
+    let moved = 0;
+    for (const [key, e] of Object.entries(s.channels)) {
+      const fix = (cutHandleOf(key, e) || {}).fix;
+      if (!fix) continue;
+      const { handle, ucid, subs, subsAt, subsV, gone, idTries, ...kept } = e;
+      delete s.channels[key];
+      s.tombstones["channel:" + key] = stampAfter(entryStamp(e));
+      // Blocked again under the right key already: that entry stands.
+      if (!taken.has(fix.toLowerCase())) {
+        s.channels[fix] = { ...kept, updated_at: stampAfter(s.tombstones["channel:" + fix]) };
+        delete s.tombstones["channel:" + fix];
+        taken.add(fix.toLowerCase());
+      }
+      moved++;
+    }
+    if (!moved) return false;
+  });
+  return state.result !== false;
+}
+
 // Merge a { id: {subs, handle, name, ucid} } map into the blocklist in one
 // write. `name` only replaces a name that's empty or just the id/handle;
 // `handle` never overwrites an existing one.
@@ -1484,13 +1518,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // Rebuild DNR rules on browser/extension startup since dynamic rules don't
 // automatically re-derive themselves from storage.
+// Both also move an entry stored under a cut-off handle (repairCutHandles()):
+// on the update that brings the fix, and on each start for one that arrived
+// since from a device still on an older version.
 chrome.runtime.onStartup.addListener(async () => {
+  if (await repairCutHandles().catch(() => false)) self.XrnTube.serverSync.onLocalChange();
   const state = await loadAll();
   await rebuildDnrRules(state);
   self.XrnTube.serverSync.onPoll();
   checkForUpdate();
 });
 chrome.runtime.onInstalled.addListener(async () => {
+  if (await repairCutHandles().catch(() => false)) self.XrnTube.serverSync.onLocalChange();
   const state = await loadAll();
   await rebuildDnrRules(state);
   setUpContextMenus();
