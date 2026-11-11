@@ -23,6 +23,7 @@ import { chromium } from "playwright";
 //   - wrong passwords sent all at once still get only ten guesses an address
 //   - the address counted is the proxy's own hop, and an IPv6 line is its /64
 //   - a write sent from another site's page is refused; the extension's go on
+//   - a connection that goes quiet is let go
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -388,6 +389,21 @@ try {
   fromElsewhere.every((s) => s === 403) && fromOurs.every((s) => s === 412)
     ? ok("a PUT from another site's page is refused (403); the extensions', this host's and an app's go on")
     : fail(`cross-site PUT: from elsewhere ${fromElsewhere} (want 403s), from ours ${fromOurs} (want 412s)`);
+
+  // ---- a connection that goes quiet is let go ----
+  // With no socket timeout, a client that stopped half way through its request
+  // held a thread for good. Two minutes is too long to wait for here, so the
+  // handler's setting is read instead.
+  const quietS = Number(
+    execFileSync("python3", [
+      "-c",
+      "import importlib.util as u, sys\ns = u.spec_from_file_location('s', sys.argv[1])\nm = u.module_from_spec(s)\ns.loader.exec_module(m)\nprint(m.Handler.timeout)",
+      join(EXT_PATH, "server/xrntube-sync.py")
+    ]).toString()
+  );
+  quietS > 0 && quietS <= 600
+    ? ok(`a connection that goes quiet is dropped after ${quietS} s`)
+    : fail(`the server's socket timeout is ${quietS}: a stalled client holds a thread for good`);
 
   // ---- a gzipped PUT is inflated with the same limit as a plain one ----
   // The limit (32 MB) was checked on the compressed length only, so a few KB

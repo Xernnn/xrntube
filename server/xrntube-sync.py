@@ -289,6 +289,7 @@ def list_history(user):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "xrntube-sync/1"
+    timeout = 120  # seconds of silence before a connection is dropped, so a stalled client can't hold a thread
 
     def log_message(self, fmt, *a):
         who = self.headers.get("X-Forwarded-For", self.client_address[0]) if self.headers else "-"
