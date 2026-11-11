@@ -1183,13 +1183,19 @@ async function runSweep() {
 // page took over could send these too: point sync at its own server and have
 // the list sent there and replaced from there, or wipe it. The browser, not
 // the renderer, says which page a message came from (`sender.url`), so these
-// are taken only from a page of this extension.
-const EXTENSION_PAGE_ONLY = new Set([
-  MSG.SET_SYNC_CONFIG,
-  MSG.DELETE_DATA,
-  MSG.IMPORT_BLOCKLIST,
-  MSG.SYNC_HISTORY,
-  MSG.SYNC_HISTORY_GET
+// are taken only from a page of this extension. And not only these: anything
+// a content script doesn't send itself (the options page's allow list,
+// restores, sweeps, "sync now"...) is refused from one too, so a message
+// added to the options page later is closed to YouTube's renderer from the
+// start. These are what content/content.js sends, and nothing else is taken
+// from a web page.
+const FROM_WEB_PAGES = new Set([
+  MSG.GET_BLOCKLIST,
+  MSG.BLOCK_CHANNEL,
+  MSG.UNBLOCK_CHANNEL,
+  MSG.BLOCK_VIDEO,
+  MSG.UNBLOCK_VIDEO,
+  MSG.RESOLVE_VIDEO_CHANNEL
 ]);
 function fromExtensionPage(sender) {
   return !!(sender && sender.id === chrome.runtime.id && String(sender.url || "").startsWith(chrome.runtime.getURL("")));
@@ -1201,7 +1207,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // port that closes empty and the worker logs an uncaught rejection — two
     // entries in the extension's Errors list for one failure.
     try {
-      if (EXTENSION_PAGE_ONLY.has(msg.type) && !fromExtensionPage(sender)) {
+      if (!FROM_WEB_PAGES.has(msg.type) && !fromExtensionPage(sender)) {
         sendResponse({ ok: false, error: "only the extension's own pages may send " + msg.type });
         return;
       }

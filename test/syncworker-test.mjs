@@ -496,14 +496,22 @@ const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null 
     { type: "SYNC_HISTORY" },
     { type: "SYNC_HISTORY_GET", name: "x" },
     { type: "DELETE_DATA", channels: "all", videos: "all", keywords: true, allowlist: true },
-    { type: "IMPORT_BLOCKLIST", channels: { "@planted": { name: "Planted" } }, videos: {} }
+    { type: "IMPORT_BLOCKLIST", channels: { "@planted": { name: "Planted" } }, videos: {} },
+    // What only the options page sends, besides: none of it is a content script's to ask.
+    { type: "SYNC_NOW" },
+    { type: "GET_SYNC_STATUS" },
+    { type: "ALLOW_CHANNEL", id: "@kept" },
+    { type: "RESTORE_UNBLOCK", key: "channel:@gone" },
+    { type: "CLEAR_RECENT_UNBLOCKS" },
+    { type: "SET_ENTRY_HIDDEN", kind: "channel", id: "@kept", hidden: true },
+    { type: "START_SWEEP" }
   ]) {
     const res = await d.sendFromTab(m);
     if (res && res.ok === false && /extension's own pages/.test(res.error || "")) refused.push(m.type);
   }
   const after = JSON.stringify({ sync: d.local.bt_sync, list: d.local.bt_blocklist });
-  refused.length === 6 && after === before && !d.requests.some((r) => r.url.startsWith("https://evil.example"))
-    ? ok("from a YouTube tab, repointing or turning off sync, the server's history, deleting and importing are all refused, and nothing changes")
+  refused.length === 13 && after === before && !d.requests.some((r) => r.url.startsWith("https://evil.example"))
+    ? ok("from a YouTube tab, repointing or turning off sync, the server's history, deleting, importing and every other options-page message are refused, and nothing changes")
     : fail("from a YouTube tab: " + JSON.stringify({ refused, changed: after !== before, evil: d.requests.filter((r) => r.url.startsWith("https://evil.example")).length }));
   const blocked = await d.sendFromTab({ type: "BLOCK_CHANNEL", id: "@fromtile", name: "From a tile" });
   const deleted = await d.send({ type: "DELETE_DATA", channels: ["@kept"] });
