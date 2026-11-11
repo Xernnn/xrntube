@@ -454,7 +454,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path != "/state":
             return self.send(404, "not found")
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:  # raised here, it dropped the connection with no answer
+            return self.send(400, "bad Content-Length")
         if length <= 0 or length > MAX_BODY:
             return self.send(413, "body missing or too large")
         raw = self.rfile.read(length)

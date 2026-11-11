@@ -30,6 +30,7 @@ import { chromium } from "playwright";
 //   - a request line that doesn't parse gets its 400
 //   - the log shows a caller's control characters escaped
 //   - no answer names the Python version
+//   - a Content-Length that isn't a number gets a 400
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -519,6 +520,16 @@ try {
   serverHeaders.every((h) => h && !/python/i.test(h))
     ? ok(`no answer names the Python version (Server: ${serverHeaders[0].trim()})`)
     : fail(`the Server header: ${JSON.stringify(serverHeaders)}`);
+
+  // ---- a Content-Length that isn't a number gets a 400 ----
+  // int() raised in the handler, and the connection closed with no reply.
+  const badLength = await rawReply(
+    `PUT /xrntube/state HTTP/1.0\r\nAuthorization: Basic ${Buffer.from(`${USER}:${PASS}`).toString("base64")}\r\n` +
+      `If-Match: "999999"\r\nContent-Length: lots\r\n\r\n{}`
+  );
+  /^HTTP\/1\.[01] 400/.test(badLength)
+    ? ok("a Content-Length that isn't a number is answered 400")
+    : fail(`a Content-Length that isn't a number: ${JSON.stringify(badLength.slice(0, 80))} (want a 400)`);
 
   // Last, since it locks this address out: ten wrong passwords (sent at once, each held 2 s) and
   // even the right one gets 429 for 15 minutes. Basic auth from a loopback peer with a forwarded
