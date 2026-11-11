@@ -165,12 +165,20 @@ def check_login(header):
     if hit and hit[1] > time.time() and hit[2] == mtime:
         return hit[0]
     try:
+        checked, spare = False, None
         with open(args.users, encoding="utf-8") as f:
             for line in f:
                 name, _, hashed = line.strip().partition(":")
-                if name == user and hashed and bcrypt.checkpw(password.encode(), hashed.encode()):
-                    auth_cache[key] = (user, time.time() + AUTH_CACHE_S, mtime)
-                    return user
+                spare = hashed or spare
+                if name == user and hashed:
+                    checked = True
+                    if bcrypt.checkpw(password.encode(), hashed.encode()):
+                        auth_cache[key] = (user, time.time() + AUTH_CACHE_S, mtime)
+                        return user
+        if not checked and spare:
+            # A name that isn't there takes as long as a wrong password for one that is, or
+            # the time an answer takes says which names exist. The result is never used.
+            bcrypt.checkpw(password.encode(), spare.encode())
     except (OSError, ValueError):
         pass
     return None

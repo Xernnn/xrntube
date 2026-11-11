@@ -25,6 +25,7 @@ import { chromium } from "playwright";
 //   - a write sent from another site's page is refused; the extension's go on
 //   - a connection that goes quiet is let go
 //   - a request with no password isn't held for the 2 s a wrong one is
+//   - a user name that isn't there costs a bcrypt check like a wrong password
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -442,6 +443,36 @@ try {
   bareStatus === 401 && bareMs < 1000 && wrongStatus === 401 && wrongMs >= 2000
     ? ok(`a request with no password is answered at once (${bareMs} ms); a wrong one is still held (${wrongMs} ms)`)
     : fail(`no password: ${bareStatus} after ${bareMs} ms (want 401 at once); a wrong one: ${wrongStatus} after ${wrongMs} ms (want 401 after 2 s)`);
+
+  // ---- a user name that isn't there takes as long as a wrong password ----
+  // bcrypt ran only for a name in the users file, so a 401 for one that isn't
+  // came back a bcrypt check sooner, and its time told a stranger which names
+  // exist. Counted in the server's own code rather than timed: a cost-4 hash
+  // is too quick to tell apart from the 2 s hold.
+  const checksFor = (login) =>
+    Number(
+      execFileSync("python3", [
+        "-c",
+        [
+          "import base64, importlib.util as u, sys",
+          "s = u.spec_from_file_location('s', sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)",
+          "m.args = type('A', (), {'users': sys.argv[2]})()",
+          "n = [0]; real = m.bcrypt.checkpw",
+          "def counted(*a):\n    n[0] += 1\n    return real(*a)",
+          "m.bcrypt.checkpw = counted",
+          "assert m.check_login('Basic ' + base64.b64encode(sys.argv[3].encode()).decode()) is None",
+          "print(n[0])"
+        ].join("\n"),
+        join(EXT_PATH, "server/xrntube-sync.py"),
+        join(dir, "users"),
+        login
+      ]).toString()
+    );
+  const knownChecks = checksFor(`${USER}:nope`);
+  const unknownChecks = checksFor("nobody:nope");
+  knownChecks === 1 && unknownChecks === 1
+    ? ok("a user name that isn't there costs one bcrypt check, as a wrong password does")
+    : fail(`bcrypt checks: ${knownChecks} for a wrong password, ${unknownChecks} for a name that isn't there (want 1 and 1)`);
 
   // Last, since it locks this address out: ten wrong passwords (sent at once, each held 2 s) and
   // even the right one gets 429 for 15 minutes. Basic auth from a loopback peer with a forwarded
