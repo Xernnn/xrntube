@@ -2,6 +2,7 @@ import { spawn, execFileSync } from "child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { connect } from "net";
 import { gzipSync } from "zlib";
 import { chromium } from "playwright";
 
@@ -26,6 +27,7 @@ import { chromium } from "playwright";
 //   - a connection that goes quiet is let go
 //   - a request with no password isn't held for the 2 s a wrong one is
 //   - a user name that isn't there costs a bcrypt check like a wrong password
+//   - a request line that doesn't parse gets its 400
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -473,6 +475,23 @@ try {
   knownChecks === 1 && unknownChecks === 1
     ? ok("a user name that isn't there costs one bcrypt check, as a wrong password does")
     : fail(`bcrypt checks: ${knownChecks} for a wrong password, ${unknownChecks} for a name that isn't there (want 1 and 1)`);
+
+  // ---- a request line that doesn't parse gets its 400 ----
+  // http.server logs it before any headers are read, and log_message looked
+  // them up: AttributeError, no answer, and a traceback in the log.
+  const rawReply = (bytes) =>
+    new Promise((resolve) => {
+      let got = "";
+      const sock = connect(PORT, "127.0.0.1", () => sock.write(bytes));
+      sock.on("data", (d) => (got += d));
+      sock.on("close", () => resolve(got));
+      sock.on("error", () => resolve(got));
+      sock.setTimeout(5000, () => sock.destroy());
+    });
+  const garbage = await rawReply("GARBAGE\r\n\r\n");
+  /^HTTP\/1\.[01] 400/.test(garbage)
+    ? ok("a request line that doesn't parse is answered 400")
+    : fail(`a request line that doesn't parse: ${JSON.stringify(garbage.slice(0, 80))} (want a 400)`);
 
   // Last, since it locks this address out: ten wrong passwords (sent at once, each held 2 s) and
   // even the right one gets 429 for 15 minutes. Basic auth from a loopback peer with a forwarded

@@ -300,7 +300,8 @@ class Handler(BaseHTTPRequestHandler):
     timeout = 120  # seconds of silence before a connection is dropped, so a stalled client can't hold a thread
 
     def log_message(self, fmt, *a):
-        who = self.headers.get("X-Forwarded-For", self.client_address[0]) if self.headers else "-"
+        headers = getattr(self, "headers", None)  # none yet on a request line that didn't parse
+        who = headers.get("X-Forwarded-For", self.client_address[0]) if headers else "-"
         sys.stderr.write(f"{who} {fmt % a}\n")
 
     def parse_request(self):
