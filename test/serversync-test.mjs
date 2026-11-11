@@ -24,6 +24,7 @@ import { chromium } from "playwright";
 //   - the address counted is the proxy's own hop, and an IPv6 line is its /64
 //   - a write sent from another site's page is refused; the extension's go on
 //   - a connection that goes quiet is let go
+//   - a request with no password isn't held for the 2 s a wrong one is
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -427,6 +428,20 @@ try {
   notGzip === 400 && bomb === 413 && fits === 412
     ? ok("a PUT marked gzip that isn't is answered 400, one that inflates past 32 MB is refused (413), and a real one goes on to the version check")
     : fail(`gzipped PUT: not gzip ${notGzip} (want 400), 33 MB inflated ${bomb} (want 413), a real one ${fits} (want 412)`);
+
+  // ---- a request with no password isn't held ----
+  // The 2 s hold after a wrong password slows a guesser down. A request that
+  // sent no password guessed nothing, and was held, with its thread, all the same.
+  const timedState = async (h) => {
+    const start = Date.now();
+    const status = await fetch(`${URL_}/state`, { headers: { "X-Forwarded-For": "203.0.113.60", ...h } }).then((r) => r.status);
+    return [status, Date.now() - start];
+  };
+  const [bareStatus, bareMs] = await timedState({});
+  const [wrongStatus, wrongMs] = await timedState({ Authorization: "Basic " + Buffer.from(`${USER}:nope`).toString("base64") });
+  bareStatus === 401 && bareMs < 1000 && wrongStatus === 401 && wrongMs >= 2000
+    ? ok(`a request with no password is answered at once (${bareMs} ms); a wrong one is still held (${wrongMs} ms)`)
+    : fail(`no password: ${bareStatus} after ${bareMs} ms (want 401 at once); a wrong one: ${wrongStatus} after ${wrongMs} ms (want 401 after 2 s)`);
 
   // Last, since it locks this address out: ten wrong passwords (sent at once, each held 2 s) and
   // even the right one gets 429 for 15 minutes. Basic auth from a loopback peer with a forwarded

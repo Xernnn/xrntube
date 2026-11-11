@@ -344,12 +344,14 @@ class Handler(BaseHTTPRequestHandler):
         addr = client_address(self)
         auth = self.headers.get("Authorization")
         if not take_attempt(addr, counted=bool(auth)):
-            time.sleep(FAIL_DELAY_S)
+            if auth:
+                time.sleep(FAIL_DELAY_S)
             self.send(429, "too many wrong passwords; try again later", headers={"Retry-After": str(FAIL_WINDOW_S)})
             return None
         user = check_login(auth)
         if not user:
-            time.sleep(FAIL_DELAY_S)
+            if auth:  # a request with none guessed nothing, and needn't hold a thread for it
+                time.sleep(FAIL_DELAY_S)
             self.send(401, "login required", headers={"WWW-Authenticate": 'Basic realm="XrnTube"'})
             return None
         with fail_lock:
