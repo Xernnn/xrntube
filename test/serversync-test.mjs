@@ -22,6 +22,7 @@ import { chromium } from "playwright";
 //     past the size limit is refused before it is inflated in full
 //   - wrong passwords sent all at once still get only ten guesses an address
 //   - the address counted is the proxy's own hop, and an IPv6 line is its /64
+//   - a write sent from another site's page is refused; the extension's go on
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -350,6 +351,43 @@ try {
   JSON.stringify(restoredA) === JSON.stringify(beforeWipe)
     ? ok(`restoring that copy on B brings all ${beforeWipe.length} channels back on both devices, past A's tombstones`)
     : fail(`restore: preview=${JSON.stringify(previewText.slice(0, 120))} A=${restoredA} B=${restoredB} want=${beforeWipe}`);
+
+  // ---- a page on another site can't write with the browser's password ----
+  // A browser once given the password in its own box sends it with whatever
+  // another site's page sends here. The extension's requests come from another
+  // origin too (it holds no host permission for the server: the syncing above
+  // went out as cross-site, from chrome-extension://), and must still go.
+  // If-Match names a version the server isn't at: one let through gets 412.
+  const putFrom = (h) =>
+    fetch(`${URL_}/state`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Basic " + Buffer.from(`${USER}:${PASS}`).toString("base64"),
+        "If-Match": '"999999"',
+        "Content-Type": "text/plain",
+        ...h
+      },
+      body: '{"channels":{}}'
+    }).then((r) => r.status);
+  const fromElsewhere = await Promise.all(
+    [
+      { "Sec-Fetch-Site": "cross-site", Origin: "https://evil.example" },
+      { "Sec-Fetch-Site": "same-site", Origin: "https://other.homeserver.example" },
+      { Origin: "https://evil.example" } // a browser from before Sec-Fetch-Site
+    ].map(putFrom)
+  );
+  const fromOurs = await Promise.all(
+    [
+      { "Sec-Fetch-Site": "cross-site", Origin: "chrome-extension://abcdefghijklmnop" },
+      { "Sec-Fetch-Site": "cross-site", Origin: "moz-extension://8c2f5e7a-0000-4000-8000-000000000000" },
+      { Origin: `http://127.0.0.1:${PORT}` },
+      { Origin: "https://homeserver.example", "X-Forwarded-Host": "homeserver.example" },
+      {}
+    ].map(putFrom)
+  );
+  fromElsewhere.every((s) => s === 403) && fromOurs.every((s) => s === 412)
+    ? ok("a PUT from another site's page is refused (403); the extensions', this host's and an app's go on")
+    : fail(`cross-site PUT: from elsewhere ${fromElsewhere} (want 403s), from ours ${fromOurs} (want 412s)`);
 
   // ---- a gzipped PUT is inflated with the same limit as a plain one ----
   // The limit (32 MB) was checked on the compressed length only, so a few KB

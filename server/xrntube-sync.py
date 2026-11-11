@@ -32,7 +32,8 @@ them within a sync, so this is what gets the list back.
 Any path may carry the mount prefix (/xrntube/state), so it works whether or
 not the proxy strips it. Responses allow any origin (CORS): the browser
 extension calls it with an Authorization header and no cookies, so it needs
-no host permission for the server's address.
+no host permission for the server's address. A write from any other site's
+page is refused all the same (from_another_site).
 
     python3 xrntube-sync.py --data ~/xrntube-sync --users ~/.config/radicale/users
 """
@@ -91,6 +92,30 @@ def client_address(handler):
     if ip.ipv4_mapped:
         return str(ip.ipv4_mapped)
     return f"{ipaddress.IPv6Address(int(ip) >> 64 << 64)}/64"
+
+
+def from_another_site(headers):
+    """Whether a request came from another site's page. A browser that was once given the password
+    in its own sign-in box sends it again with a form any site posts here, and a text/plain form
+    body can be JSON. The browser says where the page was in Sec-Fetch-Site; one too old for that
+    still sends Origin with a POST, held against this host's name (or the proxy's X-Forwarded-Host).
+    The extension's pages are another origin, and may write."""
+    origin = (headers.get("Origin") or "").strip().lower()
+    if origin.startswith(("chrome-extension://", "moz-extension://")):
+        return False
+    site = (headers.get("Sec-Fetch-Site") or "").strip().lower()
+    if site:
+        return site in ("cross-site", "same-site")
+    scheme, _, host = origin.partition("://")
+    if scheme not in ("http", "https"):
+        return False  # no Origin, or "null"
+    ours = [headers.get("Host") or "", *(headers.get("X-Forwarded-Host") or "").split(",")]
+    return host_key(host) not in {host_key(h) for h in ours if h.strip()}
+
+
+def host_key(host):
+    """A host as Origin and Host both write it: lower case, without the default port."""
+    return host.strip().lower().removesuffix(":443").removesuffix(":80")
 
 
 def take_attempt(addr, counted):
@@ -268,6 +293,15 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *a):
         who = self.headers.get("X-Forwarded-For", self.client_address[0]) if self.headers else "-"
         sys.stderr.write(f"{who} {fmt % a}\n")
+
+    def parse_request(self):
+        if not super().parse_request():
+            return False
+        # Before the login, which a page elsewhere can have the browser pass for it.
+        if self.command not in ("GET", "HEAD", "OPTIONS") and from_another_site(self.headers):
+            self.send(403, "refused: sent from another site's page")
+            return False
+        return True
 
     def route(self):
         path = self.path.split("?", 1)[0]
