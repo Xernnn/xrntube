@@ -295,6 +295,12 @@ def list_history(user):
     return [{"name": n, **index.get(n, {})} for n in names]
 
 
+# The request line and X-Forwarded-For come from the caller. Written to the log as they are, a
+# control character in them could rewrite the terminal the log is read in, or (a \r) start a line
+# of its own for xrnhub's log reader. Escaped as http.server's own log_message, replaced here, does.
+LOG_ESCAPES = str.maketrans({**{c: f"\\x{c:02x}" for c in (*range(0x20), *range(0x7F, 0xA0))}, "\\": "\\\\"})
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "xrntube-sync/1"
     timeout = 120  # seconds of silence before a connection is dropped, so a stalled client can't hold a thread
@@ -302,7 +308,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *a):
         headers = getattr(self, "headers", None)  # none yet on a request line that didn't parse
         who = headers.get("X-Forwarded-For", self.client_address[0]) if headers else "-"
-        sys.stderr.write(f"{who} {fmt % a}\n")
+        sys.stderr.write(f"{who} {fmt % a}".translate(LOG_ESCAPES) + "\n")
 
     def parse_request(self):
         if not super().parse_request():

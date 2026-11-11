@@ -28,6 +28,7 @@ import { chromium } from "playwright";
 //   - a request with no password isn't held for the 2 s a wrong one is
 //   - a user name that isn't there costs a bcrypt check like a wrong password
 //   - a request line that doesn't parse gets its 400
+//   - the log shows a caller's control characters escaped
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -492,6 +493,21 @@ try {
   /^HTTP\/1\.[01] 400/.test(garbage)
     ? ok("a request line that doesn't parse is answered 400")
     : fail(`a request line that doesn't parse: ${JSON.stringify(garbage.slice(0, 80))} (want a 400)`);
+
+  // ---- the log shows a caller's control characters escaped ----
+  // The request line and X-Forwarded-For are the caller's. Written raw, an
+  // escape sequence rewrote the terminal, and a \r started a line of its own
+  // where xrnhub reads the log (it splits lines on \r too).
+  mark = serverLog.length;
+  const forgedLine = '2026-11-06_01:09:14.23919 198.51.100.66 "PUT /state HTTP/1.1" 200 -';
+  await rawReply("GET /a\x1b[2Jb HTTP/1.1\r\nX-Forwarded-For: 203.0.113.70\x1b]0;hi\x07\r\n\r\n");
+  await rawReply(`GET /a\r${forgedLine} HTTP/1.1\r\n\r\n`);
+  await logSettles();
+  const logged = serverLog.slice(mark);
+  const raw = [...logged].filter((c) => c !== "\n" && (c.charCodeAt(0) < 0x20 || (c.charCodeAt(0) >= 0x7f && c.charCodeAt(0) < 0xa0)));
+  !raw.length && logged.includes("203.0.113.70\\x1b]0;hi\\x07") && logged.includes("/a\\x0d2026-11-06")
+    ? ok("the log shows a caller's control characters escaped, so a \\r can't start a made-up line")
+    : fail(`log: ${JSON.stringify(logged.slice(0, 400))}`);
 
   // Last, since it locks this address out: ten wrong passwords (sent at once, each held 2 s) and
   // even the right one gets 429 for 15 minutes. Basic auth from a loopback peer with a forwarded
