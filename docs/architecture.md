@@ -109,6 +109,13 @@ moves back), and `removeEntry()` writes a **tombstone** to `chrome.storage.local
 after `TOMBSTONE_TTL_MS` — a year: a device that syncs again after the TTL no
 longer sees the deletion and pushes the entry back); both exist so the sync
 merge can do last-write-wins without a stale device resurrecting a delete.
+A sub-count lookup is not an edit: `applyChannelInfo()` records when it ran
+in `subsAt` and moves `updated_at` only one past the entry's own stamp, so it
+still reaches the other devices but loses to an unblock or edit made on one
+of them meanwhile (stamped now, a sweep here outvoted a newer unblock there).
+Two devices' lookups of one entry then tie, and the merge keeps the later
+lookup on both (`pickTie()` in server-sync.js) rather than each keeping its
+own and pushing it over the other's every round.
 
 **Duplicates fold.** One channel can be stored twice — blocked once as
 `@foo`, once as its `UC…` — and only a lookup (or an import) pairs the two.

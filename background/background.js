@@ -944,6 +944,14 @@ async function repairCutHandles() {
 // Merge a { id: {subs, handle, name, ucid} } map into the blocklist in one
 // write. `name` only replaces a name that's empty or just the id/handle;
 // `handle` never overwrites an existing one.
+//
+// A lookup says when it ran in `subsAt`, and moves `updated_at` just past the
+// entry's own stamp, not to now. `updated_at` is what the sync merge weighs
+// against an unblock or an edit on another device: stamped now, a sweep here
+// outvoted a newer unblock there that hadn't synced yet, and the channel came
+// back blocked everywhere (or a mode change was undone). One past the entry's
+// stamp still carries the lookup to the other devices, which hold the entry
+// at its own stamp, and loses to any change they made since.
 async function applyChannelInfo(map) {
   const ids = Object.keys(map);
   if (!ids.length) return 0;
@@ -951,7 +959,7 @@ async function applyChannelInfo(map) {
 
   const patch = (id, e) => {
     const info = map[id];
-    const n = { ...e, subsAt: now, updated_at: now, subsV: SUBS_SCRAPE_VERSION };
+    const n = { ...e, subsAt: now, updated_at: entryStamp(e) + 1, subsV: SUBS_SCRAPE_VERSION };
     // Permanently unfetchable: stamp it so the auto-fetch stops asking and the
     // row can say "gone" rather than looking like it just hasn't loaded.
     if (info.gone) {
