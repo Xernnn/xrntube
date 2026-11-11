@@ -21,6 +21,7 @@ import { chromium } from "playwright";
 //   - a PUT that says gzip and isn't gets an answer, and one that inflates
 //     past the size limit is refused before it is inflated in full
 //   - wrong passwords sent all at once still get only ten guesses an address
+//   - the address counted is the proxy's own hop, and an IPv6 line is its /64
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -397,6 +398,22 @@ try {
   checked === 10 && turnedAway === 20
     ? ok("thirty wrong passwords sent at once from one address: ten are checked, the other twenty turned away (429)")
     : fail(`thirty wrong passwords at once: ${checked} checked (401), ${turnedAway} turned away (429)`);
+
+  // The count is kept for the hop the proxy itself added, the last one. A proxy that appends
+  // passes the caller's own header on in front, and counted by that, each guess came from a new
+  // "address" and none was ever turned away.
+  const guessFrom = (forwarded, n) => state({ ...basic(USER, "nope" + n), "X-Forwarded-For": forwarded });
+  const madeUp = await Promise.all(Array.from({ length: 11 }, (_, i) => guessFrom(`198.51.100.${i}, 203.0.113.20`, i)));
+  madeUp.filter((s) => s === 401).length === 10 && madeUp.filter((s) => s === 429).length === 1
+    ? ok("a made-up hop in front of the proxy's own doesn't make each guess a new address")
+    : fail(`eleven guesses, each with its own made-up first hop: ${madeUp}`);
+
+  // An IPv6 line has a /64 of addresses to guess from, so it is counted as one.
+  const sixes = await Promise.all(Array.from({ length: 11 }, (_, i) => guessFrom(`2001:db8:1:2::${(i + 1).toString(16)}`, i)));
+  const nextDoor = await guessFrom("2001:db8:1:3::1", 0);
+  sixes.filter((s) => s === 401).length === 10 && sixes.filter((s) => s === 429).length === 1 && nextDoor === 401
+    ? ok("an IPv6 guesser is counted as its /64, and the /64 next door isn't held")
+    : fail(`eleven guesses from one IPv6 /64: ${sixes}; the /64 next door: ${nextDoor}`);
 
 } catch (e) {
   fail(e.stack || String(e));
