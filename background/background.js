@@ -385,6 +385,16 @@ const DNR_RULE_ID_SHORTS = 900002;
 const DNR_MAX_VIDEO_RULES = 800; // each uses regexFilter — stay under the 1000 regex cap (+ home rule)
 const DNR_MAX_CHANNEL_RULES = 3000; // urlFilter, not regex; keeps total < 4000
 
+// What a rule may be built from. The list comes from tiles, imports and the
+// sync server's document, and only the options page checked ids: one video id
+// with a regex character in it ("abcd(efghi") made its regexFilter invalid,
+// a channel key with a letter outside ASCII its urlFilter, and either made
+// updateDynamicRules refuse the whole set, which the fallback below answers by
+// clearing every rule. Such an entry gets no rule; the rest keep theirs. (The
+// same shapes as the options page's import, CHANNEL_KEY_RE / VIDEO_ID_RE.)
+const DNR_VIDEO_ID_RE = /^[\w-]{11}$/;
+const DNR_CHANNEL_KEY_RE = /^(UC[\w-]{22}|@[\w.\-%]+)$/;
+
 // Where blocked content — and now the homepage and Shorts entirely — get
 // redirected to at the network layer, before YouTube renders anything. One
 // definition, in shared/constants.js, shared with content.js's own redirect.
@@ -454,6 +464,7 @@ async function rebuildDnrRules(state) {
   const byTsDesc = (a, b) => (b[1].ts || 0) - (a[1].ts || 0);
 
   const videoIds = Object.entries(state.videos)
+    .filter(([id]) => DNR_VIDEO_ID_RE.test(id))
     .sort(byTsDesc)
     .slice(0, DNR_MAX_VIDEO_RULES)
     .map(([id]) => id);
@@ -470,7 +481,7 @@ async function rebuildDnrRules(state) {
   // is known, or navigating by the un-keyed form walks straight past DNR.
   const toPath = (k) => (k.startsWith("@") ? "/" + k : "/channel/" + k);
   const blockedEntries = Object.entries(state.channels)
-    .filter(([key, entry]) => entry.mode !== CHANNEL_MODE.EXCEPT_WHITELIST && !isAllowed(key))
+    .filter(([key, entry]) => DNR_CHANNEL_KEY_RE.test(key) && entry.mode !== CHANNEL_MODE.EXCEPT_WHITELIST && !isAllowed(key))
     .sort(byTsDesc);
   // Primary keys first, alternates only with the budget left over: under the
   // cap, every blocked channel keeping the rule for the identity it is keyed
@@ -485,7 +496,7 @@ async function rebuildDnrRules(state) {
       primary.push(p);
     }
     const alt = key.startsWith("@") ? entry.ucid : entry.handle;
-    if (alt && !isAllowed(alt)) {
+    if (alt && DNR_CHANNEL_KEY_RE.test(alt) && !isAllowed(alt)) {
       const ap = toPath(alt);
       if (!seenPaths.has(ap)) {
         seenPaths.add(ap);
