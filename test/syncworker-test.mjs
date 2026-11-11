@@ -21,6 +21,9 @@ import vm from "vm";
 //     after the clock moved back still wins
 //   - a switch only a newer version knows rides through this one's merge:
 //     not stripped, and no push over it
+//   - pointing sync elsewhere, the server's history, deleting and importing
+//     are taken from the extension's own pages only, not from a YouTube tab's
+//     content script
 // The real server and two browsers are serversync-test's; syncread-test has
 // the reply that can't be read.
 
@@ -175,9 +178,13 @@ async function boot({ local = {}, sync = {}, servers = {} } = {}) {
   });
   ctx.self = ctx;
   for (const [name, src] of SOURCES) vm.runInContext(src, ctx, { filename: name });
-  const send = (msg) => new Promise((resolve) => onMessage(msg, {}, resolve));
+  // As the browser fills in `sender`: the options page, or a YouTube tab's content script.
+  const OPTIONS_PAGE = { id: "xrntube-test", url: "chrome-extension://xrntube-test/options/options.html" };
+  const YOUTUBE_TAB = { id: "xrntube-test", url: "https://www.youtube.com/watch?v=ANmTVYkEtLw", tab: { id: 7 }, frameId: 0, origin: "https://www.youtube.com" };
+  const send = (msg) => new Promise((resolve) => onMessage(msg, OPTIONS_PAGE, resolve));
+  const sendFromTab = (msg) => new Promise((resolve) => onMessage(msg, YOUTUBE_TAB, resolve));
   await send({ type: "GET_SYNC_STATUS" }); // init() has read its (empty) config by now
-  return { chrome, send, X: ctx.XrnTube, local: stores.local.data, sync: stores.sync.data, requests };
+  return { chrome, send, sendFromTab, X: ctx.XrnTube, local: stores.local.data, sync: stores.sync.data, requests };
 }
 
 // Connected and agreed with the server at version 6 on `base`; set straight
@@ -463,6 +470,43 @@ const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null 
   res.ok && srv.puts.length === puts && d2.sync.bt_settings && d2.sync.bt_settings.futureSwitch === false
     ? ok("…and a device's first sync keeps it too, with nothing to push")
     : fail("unknown switch, first sync: " + JSON.stringify({ res, puts: srv.puts.length - puts, settings: d2.sync.bt_settings }));
+}
+
+// ---- 7. what a YouTube tab may ask for ----
+// Nothing checked who sent a message, so a content script, which lives in
+// YouTube's renderer, could do anything the options page does: point sync at
+// another server (and send it the list, and take that server's in its
+// place), read the server's earlier copies, delete everything, import.
+{
+  const srv = server({ version: 7, doc: { channels: {}, videos: {}, tombstones: {} } });
+  const evil = server({ version: 1, user: "them", password: "theirs" });
+  const d = await boot({
+    servers: { [ORIGIN]: srv, "https://evil.example": evil },
+    local: { bt_blocklist: { channels: { "@kept": entry("Kept", 1000) }, videos: { aaaaaaaaaaa: { title: "v", ts: 1000, updated_at: 1000 } } } }
+  });
+  await connect(d);
+  const before = JSON.stringify({ sync: d.local.bt_sync, list: d.local.bt_blocklist });
+  const refused = [];
+  for (const m of [
+    { type: "SET_SYNC_CONFIG", conn: { url: "https://evil.example/xrntube", user: "them", password: "theirs" } },
+    { type: "SET_SYNC_CONFIG", conn: null },
+    { type: "SYNC_HISTORY" },
+    { type: "SYNC_HISTORY_GET", name: "x" },
+    { type: "DELETE_DATA", channels: "all", videos: "all", keywords: true, allowlist: true },
+    { type: "IMPORT_BLOCKLIST", channels: { "@planted": { name: "Planted" } }, videos: {} }
+  ]) {
+    const res = await d.sendFromTab(m);
+    if (res && res.ok === false && /extension's own pages/.test(res.error || "")) refused.push(m.type);
+  }
+  const after = JSON.stringify({ sync: d.local.bt_sync, list: d.local.bt_blocklist });
+  refused.length === 6 && after === before && !d.requests.some((r) => r.url.startsWith("https://evil.example"))
+    ? ok("from a YouTube tab, repointing or turning off sync, the server's history, deleting and importing are all refused, and nothing changes")
+    : fail("from a YouTube tab: " + JSON.stringify({ refused, changed: after !== before, evil: d.requests.filter((r) => r.url.startsWith("https://evil.example")).length }));
+  const blocked = await d.sendFromTab({ type: "BLOCK_CHANNEL", id: "@fromtile", name: "From a tile" });
+  const deleted = await d.send({ type: "DELETE_DATA", channels: ["@kept"] });
+  blocked.ok && d.local.bt_blocklist.channels["@fromtile"] && deleted.ok && !d.local.bt_blocklist.channels["@kept"]
+    ? ok("…while a tile's block still works from the tab, and the options page still deletes")
+    : fail("allowed messages: " + JSON.stringify({ blocked, deleted, channels: Object.keys(d.local.bt_blocklist.channels) }));
 }
 
 console.log("\nDONE");

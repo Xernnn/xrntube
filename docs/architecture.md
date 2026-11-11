@@ -95,6 +95,11 @@ an index shifts the moment anything else is removed, which made "Undo" on a
 toast restore the wrong thing. Restoring merges the whole record back in one
 write too (a 5,000-entry "delete all" restored through `addEntry()` would
 hit the write quota a hundred entries in).
+`SET_SYNC_CONFIG`, `SYNC_HISTORY`, `SYNC_HISTORY_GET`, `DELETE_DATA` and
+`IMPORT_BLOCKLIST` are taken only from a page of the extension
+(`EXTENSION_PAGE_ONLY`, judged by the browser-set `sender.url`): a content
+script runs in YouTube's renderer, and one the page took over could
+otherwise point sync at its own server or wipe the list.
 Every blocked entry also carries `updated_at` (bumped on every mutation,
 stamped from `syncedNow()` — `Date.now()` plus the sync server's clock
 offset — and by `stampAfter()` never at or before the stamp of what it

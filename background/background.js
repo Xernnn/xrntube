@@ -1169,12 +1169,34 @@ async function runSweep() {
 }
 
 // ---------- message handling ----------
+// What only the extension's own pages (the options page) send: pointing sync
+// at a server, reading the server's earlier copies, deleting data, importing
+// it. A content script lives in YouTube's renderer, and one that YouTube's
+// page took over could send these too: point sync at its own server and have
+// the list sent there and replaced from there, or wipe it. The browser, not
+// the renderer, says which page a message came from (`sender.url`), so these
+// are taken only from a page of this extension.
+const EXTENSION_PAGE_ONLY = new Set([
+  MSG.SET_SYNC_CONFIG,
+  MSG.DELETE_DATA,
+  MSG.IMPORT_BLOCKLIST,
+  MSG.SYNC_HISTORY,
+  MSG.SYNC_HISTORY_GET
+]);
+function fromExtensionPage(sender) {
+  return !!(sender && sender.id === chrome.runtime.id && String(sender.url || "").startsWith(chrome.runtime.getURL("")));
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     // A handler that throws still answers. Otherwise the caller waits on a
     // port that closes empty and the worker logs an uncaught rejection — two
     // entries in the extension's Errors list for one failure.
     try {
+      if (EXTENSION_PAGE_ONLY.has(msg.type) && !fromExtensionPage(sender)) {
+        sendResponse({ ok: false, error: "only the extension's own pages may send " + msg.type });
+        return;
+      }
       switch (msg.type) {
         case MSG.GET_BLOCKLIST: {
           const state = await loadAll();
