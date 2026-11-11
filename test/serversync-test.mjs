@@ -403,6 +403,7 @@ try {
   // handler's setting is read instead.
   const quietS = Number(
     execFileSync("python3", [
+      "-B", // loads the server's code without leaving server/__pycache__ behind
       "-c",
       "import importlib.util as u, sys\ns = u.spec_from_file_location('s', sys.argv[1])\nm = u.module_from_spec(s)\ns.loader.exec_module(m)\nprint(m.Handler.timeout)",
       join(EXT_PATH, "server/xrntube-sync.py")
@@ -457,6 +458,7 @@ try {
   const checksFor = (login) =>
     Number(
       execFileSync("python3", [
+        "-B",
         "-c",
         [
           "import base64, importlib.util as u, sys",
