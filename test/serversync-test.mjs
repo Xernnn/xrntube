@@ -2,6 +2,7 @@ import { spawn, execFileSync } from "child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { connect } from "net";
 import { gzipSync } from "zlib";
 import { chromium } from "playwright";
 
@@ -22,6 +23,14 @@ import { chromium } from "playwright";
 //     past the size limit is refused before it is inflated in full
 //   - wrong passwords sent all at once still get only ten guesses an address
 //   - the address counted is the proxy's own hop, and an IPv6 line is its /64
+//   - a write sent from another site's page is refused; the extension's go on
+//   - a connection that goes quiet is let go
+//   - a request with no password isn't held for the 2 s a wrong one is
+//   - a user name that isn't there costs a bcrypt check like a wrong password
+//   - a request line that doesn't parse gets its 400
+//   - the log shows a caller's control characters escaped
+//   - no answer names the Python version
+//   - a Content-Length that isn't a number gets a 400
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -351,6 +360,59 @@ try {
     ? ok(`restoring that copy on B brings all ${beforeWipe.length} channels back on both devices, past A's tombstones`)
     : fail(`restore: preview=${JSON.stringify(previewText.slice(0, 120))} A=${restoredA} B=${restoredB} want=${beforeWipe}`);
 
+  // ---- a page on another site can't write with the browser's password ----
+  // A browser once given the password in its own box sends it with whatever
+  // another site's page sends here. The extension's requests come from another
+  // origin too (it holds no host permission for the server: the syncing above
+  // went out as cross-site, from chrome-extension://), and must still go.
+  // If-Match names a version the server isn't at: one let through gets 412.
+  const putFrom = (h) =>
+    fetch(`${URL_}/state`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Basic " + Buffer.from(`${USER}:${PASS}`).toString("base64"),
+        "If-Match": '"999999"',
+        "Content-Type": "text/plain",
+        ...h
+      },
+      body: '{"channels":{}}'
+    }).then((r) => r.status);
+  const fromElsewhere = await Promise.all(
+    [
+      { "Sec-Fetch-Site": "cross-site", Origin: "https://evil.example" },
+      { "Sec-Fetch-Site": "same-site", Origin: "https://other.homeserver.example" },
+      { Origin: "https://evil.example" } // a browser from before Sec-Fetch-Site
+    ].map(putFrom)
+  );
+  const fromOurs = await Promise.all(
+    [
+      { "Sec-Fetch-Site": "cross-site", Origin: "chrome-extension://abcdefghijklmnop" },
+      { "Sec-Fetch-Site": "cross-site", Origin: "moz-extension://8c2f5e7a-0000-4000-8000-000000000000" },
+      { Origin: `http://127.0.0.1:${PORT}` },
+      { Origin: "https://homeserver.example", "X-Forwarded-Host": "homeserver.example" },
+      {}
+    ].map(putFrom)
+  );
+  fromElsewhere.every((s) => s === 403) && fromOurs.every((s) => s === 412)
+    ? ok("a PUT from another site's page is refused (403); the extensions', this host's and an app's go on")
+    : fail(`cross-site PUT: from elsewhere ${fromElsewhere} (want 403s), from ours ${fromOurs} (want 412s)`);
+
+  // ---- a connection that goes quiet is let go ----
+  // With no socket timeout, a client that stopped half way through its request
+  // held a thread for good. Two minutes is too long to wait for here, so the
+  // handler's setting is read instead.
+  const quietS = Number(
+    execFileSync("python3", [
+      "-B", // loads the server's code without leaving server/__pycache__ behind
+      "-c",
+      "import importlib.util as u, sys\ns = u.spec_from_file_location('s', sys.argv[1])\nm = u.module_from_spec(s)\ns.loader.exec_module(m)\nprint(m.Handler.timeout)",
+      join(EXT_PATH, "server/xrntube-sync.py")
+    ]).toString()
+  );
+  quietS > 0 && quietS <= 600
+    ? ok(`a connection that goes quiet is dropped after ${quietS} s`)
+    : fail(`the server's socket timeout is ${quietS}: a stalled client holds a thread for good`);
+
   // ---- a gzipped PUT is inflated with the same limit as a plain one ----
   // The limit (32 MB) was checked on the compressed length only, so a few KB
   // of gzip inflated to whatever they held, in memory; and a body that wasn't
@@ -373,6 +435,103 @@ try {
   notGzip === 400 && bomb === 413 && fits === 412
     ? ok("a PUT marked gzip that isn't is answered 400, one that inflates past 32 MB is refused (413), and a real one goes on to the version check")
     : fail(`gzipped PUT: not gzip ${notGzip} (want 400), 33 MB inflated ${bomb} (want 413), a real one ${fits} (want 412)`);
+
+  // ---- a request with no password isn't held ----
+  // The 2 s hold after a wrong password slows a guesser down. A request that
+  // sent no password guessed nothing, and was held, with its thread, all the same.
+  const timedState = async (h) => {
+    const start = Date.now();
+    const status = await fetch(`${URL_}/state`, { headers: { "X-Forwarded-For": "203.0.113.60", ...h } }).then((r) => r.status);
+    return [status, Date.now() - start];
+  };
+  const [bareStatus, bareMs] = await timedState({});
+  const [wrongStatus, wrongMs] = await timedState({ Authorization: "Basic " + Buffer.from(`${USER}:nope`).toString("base64") });
+  bareStatus === 401 && bareMs < 1000 && wrongStatus === 401 && wrongMs >= 2000
+    ? ok(`a request with no password is answered at once (${bareMs} ms); a wrong one is still held (${wrongMs} ms)`)
+    : fail(`no password: ${bareStatus} after ${bareMs} ms (want 401 at once); a wrong one: ${wrongStatus} after ${wrongMs} ms (want 401 after 2 s)`);
+
+  // ---- a user name that isn't there takes as long as a wrong password ----
+  // bcrypt ran only for a name in the users file, so a 401 for one that isn't
+  // came back a bcrypt check sooner, and its time told a stranger which names
+  // exist. Counted in the server's own code rather than timed: a cost-4 hash
+  // is too quick to tell apart from the 2 s hold.
+  const checksFor = (login) =>
+    Number(
+      execFileSync("python3", [
+        "-B",
+        "-c",
+        [
+          "import base64, importlib.util as u, sys",
+          "s = u.spec_from_file_location('s', sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)",
+          "m.args = type('A', (), {'users': sys.argv[2]})()",
+          "n = [0]; real = m.bcrypt.checkpw",
+          "def counted(*a):\n    n[0] += 1\n    return real(*a)",
+          "m.bcrypt.checkpw = counted",
+          "assert m.check_login('Basic ' + base64.b64encode(sys.argv[3].encode()).decode()) is None",
+          "print(n[0])"
+        ].join("\n"),
+        join(EXT_PATH, "server/xrntube-sync.py"),
+        join(dir, "users"),
+        login
+      ]).toString()
+    );
+  const knownChecks = checksFor(`${USER}:nope`);
+  const unknownChecks = checksFor("nobody:nope");
+  knownChecks === 1 && unknownChecks === 1
+    ? ok("a user name that isn't there costs one bcrypt check, as a wrong password does")
+    : fail(`bcrypt checks: ${knownChecks} for a wrong password, ${unknownChecks} for a name that isn't there (want 1 and 1)`);
+
+  // ---- a request line that doesn't parse gets its 400 ----
+  // http.server logs it before any headers are read, and log_message looked
+  // them up: AttributeError, no answer, and a traceback in the log.
+  const rawReply = (bytes) =>
+    new Promise((resolve) => {
+      let got = "";
+      const sock = connect(PORT, "127.0.0.1", () => sock.write(bytes));
+      sock.on("data", (d) => (got += d));
+      sock.on("close", () => resolve(got));
+      sock.on("error", () => resolve(got));
+      sock.setTimeout(5000, () => sock.destroy());
+    });
+  const garbage = await rawReply("GARBAGE\r\n\r\n");
+  /^HTTP\/1\.[01] 400/.test(garbage)
+    ? ok("a request line that doesn't parse is answered 400")
+    : fail(`a request line that doesn't parse: ${JSON.stringify(garbage.slice(0, 80))} (want a 400)`);
+
+  // ---- the log shows a caller's control characters escaped ----
+  // The request line and X-Forwarded-For are the caller's. Written raw, an
+  // escape sequence rewrote the terminal, and a \r started a line of its own
+  // where xrnhub reads the log (it splits lines on \r too).
+  mark = serverLog.length;
+  const forgedLine = '2026-11-06_01:09:14.23919 198.51.100.66 "PUT /state HTTP/1.1" 200 -';
+  await rawReply("GET /a\x1b[2Jb HTTP/1.1\r\nX-Forwarded-For: 203.0.113.70\x1b]0;hi\x07\r\n\r\n");
+  await rawReply(`GET /a\r${forgedLine} HTTP/1.1\r\n\r\n`);
+  await logSettles();
+  const logged = serverLog.slice(mark);
+  const raw = [...logged].filter((c) => c !== "\n" && (c.charCodeAt(0) < 0x20 || (c.charCodeAt(0) >= 0x7f && c.charCodeAt(0) < 0xa0)));
+  !raw.length && logged.includes("203.0.113.70\\x1b]0;hi\\x07") && logged.includes("/a\\x0d2026-11-06")
+    ? ok("the log shows a caller's control characters escaped, so a \\r can't start a made-up line")
+    : fail(`log: ${JSON.stringify(logged.slice(0, 400))}`);
+
+  // ---- no answer names the Python version ----
+  // The Server header said "xrntube-sync/1 Python/3.x.y", error pages included.
+  const serverHeaders = [
+    (await fetch(`${URL_}/health`)).headers.get("server"),
+    (await rawReply("PATCH /health HTTP/1.0\r\n\r\n")).match(/^server:(.*)$/im)?.[1] // http.server's own 501
+  ];
+  serverHeaders.every((h) => h && !/python/i.test(h))
+    ? ok(`no answer names the Python version (Server: ${serverHeaders[0].trim()})`)
+    : fail(`the Server header: ${JSON.stringify(serverHeaders)}`);
+
+  // ---- a Content-Length that isn't a number gets a 400 ----
+  // int() raised in the handler, and the connection closed with no reply.
+  const badLength = await rawReply(
+    `PUT /xrntube/state HTTP/1.0\r\nAuthorization: Basic ${Buffer.from(`${USER}:${PASS}`).toString("base64")}\r\n` +
+      `If-Match: "999999"\r\nContent-Length: lots\r\n\r\n{}`
+  );
+  /^HTTP\/1\.[01] 400/.test(badLength)
+    ? ok("a Content-Length that isn't a number is answered 400")
+    : fail(`a Content-Length that isn't a number: ${JSON.stringify(badLength.slice(0, 80))} (want a 400)`);
 
   // Last, since it locks this address out: ten wrong passwords (sent at once, each held 2 s) and
   // even the right one gets 429 for 15 minutes. Basic auth from a loopback peer with a forwarded

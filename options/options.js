@@ -10,7 +10,9 @@ const {
   resolveRetryDue,
   RESOLVE_MAX_TRIES,
   resolveSettings,
-  safeSyncAddress
+  safeSyncAddress,
+  handleText,
+  cutHandleOf
 } = self.XrnTube;
 
 const $ = (id) => document.getElementById(id);
@@ -54,7 +56,7 @@ function savePrefs() {
 
 let state = { channels: {}, videos: {}, allowlist: {} };
 let filter = "";
-// Which filter is active: "all" | "full" | "videoOnly" | "videos" | "nosubs" | "hidden"
+// Which filter is active: "all" | "full" | "videoOnly" | "videos" | "nosubs" | "hidden" | "cut"
 let tab = "all";
 // Channel sort: "subsDesc" | "subsAsc" | "recent" | "oldest" | "name".
 // Biggest-first by default — the whole point of the sub counts is to see who
@@ -137,7 +139,7 @@ function passesHidden(entry) {
 }
 
 const byName = (label) => (a, b) => label(a).toLowerCase().localeCompare(label(b).toLowerCase());
-const channelLabel = ([id, e]) => e.name || e.handle || id;
+const channelLabel = ([id, e]) => e.name || handleText(e.handle || id);
 const videoLabel = ([id, e]) => e.title || id;
 
 const CHANNEL_SORT = {
@@ -168,15 +170,18 @@ function render() {
     allChannels.filter(([, e]) => e.hidden).length + allVideos.filter(([, e]) => e.hidden).length;
 
   const wantChannels =
-    tab === "all" || tab === "full" || tab === "videoOnly" || tab === "nosubs" || tab === "hidden";
+    tab === "all" || tab === "full" || tab === "videoOnly" || tab === "nosubs" || tab === "hidden" || tab === "cut";
   const wantVideos = tab === "all" || tab === "videos" || tab === "hidden";
 
   let hiddenBySmall = 0;
   const channelEntries = allChannels
     .filter(
-      ([id, e]) => matches(id + " " + (e.name || "") + " " + (e.handle || "") + " " + (e.ucid || "")) && passesHidden(e)
+      ([id, e]) =>
+        matches([id, handleText(id), e.name || "", e.handle || "", handleText(e.handle), e.ucid || ""].join(" ")) &&
+        (tab === "cut" || passesHidden(e)) // hidden or not, these block the wrong channel
     )
-    .filter(([, e]) => {
+    .filter(([id, e]) => {
+      if (tab === "cut") return !!cutHandleOf(id, e);
       if (tab === "full") return e.mode !== CHANNEL_MODE.EXCEPT_WHITELIST;
       if (tab === "videoOnly") return e.mode === CHANNEL_MODE.EXCEPT_WHITELIST;
       // Channels with no usable subscriber *number*: never fetched, or the
@@ -211,6 +216,10 @@ function render() {
   };
   setLabel("hidden", hiddenCount ? `Hidden (${hiddenCount})` : "Hidden");
   setLabel("nosubs", noSubs ? `No sub count (${noSubs})` : "No sub count");
+  const cut = allChannels.filter(([id, e]) => cutHandleOf(id, e));
+  setLabel("cut", `Cut-off handles (${cut.length})`);
+  const cutOpt = filterSel.querySelector('option[value="cut"]');
+  cutOpt.hidden = cutOpt.disabled = !cut.length && tab !== "cut";
   if (filterSel.value !== tab) filterSel.value = tab;
 
   $("channel-total").textContent = `(${allChannels.length.toLocaleString()})`;
@@ -238,6 +247,7 @@ function render() {
   setNavCount("nav-blocklist", allChannels.length + allVideos.length);
   renderStats(allChannels, allVideos);
   renderEnrichNote(allChannels);
+  renderCutNote(cut);
   syncBulkBar();
 
   const clearVideosBtn = $("clear-videos-btn");
@@ -312,7 +322,7 @@ function renderEnrichNote(allChannels) {
   el.hidden = false;
   // Name them when there are only a few — "1 channel" with no way to tell
   // which is not something anyone can act on.
-  const names = stuck.length <= 3 ? ` (${stuck.map(([id, e]) => e.name || id).join(", ")})` : "";
+  const names = stuck.length <= 3 ? ` (${stuck.map(([id, e]) => e.name || handleText(id)).join(", ")})` : "";
   el.replaceChildren(
     `⚠️ ${plural(unresolved.length, "channel")}${names} may not block everywhere yet — YouTube links a channel by @handle on some pages and by ID on others. `,
     h("button", {
@@ -321,6 +331,21 @@ function renderEnrichNote(allChannels) {
       text: "Resolve now",
       onclick: () => bulkFetchSubs(unresolved, "Resolved")
     })
+  );
+}
+
+// Channels stored under the start of their @handle by a version before 2.1.9
+// (cutHandleOf() in shared/constants.js). The background moves the ones whose
+// name spells the handle out; these are the rest, and they block someone else
+// (or nobody) until blocked again from the channel itself.
+function renderCutNote(cut) {
+  const el = $("cut-note");
+  el.hidden = !cut.length;
+  if (!cut.length) return;
+  const names = cut.length <= 3 ? ` (${cut.map(([id, e]) => e.name || handleText(id)).join(", ")})` : "";
+  el.replaceChildren(
+    `⚠️ ${plural(cut.length, "channel")}${names} may be saved under only the start of the @handle: versions before 2.1.9 stopped reading a handle at its first letter outside ASCII, so @Nguyễn… was saved as @Nguy, which is another channel. Block each again from its page or a tile, then delete the old row. `,
+    ...(tab === "cut" ? [] : [h("button", { class: "linklike", type: "button", text: "Show them", onclick: () => setTab("cut") })])
   );
 }
 
@@ -511,7 +536,7 @@ function buildHideBtn(kind, id, entry) {
 // CHANNEL_MODE in shared/constants.js and channelBlocks() in shared/block-logic.js).
 function buildChannelRow(id, entry) {
   const key = "c:" + id;
-  const label = entry.name || entry.handle || id;
+  const label = entry.name || handleText(entry.handle || id);
   const li = h("li", { class: "channel-row" + (selected.has(key) ? " selected" : "") });
   li.dataset.id = id; // real key (may be a UC… id); the visible label can differ
 
@@ -531,8 +556,8 @@ function buildChannelRow(id, entry) {
   // a readable identifier, and a row is dense enough without repeating it.
   // It stays reachable as a tooltip on the name instead. A UC…-keyed channel
   // does show its @handle once known, with the raw id as the tooltip.
-  if (id.startsWith("@")) name.title = id;
-  const idLabel = id.startsWith("@") ? null : entry.handle || id;
+  if (id.startsWith("@")) name.title = handleText(id);
+  const idLabel = id.startsWith("@") ? null : handleText(entry.handle) || id;
   if (idLabel && idLabel !== name.textContent) {
     meta.appendChild(copyable(idLabel, !id.startsWith("@") && entry.handle ? id : undefined));
   }
@@ -557,6 +582,15 @@ function buildChannelRow(id, entry) {
         class: "local-tag gone-tag",
         text: "gone",
         title: "This channel 404s — deleted, terminated, or renamed. It will not be re-fetched."
+      })
+    );
+  }
+  if (cutHandleOf(id, entry)) {
+    meta.appendChild(
+      h("span", {
+        class: "local-tag gone-tag cut-tag",
+        text: "handle cut off?",
+        title: `Saved as ${id}, which may be only the start of the channel's @handle: versions before 2.1.9 stopped reading a handle at its first letter outside ASCII. If so, this blocks another channel. Block the one you meant again from its page, then delete this row.`
       })
     );
   }
@@ -998,11 +1032,12 @@ function renderAllowlist() {
   ul.replaceChildren(
     ...keys.map((key) => {
       const name = names.get(key);
+      const shown = handleText(key);
       return h(
         "li",
         null,
-        avatarFor(name || key),
-        h("div", { class: "row-main" }, h("div", { class: "item-name", text: name || key }), name && copyable(key)),
+        avatarFor(name || shown),
+        h("div", { class: "row-main" }, h("div", { class: "item-name", text: name || shown }), name && copyable(shown)),
         h("button", {
           class: "unblock-btn",
           type: "button",
@@ -1010,7 +1045,7 @@ function renderAllowlist() {
           onclick: async (e) => {
             e.currentTarget.disabled = true;
             await send({ type: MSG.DISALLOW_CHANNEL, id: key });
-            toast(`“${name || key}” can be blocked again.`, {
+            toast(`“${name || shown}” can be blocked again.`, {
               action: {
                 label: "Undo",
                 run: async () => {

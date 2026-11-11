@@ -95,6 +95,11 @@ an index shifts the moment anything else is removed, which made "Undo" on a
 toast restore the wrong thing. Restoring merges the whole record back in one
 write too (a 5,000-entry "delete all" restored through `addEntry()` would
 hit the write quota a hundred entries in).
+`SET_SYNC_CONFIG`, `SYNC_HISTORY`, `SYNC_HISTORY_GET`, `DELETE_DATA` and
+`IMPORT_BLOCKLIST` are taken only from a page of the extension
+(`EXTENSION_PAGE_ONLY`, judged by the browser-set `sender.url`): a content
+script runs in YouTube's renderer, and one the page took over could
+otherwise point sync at its own server or wipe the list.
 Every blocked entry also carries `updated_at` (bumped on every mutation,
 stamped from `syncedNow()` — `Date.now()` plus the sync server's clock
 offset — and by `stampAfter()` never at or before the stamp of what it
@@ -104,6 +109,13 @@ moves back), and `removeEntry()` writes a **tombstone** to `chrome.storage.local
 after `TOMBSTONE_TTL_MS` — a year: a device that syncs again after the TTL no
 longer sees the deletion and pushes the entry back); both exist so the sync
 merge can do last-write-wins without a stale device resurrecting a delete.
+A sub-count lookup is not an edit: `applyChannelInfo()` records when it ran
+in `subsAt` and moves `updated_at` only one past the entry's own stamp, so it
+still reaches the other devices but loses to an unblock or edit made on one
+of them meanwhile (stamped now, a sweep here outvoted a newer unblock there).
+Two devices' lookups of one entry then tie, and the merge keeps the later
+lookup on both (`pickTie()` in server-sync.js) rather than each keeping its
+own and pushing it over the other's every round.
 
 **Duplicates fold.** One channel can be stored twice — blocked once as
 `@foo`, once as its `UC…` — and only a lookup (or an import) pairs the two.
@@ -830,6 +842,13 @@ or came back "n/a" — exactly the rows the subs sort can't place and the size
 filter can't judge). Only those last two options carry a **count** in their
 label, and only when non-zero: a count is there to answer "is there anything
 in here?", which is a question you only ask of the two exception buckets.
+A seventh, **Cut-off handles**, is there only while some entry looks stored
+under the start of its @handle by a version before 2.1.9
+(`cutHandleOf()` in `shared/constants.js`); `#cut-note` says why and links to
+it, and each such row carries a "handle cut off?" tag. The background moves
+the ones whose own name spells the handle out (`repairCutHandles()`, on
+install/update and on each start). Handle keys are percent-encoded
+(`@caf%C3%A9`), and the page shows them decoded (`handleText()`).
 Tests drive it with `selectOption("#filter-by", …)` — the `.filter-tab`
 pills are gone. Anything in the ⋯ menu (`#fetch-all-subs-btn`,
 `#load-subs-btn`, `#clear-videos-btn`, `#clear-channels-btn`,

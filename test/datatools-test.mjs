@@ -396,6 +396,54 @@ f && f.mode === "full" && f.subs === "5K" && f.name === "Dup" && dupTombs["chann
   ? ok("…the stricter mode and newer sub count win, the name is kept, the folded key is tombstoned")
   : fail("fold result: " + JSON.stringify(f) + " tomb=" + !!dupTombs["channel:" + DUP_UC]);
 
+// ---- 10. handles with letters outside ASCII, read whole and cut off ----
+// A handle key is percent-encoded (@caf%C3%A9), and the page showed it that
+// way wherever it had no name to show. And a version before 2.1.9 stored such
+// a handle cut at its first letter outside ASCII: "@Tr" for @Trần…, which no
+// handle can be, and which blocks someone else. Nothing on the page said so.
+await msg({ type: "DELETE_DATA", channels: "all", videos: "all", allowlist: true });
+await msg({
+  type: "IMPORT_BLOCKLIST",
+  channels: { "@caf%C3%A9": stamped({ name: "" }), "@Tr": stamped({ name: "Trần Văn B" }), "@okchan": stamped({ name: "Ok" }) },
+  videos: {},
+  allowlist: { "@ph%E1%BB%9F": { note: "" } }
+});
+await p.reload();
+await p.waitForTimeout(600);
+const rowOf = (id) => p.locator(`#channel-list .channel-row[data-id="${id}"]`);
+const cafeName = await rowOf("@caf%C3%A9").locator(".item-name").textContent();
+const cafeTip = await rowOf("@caf%C3%A9").locator(".item-name").getAttribute("title");
+cafeName === "@café" && cafeTip === "@café"
+  ? ok("a channel with no name shows its handle as it reads, @café, not @caf%C3%A9")
+  : fail(`encoded handle shown as ${JSON.stringify(cafeName)} (title ${JSON.stringify(cafeTip)})`);
+await p.fill("#search", "café");
+await p.waitForTimeout(400);
+const found = await p.locator("#channel-list .channel-row").evaluateAll((rows) => rows.map((r) => r.dataset.id));
+await p.fill("#search", "");
+await p.waitForTimeout(400);
+JSON.stringify(found) === JSON.stringify(["@caf%C3%A9"])
+  ? ok("…and a search for café finds it")
+  : fail("search for café found " + JSON.stringify(found));
+const tagged = await p.locator("#channel-list .channel-row:has(.cut-tag)").evaluateAll((rows) => rows.map((r) => r.dataset.id));
+const note = (await p.locator("#cut-note").isVisible()) ? await p.locator("#cut-note").textContent() : null;
+JSON.stringify(tagged) === JSON.stringify(["@Tr"]) && note && note.includes("1 channel (Trần Văn B)")
+  ? ok("a key cut off before 2.1.9 is marked on its row, and a note above the list names it")
+  : fail(`cut-off marks: rows ${JSON.stringify(tagged)}, note ${JSON.stringify(note)}`);
+await p.locator("#cut-note button", { hasText: "Show them" }).click();
+await p.waitForTimeout(300);
+const listed = await p.locator("#channel-list .channel-row").evaluateAll((rows) => rows.map((r) => r.dataset.id));
+JSON.stringify(listed) === JSON.stringify(["@Tr"]) && (await p.locator("#filter-by").inputValue()) === "cut"
+  ? ok("…whose Show them lists just those")
+  : fail("Show them listed " + JSON.stringify(listed));
+await p.selectOption("#filter-by", "all");
+await p.locator('.page-tab[data-page="allowlist"]').click();
+await p.waitForTimeout(300);
+const allowShown = await p.locator("#allow-list .item-name").allTextContents();
+JSON.stringify(allowShown) === JSON.stringify(["@phở"])
+  ? ok("a never-block handle shows as it reads too")
+  : fail("never-block list shows " + JSON.stringify(allowShown));
+await p.locator('.page-tab[data-page="blocklist"]').click();
+
 errs.length === 0 ? ok("no options-page errors") : fail("page errors: " + errs.join(" | "));
 swErr.length === 0 ? ok("no service worker errors") : fail("SW errors: " + swErr.join(" | "));
 await ctx.close();

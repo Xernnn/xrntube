@@ -21,6 +21,12 @@ import vm from "vm";
 //     after the clock moved back still wins
 //   - a switch only a newer version knows rides through this one's merge:
 //     not stripped, and no push over it
+//   - pointing sync elsewhere, the server's history, deleting and importing
+//     are taken from the extension's own pages only, not from a YouTube tab's
+//     content script
+//   - a sub-count lookup here doesn't outvote an unblock made on another
+//     device before it, yet still reaches the other devices; and two devices'
+//     lookups of one channel settle on one copy rather than pushing in turn
 // The real server and two browsers are serversync-test's; syncread-test has
 // the reply that can't be read.
 
@@ -175,9 +181,13 @@ async function boot({ local = {}, sync = {}, servers = {} } = {}) {
   });
   ctx.self = ctx;
   for (const [name, src] of SOURCES) vm.runInContext(src, ctx, { filename: name });
-  const send = (msg) => new Promise((resolve) => onMessage(msg, {}, resolve));
+  // As the browser fills in `sender`: the options page, or a YouTube tab's content script.
+  const OPTIONS_PAGE = { id: "xrntube-test", url: "chrome-extension://xrntube-test/options/options.html" };
+  const YOUTUBE_TAB = { id: "xrntube-test", url: "https://www.youtube.com/watch?v=ANmTVYkEtLw", tab: { id: 7 }, frameId: 0, origin: "https://www.youtube.com" };
+  const send = (msg) => new Promise((resolve) => onMessage(msg, OPTIONS_PAGE, resolve));
+  const sendFromTab = (msg) => new Promise((resolve) => onMessage(msg, YOUTUBE_TAB, resolve));
   await send({ type: "GET_SYNC_STATUS" }); // init() has read its (empty) config by now
-  return { chrome, send, X: ctx.XrnTube, local: stores.local.data, sync: stores.sync.data, requests };
+  return { chrome, send, sendFromTab, X: ctx.XrnTube, local: stores.local.data, sync: stores.sync.data, requests };
 }
 
 // Connected and agreed with the server at version 6 on `base`; set straight
@@ -463,6 +473,107 @@ const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null 
   res.ok && srv.puts.length === puts && d2.sync.bt_settings && d2.sync.bt_settings.futureSwitch === false
     ? ok("…and a device's first sync keeps it too, with nothing to push")
     : fail("unknown switch, first sync: " + JSON.stringify({ res, puts: srv.puts.length - puts, settings: d2.sync.bt_settings }));
+}
+
+// ---- 7. what a YouTube tab may ask for ----
+// Nothing checked who sent a message, so a content script, which lives in
+// YouTube's renderer, could do anything the options page does: point sync at
+// another server (and send it the list, and take that server's in its
+// place), read the server's earlier copies, delete everything, import.
+{
+  const srv = server({ version: 7, doc: { channels: {}, videos: {}, tombstones: {} } });
+  const evil = server({ version: 1, user: "them", password: "theirs" });
+  const d = await boot({
+    servers: { [ORIGIN]: srv, "https://evil.example": evil },
+    local: { bt_blocklist: { channels: { "@kept": entry("Kept", 1000) }, videos: { aaaaaaaaaaa: { title: "v", ts: 1000, updated_at: 1000 } } } }
+  });
+  await connect(d);
+  const before = JSON.stringify({ sync: d.local.bt_sync, list: d.local.bt_blocklist });
+  const refused = [];
+  for (const m of [
+    { type: "SET_SYNC_CONFIG", conn: { url: "https://evil.example/xrntube", user: "them", password: "theirs" } },
+    { type: "SET_SYNC_CONFIG", conn: null },
+    { type: "SYNC_HISTORY" },
+    { type: "SYNC_HISTORY_GET", name: "x" },
+    { type: "DELETE_DATA", channels: "all", videos: "all", keywords: true, allowlist: true },
+    { type: "IMPORT_BLOCKLIST", channels: { "@planted": { name: "Planted" } }, videos: {} },
+    // What only the options page sends, besides: none of it is a content script's to ask.
+    { type: "SYNC_NOW" },
+    { type: "GET_SYNC_STATUS" },
+    { type: "ALLOW_CHANNEL", id: "@kept" },
+    { type: "RESTORE_UNBLOCK", key: "channel:@gone" },
+    { type: "CLEAR_RECENT_UNBLOCKS" },
+    { type: "SET_ENTRY_HIDDEN", kind: "channel", id: "@kept", hidden: true },
+    { type: "START_SWEEP" }
+  ]) {
+    const res = await d.sendFromTab(m);
+    if (res && res.ok === false && /extension's own pages/.test(res.error || "")) refused.push(m.type);
+  }
+  const after = JSON.stringify({ sync: d.local.bt_sync, list: d.local.bt_blocklist });
+  refused.length === 13 && after === before && !d.requests.some((r) => r.url.startsWith("https://evil.example"))
+    ? ok("from a YouTube tab, repointing or turning off sync, the server's history, deleting, importing and every other options-page message are refused, and nothing changes")
+    : fail("from a YouTube tab: " + JSON.stringify({ refused, changed: after !== before, evil: d.requests.filter((r) => r.url.startsWith("https://evil.example")).length }));
+  const blocked = await d.sendFromTab({ type: "BLOCK_CHANNEL", id: "@fromtile", name: "From a tile" });
+  const deleted = await d.send({ type: "DELETE_DATA", channels: ["@kept"] });
+  blocked.ok && d.local.bt_blocklist.channels["@fromtile"] && deleted.ok && !d.local.bt_blocklist.channels["@kept"]
+    ? ok("…while a tile's block still works from the tab, and the options page still deletes")
+    : fail("allowed messages: " + JSON.stringify({ blocked, deleted, channels: Object.keys(d.local.bt_blocklist.channels) }));
+}
+
+// ---- 8. a lookup is not an edit ----
+// applyChannelInfo() stamped `updated_at` with the time of the lookup, which
+// is what the merge weighs an unblock on another device against. So a sweep
+// here, run after the channel was unblocked there but before this device
+// heard of it, brought the channel back blocked everywhere.
+{
+  const HTML =
+    '<html>"externalId":"UCsubsxxxxxxxxxxxxxxxxx1" "pageHeaderRenderer":{"metadataRows":[{"metadataParts":[{"text":{"content":"@subbed"}}]},' +
+    '{"metadataParts":[{"text":{"content":"12K subscribers"}}]}],"delimiter":"•"}</html>';
+  const youtube = { handle: async () => new Response(HTML, { status: 200 }) };
+  const blocked = Date.now() - 3600000; // blocked an hour ago, unblocked elsewhere a second later
+  const srv = server({
+    version: 7,
+    doc: { channels: { "@other": entry("Other", blocked) }, videos: {}, tombstones: { "channel:@subbed": blocked + 1000 } }
+  });
+  const d = await boot({
+    servers: { [ORIGIN]: srv, "https://www.youtube.com": youtube },
+    local: { bt_blocklist: { channels: { "@subbed": entry("Subbed", blocked), "@other": entry("Other", blocked) }, videos: {} } }
+  });
+  await connect(d);
+  const looked = await d.send({ type: "FETCH_CHANNEL_SUBS", id: "@subbed" });
+  const res = await d.send({ type: "SYNC_NOW" });
+  looked.ok && looked.subs === "12K" && res.ok && !d.local.bt_blocklist.channels["@subbed"] && !srv.doc.channels["@subbed"] && srv.doc.tombstones["channel:@subbed"]
+    ? ok("a sub-count lookup here after the channel was unblocked elsewhere doesn't bring it back: the unblock wins, here and on the server")
+    : fail("lookup vs a newer unblock: " + JSON.stringify({ looked, res, here: d.local.bt_blocklist.channels["@subbed"], server: srv.doc.channels["@subbed"] }));
+
+  // …and on an entry nobody changed meanwhile, the count still goes out.
+  await d.send({ type: "FETCH_CHANNEL_SUBS", id: "@other" });
+  await d.send({ type: "SYNC_NOW" });
+  srv.doc.channels["@other"] && srv.doc.channels["@other"].subs === "12K"
+    ? ok("…while a lookup of an entry nobody changed since still reaches the server")
+    : fail("lookup not pushed: " + JSON.stringify(srv.doc.channels["@other"]));
+}
+
+// Two devices looked the same channel up before either synced: both copies
+// carry the same stamp. Each kept its own on a tie and pushed it, so the two
+// took turns overwriting each other on every round, for good.
+{
+  const looked = (subs, subsAt) => ({ ...entry("Twice", 1000), updated_at: 1001, subs, subsAt, subsV: 2 });
+  const A_COPY = looked("12K", 5000);
+  const B_COPY = looked("13K", 6000);
+  const srv = server({ version: 7, doc: { channels: { "@twice": A_COPY }, videos: {}, tombstones: {} } });
+  const a = await boot({ servers: { [ORIGIN]: srv }, local: { bt_blocklist: { channels: { "@twice": A_COPY }, videos: {} } } });
+  const b = await boot({ servers: { [ORIGIN]: srv }, local: { bt_blocklist: { channels: { "@twice": B_COPY }, videos: {} } } });
+  await connect(a);
+  await connect(b);
+  await a.send({ type: "SYNC_NOW" });
+  await b.send({ type: "SYNC_NOW" });
+  const settled = srv.puts.length;
+  for (const dev of [a, b, a, b]) await dev.send({ type: "SYNC_NOW" });
+  const subsOf = (dev) => dev.local.bt_blocklist.channels["@twice"].subs;
+  srv.puts.length === settled && subsOf(a) === "13K" && subsOf(b) === "13K" && srv.doc.channels["@twice"].subs === "13K"
+    ? ok("two devices' lookups of one channel settle on the later one, and nothing is pushed after")
+    : fail("tied lookups: " + JSON.stringify({ morePuts: srv.puts.length - settled, a: subsOf(a), b: subsOf(b), server: srv.doc.channels["@twice"].subs }));
 }
 
 console.log("\nDONE");

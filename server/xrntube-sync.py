@@ -32,7 +32,8 @@ them within a sync, so this is what gets the list back.
 Any path may carry the mount prefix (/xrntube/state), so it works whether or
 not the proxy strips it. Responses allow any origin (CORS): the browser
 extension calls it with an Authorization header and no cookies, so it needs
-no host permission for the server's address.
+no host permission for the server's address. A write from any other site's
+page is refused all the same (from_another_site).
 
     python3 xrntube-sync.py --data ~/xrntube-sync --users ~/.config/radicale/users
 """
@@ -93,6 +94,30 @@ def client_address(handler):
     return f"{ipaddress.IPv6Address(int(ip) >> 64 << 64)}/64"
 
 
+def from_another_site(headers):
+    """Whether a request came from another site's page. A browser that was once given the password
+    in its own sign-in box sends it again with a form any site posts here, and a text/plain form
+    body can be JSON. The browser says where the page was in Sec-Fetch-Site; one too old for that
+    still sends Origin with a POST, held against this host's name (or the proxy's X-Forwarded-Host).
+    The extension's pages are another origin, and may write."""
+    origin = (headers.get("Origin") or "").strip().lower()
+    if origin.startswith(("chrome-extension://", "moz-extension://")):
+        return False
+    site = (headers.get("Sec-Fetch-Site") or "").strip().lower()
+    if site:
+        return site in ("cross-site", "same-site")
+    scheme, _, host = origin.partition("://")
+    if scheme not in ("http", "https"):
+        return False  # no Origin, or "null"
+    ours = [headers.get("Host") or "", *(headers.get("X-Forwarded-Host") or "").split(",")]
+    return host_key(host) not in {host_key(h) for h in ours if h.strip()}
+
+
+def host_key(host):
+    """A host as Origin and Host both write it: lower case, without the default port."""
+    return host.strip().lower().removesuffix(":443").removesuffix(":80")
+
+
 def take_attempt(addr, counted):
     """Whether this address may try a password now (False: it has used up its wrong logins).
 
@@ -140,12 +165,20 @@ def check_login(header):
     if hit and hit[1] > time.time() and hit[2] == mtime:
         return hit[0]
     try:
+        checked, spare = False, None
         with open(args.users, encoding="utf-8") as f:
             for line in f:
                 name, _, hashed = line.strip().partition(":")
-                if name == user and hashed and bcrypt.checkpw(password.encode(), hashed.encode()):
-                    auth_cache[key] = (user, time.time() + AUTH_CACHE_S, mtime)
-                    return user
+                spare = hashed or spare
+                if name == user and hashed:
+                    checked = True
+                    if bcrypt.checkpw(password.encode(), hashed.encode()):
+                        auth_cache[key] = (user, time.time() + AUTH_CACHE_S, mtime)
+                        return user
+        if not checked and spare:
+            # A name that isn't there takes as long as a wrong password for one that is, or
+            # the time an answer takes says which names exist. The result is never used.
+            bcrypt.checkpw(password.encode(), spare.encode())
     except (OSError, ValueError):
         pass
     return None
@@ -262,12 +295,30 @@ def list_history(user):
     return [{"name": n, **index.get(n, {})} for n in names]
 
 
+# The request line and X-Forwarded-For come from the caller. Written to the log as they are, a
+# control character in them could rewrite the terminal the log is read in, or (a \r) start a line
+# of its own for xrnhub's log reader. Escaped as http.server's own log_message, replaced here, does.
+LOG_ESCAPES = str.maketrans({**{c: f"\\x{c:02x}" for c in (*range(0x20), *range(0x7F, 0xA0))}, "\\": "\\\\"})
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "xrntube-sync/1"
+    sys_version = ""  # the Server header named the Python version too
+    timeout = 120  # seconds of silence before a connection is dropped, so a stalled client can't hold a thread
 
     def log_message(self, fmt, *a):
-        who = self.headers.get("X-Forwarded-For", self.client_address[0]) if self.headers else "-"
-        sys.stderr.write(f"{who} {fmt % a}\n")
+        headers = getattr(self, "headers", None)  # none yet on a request line that didn't parse
+        who = headers.get("X-Forwarded-For", self.client_address[0]) if headers else "-"
+        sys.stderr.write(f"{who} {fmt % a}".translate(LOG_ESCAPES) + "\n")
+
+    def parse_request(self):
+        if not super().parse_request():
+            return False
+        # Before the login, which a page elsewhere can have the browser pass for it.
+        if self.command not in ("GET", "HEAD", "OPTIONS") and from_another_site(self.headers):
+            self.send(403, "refused: sent from another site's page")
+            return False
+        return True
 
     def route(self):
         path = self.path.split("?", 1)[0]
@@ -309,12 +360,14 @@ class Handler(BaseHTTPRequestHandler):
         addr = client_address(self)
         auth = self.headers.get("Authorization")
         if not take_attempt(addr, counted=bool(auth)):
-            time.sleep(FAIL_DELAY_S)
+            if auth:
+                time.sleep(FAIL_DELAY_S)
             self.send(429, "too many wrong passwords; try again later", headers={"Retry-After": str(FAIL_WINDOW_S)})
             return None
         user = check_login(auth)
         if not user:
-            time.sleep(FAIL_DELAY_S)
+            if auth:  # a request with none guessed nothing, and needn't hold a thread for it
+                time.sleep(FAIL_DELAY_S)
             self.send(401, "login required", headers={"WWW-Authenticate": 'Basic realm="XrnTube"'})
             return None
         with fail_lock:
@@ -401,7 +454,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path != "/state":
             return self.send(404, "not found")
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:  # raised here, it dropped the connection with no answer
+            return self.send(400, "bad Content-Length")
         if length <= 0 or length > MAX_BODY:
             return self.send(413, "body missing or too large")
         raw = self.rfile.read(length)

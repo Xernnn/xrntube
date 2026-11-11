@@ -369,6 +369,52 @@ self.XrnTube.asciiUrlText = function (text) {
   }
 };
 
+// A handle key the way a person reads it: @caf%C3%A9 as @café. Only for the
+// eye; the key itself stays encoded.
+self.XrnTube.handleText = function (key) {
+  const s = String(key || "");
+  if (s.charAt(0) !== "@" || s.indexOf("%") < 0) return s;
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s; // not a whole encoding: show it as stored
+  }
+};
+
+// Up to 2.1.8 every reader of a handle stopped at its first letter outside
+// ASCII (see asciiUrlText() above), so a channel blocked then may be stored
+// under the part before it: @café as "@caf", @Nguyễn… as "@Nguy". That is
+// another channel's handle, or nobody's, and the entry blocks that one and not
+// the channel meant. What an entry holds tells some of them apart:
+//   { fix: key }  its name is the whole handle (the link it was blocked from
+//                 showed "@café"), which gives the key it should have had;
+//   { cut: true } it can't be a handle (YouTube's have 3 to 30 characters), or
+//                 its name goes on past the key in a letter outside ASCII
+//                 ("Nguyễn Văn A" stored as "@nguy"): likely cut, but what
+//                 the rest of the handle is, nothing here says;
+//   null          nothing says so.
+// One blocked from a right-click or the add box had no name of its own, and
+// the lookup that followed named it after whoever holds the cut handle; and
+// a key read whole has a `%` in it. Neither can be told this way.
+self.XrnTube.cutHandleOf = function (key, entry) {
+  const k = String(key || "");
+  if (!/^@[\w.-]*$/.test(k)) return null; // a UC id, or a handle read whole
+  const name = self.XrnTube.handleText(String((entry && entry.name) || "").trim()).normalize("NFC");
+  const low = k.toLowerCase();
+  const lowName = name.toLowerCase();
+  const beyond = (s, at) => /[^\x00-\x7f]/.test(s.charAt(at));
+  if (/^@[\p{L}\p{M}\p{N}._·-]+$/u.test(name) && lowName.startsWith(low) && beyond(lowName, low.length)) {
+    return { fix: self.XrnTube.asciiUrlText(name) };
+  }
+  if (k.length < 4) return { cut: true };
+  // Letters and digits only on both sides: a display name has spaces and dots
+  // where the handle may have none.
+  const letters = (s) => s.toLowerCase().replace(/[^\p{L}\p{M}\p{N}]/gu, "");
+  const bare = letters(k.slice(1));
+  const folded = letters(name);
+  return bare && folded.startsWith(bare) && beyond(folded, bare.length) ? { cut: true } : null;
+};
+
 // Where the sync password may be sent. It is the server's login, which the
 // server reads from Radicale's htpasswd, so it is the calendar password too,
 // and Basic auth over plain http hands it to anyone on the way. So: https, or

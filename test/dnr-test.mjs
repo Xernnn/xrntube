@@ -15,6 +15,10 @@ import { chromium } from "playwright";
 //     to the channel inside some other site's URL (a redirect rule acts only
 //     where the extension has host access, youtube.com, and the rule's `||`
 //     anchor says the same on its own)
+//   - one stored id no rule can be made of (a video id with a regex
+//     character, a channel key with a letter outside ASCII: the sync server's
+//     document is checked by nobody) gets no rule, and every other keeps its
+//     own; Chrome refused the whole set over it, and every rule was cleared
 //
 // Needs the extension but not the network.
 
@@ -87,6 +91,25 @@ try {
   !off.length
     ? ok("nothing off youtube.com is redirected: a host named like it, or another site's URL that carries the link")
     : fail("redirected off youtube.com: " + off.join(", "));
+
+  const add = (lists) => p.evaluate((l) => chrome.runtime.sendMessage({ type: "IMPORT_BLOCKLIST", channels: {}, videos: {}, ...l }), lists);
+  const stillBlocked = ["https://www.youtube.com/@foo", `https://www.youtube.com/channel/${UC}`, "https://www.youtube.com/watch?v=ANmTVYkEtLw"];
+  await add({ videos: { ANmTVYkEtLw: { title: "A good one" } } });
+  // One at a time, each taken out again before the next.
+  for (const [what, lists, drop] of [
+    ["a video id with a regex character in it", { videos: { "abcd(efghi": { title: "Bad" } } }, { videos: ["abcd(efghi"] }],
+    ["a channel key with a letter outside ASCII", { channels: { "@bé": { name: "Bad" } } }, { channels: ["@bé"] }],
+    ["an entry whose other identity has one", { channels: { "@okay": { name: "Okay", ucid: "UCé" + "x".repeat(21) } } }, { channels: ["@okay"] }]
+  ]) {
+    const r = await add(lists);
+    if (!r || !r.ok) throw new Error("import: " + JSON.stringify(r));
+    const now = await sweep(stillBlocked);
+    const lost = Object.keys(now).filter((u) => !now[u]);
+    !lost.length
+      ? ok(`with ${what} stored, every other rule stays: @foo, its UC id and a blocked video still redirect`)
+      : fail(`with ${what} stored, no longer redirected: ${lost.join(", ")}`);
+    await p.evaluate((d) => chrome.runtime.sendMessage({ type: "DELETE_DATA", ...d }), drop);
+  }
 } catch (e) {
   fail(e.stack || String(e));
 } finally {

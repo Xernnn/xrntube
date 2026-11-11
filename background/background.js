@@ -19,7 +19,8 @@ const {
   subsAttempted,
   knowsOneIdentity,
   resolveRetryDue,
-  oversizeSyncItems
+  oversizeSyncItems,
+  cutHandleOf
 } = self.XrnTube;
 
 // A cross-device clock: server-sync.js feeds the sync server's Date header back
@@ -384,6 +385,16 @@ const DNR_RULE_ID_SHORTS = 900002;
 const DNR_MAX_VIDEO_RULES = 800; // each uses regexFilter — stay under the 1000 regex cap (+ home rule)
 const DNR_MAX_CHANNEL_RULES = 3000; // urlFilter, not regex; keeps total < 4000
 
+// What a rule may be built from. The list comes from tiles, imports and the
+// sync server's document, and only the options page checked ids: one video id
+// with a regex character in it ("abcd(efghi") made its regexFilter invalid,
+// a channel key with a letter outside ASCII its urlFilter, and either made
+// updateDynamicRules refuse the whole set, which the fallback below answers by
+// clearing every rule. Such an entry gets no rule; the rest keep theirs. (The
+// same shapes as the options page's import, CHANNEL_KEY_RE / VIDEO_ID_RE.)
+const DNR_VIDEO_ID_RE = /^[\w-]{11}$/;
+const DNR_CHANNEL_KEY_RE = /^(UC[\w-]{22}|@[\w.\-%]+)$/;
+
 // Where blocked content — and now the homepage and Shorts entirely — get
 // redirected to at the network layer, before YouTube renders anything. One
 // definition, in shared/constants.js, shared with content.js's own redirect.
@@ -453,6 +464,7 @@ async function rebuildDnrRules(state) {
   const byTsDesc = (a, b) => (b[1].ts || 0) - (a[1].ts || 0);
 
   const videoIds = Object.entries(state.videos)
+    .filter(([id]) => DNR_VIDEO_ID_RE.test(id))
     .sort(byTsDesc)
     .slice(0, DNR_MAX_VIDEO_RULES)
     .map(([id]) => id);
@@ -469,7 +481,7 @@ async function rebuildDnrRules(state) {
   // is known, or navigating by the un-keyed form walks straight past DNR.
   const toPath = (k) => (k.startsWith("@") ? "/" + k : "/channel/" + k);
   const blockedEntries = Object.entries(state.channels)
-    .filter(([key, entry]) => entry.mode !== CHANNEL_MODE.EXCEPT_WHITELIST && !isAllowed(key))
+    .filter(([key, entry]) => DNR_CHANNEL_KEY_RE.test(key) && entry.mode !== CHANNEL_MODE.EXCEPT_WHITELIST && !isAllowed(key))
     .sort(byTsDesc);
   // Primary keys first, alternates only with the budget left over: under the
   // cap, every blocked channel keeping the rule for the identity it is keyed
@@ -484,7 +496,7 @@ async function rebuildDnrRules(state) {
       primary.push(p);
     }
     const alt = key.startsWith("@") ? entry.ucid : entry.handle;
-    if (alt && !isAllowed(alt)) {
+    if (alt && DNR_CHANNEL_KEY_RE.test(alt) && !isAllowed(alt)) {
       const ap = toPath(alt);
       if (!seenPaths.has(ap)) {
         seenPaths.add(ap);
@@ -896,9 +908,50 @@ function tombstoneFolded(tombs, keys) {
   for (const k of keys) tombs["channel:" + k] = now;
 }
 
+// A channel a version before 2.1.9 stored under the start of its @handle, and
+// whose own name spells the whole handle out (cutHandleOf() in
+// shared/constants.js), moves to the key it should have had. What the lookup
+// after the block wrote (a UC id, a handle, the sub count, "gone") was about
+// whoever holds the cut handle, so it goes, and the next lookup asks about the
+// right channel. The cut key gets a tombstone, so other devices drop it too.
+// Resolves to whether anything moved.
+async function repairCutHandles() {
+  const state = await updateStore((s) => {
+    const taken = new Set();
+    for (const [key, e] of Object.entries(s.channels)) {
+      for (const id of [key, e.handle]) if (id && id[0] === "@") taken.add(String(id).toLowerCase());
+    }
+    let moved = 0;
+    for (const [key, e] of Object.entries(s.channels)) {
+      const fix = (cutHandleOf(key, e) || {}).fix;
+      if (!fix) continue;
+      const { handle, ucid, subs, subsAt, subsV, gone, idTries, ...kept } = e;
+      delete s.channels[key];
+      s.tombstones["channel:" + key] = stampAfter(entryStamp(e));
+      // Blocked again under the right key already: that entry stands.
+      if (!taken.has(fix.toLowerCase())) {
+        s.channels[fix] = { ...kept, updated_at: stampAfter(s.tombstones["channel:" + fix]) };
+        delete s.tombstones["channel:" + fix];
+        taken.add(fix.toLowerCase());
+      }
+      moved++;
+    }
+    if (!moved) return false;
+  });
+  return state.result !== false;
+}
+
 // Merge a { id: {subs, handle, name, ucid} } map into the blocklist in one
 // write. `name` only replaces a name that's empty or just the id/handle;
 // `handle` never overwrites an existing one.
+//
+// A lookup says when it ran in `subsAt`, and moves `updated_at` just past the
+// entry's own stamp, not to now. `updated_at` is what the sync merge weighs
+// against an unblock or an edit on another device: stamped now, a sweep here
+// outvoted a newer unblock there that hadn't synced yet, and the channel came
+// back blocked everywhere (or a mode change was undone). One past the entry's
+// stamp still carries the lookup to the other devices, which hold the entry
+// at its own stamp, and loses to any change they made since.
 async function applyChannelInfo(map) {
   const ids = Object.keys(map);
   if (!ids.length) return 0;
@@ -906,7 +959,7 @@ async function applyChannelInfo(map) {
 
   const patch = (id, e) => {
     const info = map[id];
-    const n = { ...e, subsAt: now, updated_at: now, subsV: SUBS_SCRAPE_VERSION };
+    const n = { ...e, subsAt: now, updated_at: entryStamp(e) + 1, subsV: SUBS_SCRAPE_VERSION };
     // Permanently unfetchable: stamp it so the auto-fetch stops asking and the
     // row can say "gone" rather than looking like it just hasn't loaded.
     if (info.gone) {
@@ -1124,12 +1177,40 @@ async function runSweep() {
 }
 
 // ---------- message handling ----------
+// What only the extension's own pages (the options page) send: pointing sync
+// at a server, reading the server's earlier copies, deleting data, importing
+// it. A content script lives in YouTube's renderer, and one that YouTube's
+// page took over could send these too: point sync at its own server and have
+// the list sent there and replaced from there, or wipe it. The browser, not
+// the renderer, says which page a message came from (`sender.url`), so these
+// are taken only from a page of this extension. And not only these: anything
+// a content script doesn't send itself (the options page's allow list,
+// restores, sweeps, "sync now"...) is refused from one too, so a message
+// added to the options page later is closed to YouTube's renderer from the
+// start. These are what content/content.js sends, and nothing else is taken
+// from a web page.
+const FROM_WEB_PAGES = new Set([
+  MSG.GET_BLOCKLIST,
+  MSG.BLOCK_CHANNEL,
+  MSG.UNBLOCK_CHANNEL,
+  MSG.BLOCK_VIDEO,
+  MSG.UNBLOCK_VIDEO,
+  MSG.RESOLVE_VIDEO_CHANNEL
+]);
+function fromExtensionPage(sender) {
+  return !!(sender && sender.id === chrome.runtime.id && String(sender.url || "").startsWith(chrome.runtime.getURL("")));
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     // A handler that throws still answers. Otherwise the caller waits on a
     // port that closes empty and the worker logs an uncaught rejection — two
     // entries in the extension's Errors list for one failure.
     try {
+      if (!FROM_WEB_PAGES.has(msg.type) && !fromExtensionPage(sender)) {
+        sendResponse({ ok: false, error: "only the extension's own pages may send " + msg.type });
+        return;
+      }
       switch (msg.type) {
         case MSG.GET_BLOCKLIST: {
           const state = await loadAll();
@@ -1484,13 +1565,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // Rebuild DNR rules on browser/extension startup since dynamic rules don't
 // automatically re-derive themselves from storage.
+// Both also move an entry stored under a cut-off handle (repairCutHandles()):
+// on the update that brings the fix, and on each start for one that arrived
+// since from a device still on an older version.
 chrome.runtime.onStartup.addListener(async () => {
+  if (await repairCutHandles().catch(() => false)) self.XrnTube.serverSync.onLocalChange();
   const state = await loadAll();
   await rebuildDnrRules(state);
   self.XrnTube.serverSync.onPoll();
   checkForUpdate();
 });
 chrome.runtime.onInstalled.addListener(async () => {
+  if (await repairCutHandles().catch(() => false)) self.XrnTube.serverSync.onLocalChange();
   const state = await loadAll();
   await rebuildDnrRules(state);
   setUpContextMenus();

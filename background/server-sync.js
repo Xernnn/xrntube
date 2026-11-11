@@ -380,9 +380,21 @@
     return e ? e.updated_at || e.ts || 0 : -1;
   }
 
+  // Two copies of an entry stamped alike: a lookup on each of two devices
+  // (applyChannelInfo() stamps one past the entry's own). Both devices have to
+  // keep the same one, or each keeps its own and pushes it over the other's on
+  // every round. The later lookup wins; past that, a fixed order.
+  function pickTie(l, r) {
+    const la = Number(l && l.subsAt) || 0;
+    const ra = Number(r && r.subsAt) || 0;
+    if (la !== ra) return la > ra ? l : r;
+    return stableStringify(l) >= stableStringify(r) ? l : r;
+  }
+
   // Merge one kind ("channel" / "video"). For each id, the newest surviving
   // entry across both sides competes with the newest tombstone across both
-  // sides; the later timestamp wins, an entry taking a tie.
+  // sides; the later timestamp wins, an entry taking a tie (and pickTie()
+  // choosing between two entries that tie).
   function mergeKind(kind, localMap, localTombs, remoteMap, remoteTombs, outMap, outTombs) {
     const idsFromTombs = (t) =>
       Object.keys(t)
@@ -401,7 +413,7 @@
       const lTs = entryTs(localMap[id]);
       const rTs = entryTs(remoteMap[id]);
       const liveTs = Math.max(lTs, rTs);
-      const liveEntry = lTs >= rTs ? localMap[id] : remoteMap[id];
+      const liveEntry = lTs > rTs ? localMap[id] : rTs > lTs ? remoteMap[id] : pickTie(localMap[id], remoteMap[id]);
       const delTs = Math.max(localTombs[tombKey] || -1, remoteTombs[tombKey] || -1);
 
       if (liveTs >= 0 && liveTs >= delTs) {
