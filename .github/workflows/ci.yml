@@ -25,14 +25,17 @@ jobs:
 
       - run: npm ci
 
-      # serversync-test runs the real server/xrntube-sync.py, whose one
-      # dependency is bcrypt. The runner's Python refuses system-wide pip
-      # installs (PEP 668), so a virtualenv goes first on PATH as python3.
-      - name: Python with bcrypt
-        run: |
-          python3 -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install --quiet bcrypt
-          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+      # serversync-test runs the real server/xrntube-sync.py (one dependency,
+      # bcrypt) and wants a 400 status line for a request line that doesn't
+      # parse, which http.server only sends since 3.14.7 (gh-54930); the
+      # runner's own Python is older.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          check-latest: true
+
+      - name: bcrypt
+        run: pip install --quiet bcrypt
 
       - name: Syntax and manifest check
         run: npm run check
