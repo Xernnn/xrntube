@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Read-only: CI checks code and needs to change nothing on the repository.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Only the offline files (test:fast). The rest of the suite drives live
+    # youtube.com, which throttles and bot-checks datacenter addresses, so from
+    # here it would fail on YouTube rather than on the extension.
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # serversync-test runs the real server/xrntube-sync.py, whose one
+      # dependency is bcrypt. The runner's Python refuses system-wide pip
+      # installs (PEP 668), so a virtualenv goes first on PATH as python3.
+      - name: Python with bcrypt
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet bcrypt
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      - name: Syntax and manifest check
+        run: npm run check
+
+      - name: Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Offline tests
+        run: npm run test:fast
