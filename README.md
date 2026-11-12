@@ -424,9 +424,11 @@ the laptop and the phone, say — run the sync server and point each browser at
 it:
 
 1. Run `server/xrntube-sync.py` somewhere your devices can reach over HTTPS: a
-   home server behind Tailscale Funnel works well. It needs Python 3 and
+   home server behind Tailscale Funnel works well. It needs Python and
    `bcrypt`, and logs in against an htpasswd file of bcrypt hashes (a Radicale
-   users file works as-is). Details: [docs/sync-server.md](docs/sync-server.md).
+   users file works as-is). Use Python 3.14.7 or newer: older versions answer a
+   malformed request with no HTTP status line, which the server tests check for.
+   Details: [docs/sync-server.md](docs/sync-server.md).
 2. On each device: options → **Sync** → the server's address (including its
    path, e.g. `https://your-server.example/xrntube`), your user name and
    password → **Connect**. The first device pushes its list; the others pull
