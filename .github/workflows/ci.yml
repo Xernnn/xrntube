@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Read-only: CI checks code and needs to change nothing on the repository.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Only the offline files (test:fast). The rest of the suite drives live
+    # youtube.com, which throttles and bot-checks datacenter addresses, so from
+    # here it would fail on YouTube rather than on the extension.
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # serversync-test runs the real server/xrntube-sync.py (one dependency,
+      # bcrypt) and wants a 400 status line for a request line that doesn't
+      # parse, which http.server only sends since 3.14.7 (gh-54930); the
+      # runner's own Python is older.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          check-latest: true
+
+      - name: bcrypt
+        run: pip install --quiet bcrypt
+
+      - name: Syntax and manifest check
+        run: npm run check
+
+      - name: Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Offline tests
+        run: npm run test:fast
