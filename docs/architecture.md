@@ -633,8 +633,13 @@ noticeably slower.
 its contents inline instead, and anything added to only one of the three
 copies silently never ran on a normal page load — that is precisely how the
 page-redirect check ended up dead on fresh loads while looking wired up. A
-`setInterval` heartbeat re-triggers the same throttle every 2s as a
-fallback, and `yt-navigate-finish` runs the batch on SPA navigation. Only
+heartbeat re-triggers the same throttle every 2s as a fallback, for what
+changes without adding an element the observer sees — but only for five
+beats after the page last grew or navigated, and while a tile or a shelf
+still waits to hydrate (`data-bt-pending`, `data-bt-shelf-try`), and never
+on a hidden tab (`wakeHeartbeat()` / `heartbeatBeat()`). It used to beat for
+as long as a tab stayed open, a video playing for an hour included.
+`yt-navigate-finish` runs the batch on SPA navigation. Only
 the blocklist-driven removals in `processRenderer()` — and `scrubPosts()`,
 cheap because posts are rare — run in the hot per-mutation path
 (`scheduleFlush` / the `MutationObserver` callback via `sweep()`) —

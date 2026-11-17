@@ -181,7 +181,9 @@ and a title, length or date that arrived after that was never read
 no duration, ever — isn't re-read for the life of the page; size it against
 the **2s heartbeat**, not the ~400ms throttle, because the throttle only fires
 on DOM mutation and a settled page is driven by the heartbeat alone (at 8
-tries ≈ 16s a 2½-hour video still slipped through). The options **Keywords** page
+tries ≈ 16s a 2½-hour video still slipped through). The heartbeat keeps
+beating while any tile is pending (`data-bt-pending`), so the whole bound is
+used. The options **Keywords** page
 tab edits both (title list + a "Block videos by length" block). The sync
 merge carries the whole `keywords` object as last-write-wins on `ts`;
 `kwFingerprint()` (list + duration bounds, ts excluded) in `sameBlocklist()`

@@ -1255,9 +1255,42 @@
       recheckHydratingTiles(document.documentElement);
     }, 400);
   }
-  // Heartbeat: guarantees these eventually run even on the rare page that
-  // doesn't trigger a childList mutation our observer catches.
-  setInterval(scheduleExtrasScrub, 2000);
+  // Heartbeat: the scrubs again every 2s, for what changes without adding an
+  // element the observer sees (a tile's date arriving as text, an href set on
+  // a link already there). Only while there's reason to: for a few beats after
+  // the page last grew or navigated, and while a tile or a shelf still waits
+  // for its title, length, date or byline (each has its own bound on tries).
+  // Never on a hidden tab. It used to beat for as long as a YouTube tab stayed
+  // open, some 16 whole-document passes every 2s, a video playing for an hour
+  // or a background tab playing music included: steady CPU and battery on the
+  // phone. The observer, a navigation, and the tab coming back into view
+  // start it again.
+  const HEARTBEAT_MS = 2000;
+  const HEARTBEAT_QUIET_BEATS = 5;
+  const HEARTBEAT_WAITING_SEL = "[data-bt-pending], [data-bt-shelf-try]:not([data-bt-shelf])";
+  let heartbeat = null;
+  let quietBeats = 0;
+  function wakeHeartbeat() {
+    quietBeats = 0;
+    if (heartbeat || document.hidden) return;
+    heartbeat = setInterval(heartbeatBeat, HEARTBEAT_MS);
+  }
+  function heartbeatBeat() {
+    if (document.querySelector(HEARTBEAT_WAITING_SEL)) quietBeats = 0;
+    else quietBeats++;
+    if (document.hidden || quietBeats > HEARTBEAT_QUIET_BEATS) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+      return;
+    }
+    scheduleExtrasScrub();
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    wakeHeartbeat();
+    scheduleExtrasScrub();
+  });
+  wakeHeartbeat();
 
   // A channel page whose URL names NEITHER identity format. CHANNEL_HREF_RE
   // returns null for these, so anything that keys off the path alone silently
@@ -3077,7 +3110,7 @@
   //
   // Size it off the SLOW path, not the fast one. The throttle is ~400ms, but
   // it only fires on DOM mutation; once a page goes quiet the 2s heartbeat is
-  // what drives it. At 8 tries that was ~16s, and a late-hydrating tile on a
+  // what drives it (and keeps beating while such a tile waits). At 8 tries that was ~16s, and a late-hydrating tile on a
   // settled page was still being locked in before its badge arrived (one
   // 2½-hour video survived a length bound in exactly that way). 25 gives ~50s
   // on the heartbeat, and the cost of being wrong the other way is only a few
@@ -3151,6 +3184,7 @@
     if (pending.size) {
       scheduleFlush();
       scheduleExtrasScrub();
+      wakeHeartbeat();
     }
     if (activeShortChanged) checkCurrentPageAndRedirect();
   });
@@ -3794,6 +3828,7 @@
     bounced = false;
     pageViewRendered();
     runExtras(); // the scrub batch + checkCurrentPageAndRedirect()
+    wakeHeartbeat();
   });
 
   // m.youtube.com announces its navigations as state-navigatestart /
@@ -3804,6 +3839,7 @@
   window.addEventListener("state-navigateend", () => {
     pageViewRendered();
     scheduleExtrasScrub();
+    wakeHeartbeat();
   });
 
   // Back/Forward. A page restored from the back/forward cache does NOT re-run
@@ -3814,6 +3850,7 @@
     if (e.persisted) {
       bounced = false;
       checkCurrentPageAndRedirect();
+      wakeHeartbeat();
     }
   });
   window.addEventListener("popstate", () => {
@@ -3821,6 +3858,7 @@
     startPageView();
     pageViewRendered();
     scheduleExtrasScrub();
+    wakeHeartbeat();
     checkCurrentPageAndRedirect();
   });
 

@@ -134,5 +134,26 @@ JSON.stringify(deskLeft) === JSON.stringify(["homeold0001", "desknew0001", "desk
 const deskGaps = await emptySlots(desk, "ytd-rich-item-renderer");
 deskGaps === 0 ? ok("…each with its whole grid slot — no empty ytd-rich-item-renderer left") : fail(`${deskGaps} empty desktop grid slot(s) left behind`);
 
+// ---- the heartbeat, in the real extension ----
+// The scrubs ran every 2s for as long as a YouTube tab stayed open. A page
+// that has settled now gets none: an href set on a link already there (which
+// the observer doesn't see) makes a shelf a Shorts shelf, and it stays until
+// the page grows again, which brings the scrubs back.
+pages["www.youtube.com/results"] = `<!doctype html><html><body><ytd-app>
+  <ytd-rich-shelf-renderer id="probe-shelf"><a href="/watch?v=probevideo1">A shelf</a></ytd-rich-shelf-renderer>
+</ytd-app></body></html>`;
+const quiet = await ctx.newPage();
+await quiet.goto("https://www.youtube.com/results?search_query=probe");
+await quiet.waitForTimeout(15000); // past the beats after the page last grew
+await quiet.evaluate(() => document.querySelector("#probe-shelf a").setAttribute("href", "/shorts/probeshort1"));
+await quiet.waitForTimeout(5000);
+const shelfStayed = await quiet.evaluate(() => !!document.getElementById("probe-shelf"));
+await quiet.evaluate(() => document.body.append(document.createElement("div")));
+await quiet.waitForTimeout(1500);
+const shelfGone = await quiet.evaluate(() => !document.getElementById("probe-shelf"));
+shelfStayed && shelfGone
+  ? ok("a page that has settled isn't rescanned every 2 s (a shelf made a Shorts shelf by an href alone stays), and the next element added brings the scrubs back")
+  : fail("heartbeat on a settled page: " + JSON.stringify({ shelfStayed, shelfGone }));
+
 await ctx.close();
 console.log("\nDONE");
