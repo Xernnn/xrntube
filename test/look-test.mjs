@@ -115,7 +115,7 @@ await p.setViewportSize({ width: 412, height: 880 });
 await p.click('.page-tab[data-page="blocklist"]');
 await p.evaluate(() => {
   document.querySelector("#bulk-progress").hidden = false;
-  document.querySelector("#bulk-progress-text").textContent = "Fetching sub counts and @handles… 0 / 240 · keeps going if you close this page";
+  document.querySelector("#bulk-progress-text").textContent = "Sub counts 1,240 / 5,240 · throttled, resumes 10:45 PM";
 });
 await p.waitForTimeout(100);
 const slide = () => p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);

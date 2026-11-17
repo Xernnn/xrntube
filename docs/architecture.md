@@ -792,8 +792,8 @@ The full blocklist manager (search, block, delete, backup/import), opened via
 `chrome.runtime.openOptionsPage()`. Listens to `chrome.storage.onChanged` to
 live-refresh (debounced ~300ms; `suppressStorageRefresh` mutes it during a
 bulk sub-count load or a bulk action). The page is a two-column shell: a
-sticky `.sidenav` (brand, six `.page-tab` buttons with live count badges, a
-footer with the keyboard hints) beside a `.main` column holding `.wrap`.
+sticky `.sidenav` (brand, six `.page-tab` buttons with live count badges)
+beside a `.main` column holding `.wrap`.
 `showPage()` toggles the `.page` divs `#page-blocklist` / `#page-keywords` /
 `#page-allowlist` / `#page-settings` / `#page-sync` / `#page-data`, last one
 remembered in `localStorage`; a `#<page>` hash (the popup's "Backup &

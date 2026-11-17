@@ -313,7 +313,7 @@ function renderEnrichNote(allChannels) {
   // which is not something anyone can act on.
   const names = stuck.length <= 3 ? ` (${stuck.map(([id, e]) => e.name || handleText(id)).join(", ")})` : "";
   el.replaceChildren(
-    `⚠️ ${plural(unresolved.length, "channel")}${names} may not block everywhere yet — YouTube links a channel by @handle on some pages and by ID on others. `,
+    `⚠️ ${plural(unresolved.length, "channel")}${names} not resolved yet `,
     h("button", {
       class: "linklike",
       type: "button",
@@ -333,7 +333,7 @@ function renderCutNote(cut) {
   if (!cut.length) return;
   const names = cut.length <= 3 ? ` (${cut.map(([id, e]) => e.name || handleText(id)).join(", ")})` : "";
   el.replaceChildren(
-    `⚠️ ${plural(cut.length, "channel")}${names} may be saved under only the start of the @handle: versions before 2.1.9 stopped reading a handle at its first letter outside ASCII, so @Nguyễn… was saved as @Nguy, which is another channel. Block each again from its page or a tile, then delete the old row. `,
+    `⚠️ ${plural(cut.length, "channel")}${names} saved under a cut-off @handle: block each again, then delete the old row `,
     ...(tab === "cut" ? [] : [h("button", { class: "linklike", type: "button", text: "Show them", onclick: () => setTab("cut") })])
   );
 }
@@ -366,7 +366,7 @@ function renderList(listEl, emptyEl, moreEl, entries, build, key) {
   entries.slice(0, limit).forEach(([id, entry]) => frag.appendChild(build(id, entry)));
   listEl.replaceChildren(frag);
   emptyEl.hidden = entries.length > 0;
-  emptyEl.textContent = filter ? `Nothing matches “${filter}”.` : "Nothing here.";
+  emptyEl.textContent = filter ? "No match" : "Nothing here";
 
   // The rest of the list is reachable, not just announced: "Show more" grows
   // the limit a step at a time and "Show all" drops it entirely. Rendering
@@ -418,7 +418,7 @@ async function copyText(text, what) {
     await navigator.clipboard.writeText(text);
     toast(`Copied ${what || text}.`);
   } catch {
-    toast("Couldn't copy — your browser blocked clipboard access.", { error: true });
+    toast("Couldn't copy", { error: true });
   }
 }
 
@@ -504,7 +504,6 @@ function deleteButton(onDelete) {
     class: "unblock-btn",
     type: "button",
     text: "Delete",
-    title: "Unblock and remove from the list — you can undo it",
     onclick: onDelete
   });
 }
@@ -515,12 +514,9 @@ function buildHideBtn(kind, id, entry) {
     class: "hide-btn",
     type: "button",
     text: isHidden ? "Show in list" : "Hide from list",
-    title: isHidden
-      ? "List this row in the blocklist manager again"
-      : "Keep it blocked but stop listing it here (find it again under Show → Hidden)",
     onclick: async () => {
       await send({ type: MSG.SET_ENTRY_HIDDEN, kind, id, hidden: !isHidden });
-      toast(isHidden ? "Shown in the list again." : "Hidden from the list — still blocked.");
+      toast(isHidden ? "Shown in the list" : "Hidden from the list");
       refresh();
     }
   });
@@ -567,18 +563,14 @@ function buildChannelRow(id, entry) {
   meta.appendChild(
     h("span", {
       class: "mode-tag" + (isSoft ? " soft" : ""),
-      text: isSoft ? "Video-only" : "Full block",
-      title: isSoft
-        ? "Its page stays reachable; its videos are blocked except the ones you allow."
-        : "The channel and everything from it is gone."
+      text: isSoft ? "Video-only" : "Full block"
     })
   );
   if (entry.gone) {
     meta.appendChild(
       h("span", {
         class: "local-tag gone-tag",
-        text: "gone",
-        title: "This channel 404s — deleted, terminated, or renamed. It will not be re-fetched."
+        text: "gone"
       })
     );
   }
@@ -587,7 +579,7 @@ function buildChannelRow(id, entry) {
       h("span", {
         class: "local-tag gone-tag cut-tag",
         text: "handle cut off?",
-        title: `Saved as ${id}, which may be only the start of the channel's @handle: versions before 2.1.9 stopped reading a handle at its first letter outside ASCII. If so, this blocks another channel. Block the one you meant again from its page, then delete this row.`
+        title: `Saved as ${id}: block it again from its page, then delete this row`
       })
     );
   }
@@ -621,9 +613,6 @@ function buildChannelRow(id, entry) {
         class: "mode-toggle-btn",
         type: "button",
         text: isSoft ? "Switch to full block" : "Switch to video-only",
-        title: isSoft
-          ? "Block the channel page and everything from it"
-          : "Keep the channel page reachable; block its videos, with exceptions you choose",
         onclick: async () => {
           await send({ type: MSG.SET_CHANNEL_MODE, id, mode: isSoft ? CHANNEL_MODE.FULL : CHANNEL_MODE.EXCEPT_WHITELIST });
           toast(isSoft ? `“${label}” is fully blocked.` : `“${label}” is video-only now.`);
@@ -717,11 +706,11 @@ function buildSubsChip(id, entry) {
   const chip = h("span", { class: "subs-chip" });
   if (entry.subs) {
     chip.textContent = entry.subs === "hidden" ? "subs hidden" : entry.subs + " subs";
-    chip.title = "Click to refresh";
+    chip.title = "Refresh";
   } else {
     chip.textContent = "get subs";
     chip.classList.add("action");
-    chip.title = "Look up this channel's subscriber count";
+    chip.title = "Look up";
   }
   chip.addEventListener("click", async () => {
     if (chip.dataset.loading) return;
@@ -731,7 +720,7 @@ function buildSubsChip(id, entry) {
     delete chip.dataset.loading;
     if (!res || !res.ok) {
       chip.textContent = "n/a";
-      chip.title = "Couldn't read a subscriber count (hidden, region-blocked, or markup changed)";
+      chip.title = "No count";
     }
     // storage.onChanged -> refresh() repaints with the cached value
   });
@@ -757,7 +746,7 @@ function buildAgeRule(channelId, entry) {
   // box, and a rule ticked but never saved looked set while doing nothing.
   const commit = async (d) => {
     await send({ type: MSG.SET_CHANNEL_AGE_RULE, id: channelId, days: d });
-    toast(d ? `Only videos older than ${plural(d, "day")} are blocked now.` : "Age rule off — every video is blocked.");
+    toast(d ? `Older than ${plural(d, "day")} blocked` : "Age rule off");
     refresh();
   };
   const current = () => Math.max(1, Math.floor(Number(days.value) || 0));
@@ -803,9 +792,7 @@ function buildWhitelistSection(channelId, channelEntry) {
     wrap.appendChild(
       h("p", {
         class: "empty-inline",
-        text: ageDays
-          ? `No always-allow exceptions. Videos newer than ${ageDays} days already stay visible.`
-          : "No exceptions yet — every video from this channel is blocked."
+        text: "No exceptions"
       })
     );
   } else {
@@ -834,18 +821,16 @@ function buildWhitelistSection(channelId, channelEntry) {
     );
   }
 
-  const input = h("input", { type: "text", placeholder: "Paste a video URL or ID to allow it" });
+  const input = h("input", { type: "text", placeholder: "Video URL or ID", "aria-label": "Video URL or ID" });
   const allow = async () => {
     const videoId = extractVideoId(input.value.trim());
     if (!videoId) {
-      toast("No video ID in that — paste a youtube.com/watch?v=… URL, a youtu.be link, or the 11-character ID.", {
-        error: true
-      });
+      toast("No video ID found", { error: true });
       return;
     }
     await send({ type: MSG.WHITELIST_CHANNEL_VIDEO, id: channelId, videoId, title: "" });
     input.value = "";
-    toast("Allowed — that video stays visible.");
+    toast("Allowed");
     refresh();
   };
   input.addEventListener("keydown", (e) => {
@@ -967,7 +952,7 @@ function openModal({ title, body, confirmLabel = "OK", cancelLabel = "Cancel", d
     ex.onclick = extra ? extra.run : null;
     if (extra) ex.textContent = extra.label;
     if (requireText) {
-      const input = h("input", { type: "text", placeholder: `Type “${requireText}” to confirm`, spellcheck: false });
+      const input = h("input", { type: "text", placeholder: `Type “${requireText}” to confirm`, "aria-label": `Type ${requireText}`, spellcheck: false });
       ok.disabled = true;
       input.addEventListener("input", () => {
         ok.disabled = input.value.trim().toLowerCase() !== requireText.toLowerCase();
@@ -1001,7 +986,7 @@ $("modal").addEventListener("mousedown", (e) => {
 function confirmDelete(title, lines, { confirmLabel = "Delete", requireText } = {}) {
   return openModal({
     title,
-    body: [...[].concat(lines), "It syncs to your other devices, and you can undo it from Recently removed."],
+    body: [].concat(lines || []),
     confirmLabel,
     danger: true,
     requireText,
@@ -1046,12 +1031,12 @@ function renderAllowlist() {
               btn.disabled = false;
               return;
             }
-            toast(`“${name || shown}” can be blocked again.`, {
+            toast(`Removed “${name || shown}”`, {
               action: {
                 label: "Undo",
                 run: async () => {
                   const res = await send({ type: MSG.ALLOW_CHANNEL, id: key });
-                  if (res && res.ok === false) toast(res.error || "That didn't work.", { error: true, ms: 9000 });
+                  refused(res);
                   refresh();
                 }
               }
@@ -1072,17 +1057,17 @@ function initAllowlist() {
     const tokens = input.value.split(/[\s,]+/).filter(Boolean);
     const keys = [...new Set(tokens.map(extractChannelKey).filter(Boolean))];
     if (!keys.length) {
-      toast("Couldn't read a channel from that — paste an @handle, a UC… ID, or a channel URL.", { error: true });
+      toast("No channel found", { error: true });
       return;
     }
     const res = await send({ type: MSG.ALLOW_CHANNEL, ids: keys });
     if (res && res.ok === false) {
-      toast("Nothing was added. " + (res.error || ""), { error: true, ms: 9000 });
+      toast("Not added: " + (res.error || ""), { error: true, ms: 9000 });
       return;
     }
     input.value = "";
     const bad = tokens.length - keys.length;
-    toast(`Never block: added ${plural(keys.length, "channel")}.` + (bad > 0 ? ` ${bad} couldn't be read.` : ""));
+    toast(`Added ${plural(keys.length, "channel")}` + (bad > 0 ? ` · ${bad} not read` : ""));
     refresh();
   };
   $("allow-add-btn").addEventListener("click", add);
@@ -1091,12 +1076,12 @@ function initAllowlist() {
   });
   $("allow-clear").addEventListener("click", async () => {
     const n = Object.keys(state.allowlist || {}).length;
-    if (!(await confirmDelete("Clear the never-block list?", `All ${plural(n, "channel")} on it can be blocked again.`, { confirmLabel: "Clear list" }))) {
+    if (!(await confirmDelete(`Clear the never-block list (${plural(n, "channel")})?`, [], { confirmLabel: "Clear list" }))) {
       return;
     }
     const res = await send({ type: MSG.DELETE_DATA, allowlist: true });
     if (refused(res)) return;
-    toast("Never-block list cleared.", { action: undoAction(res && res.undoTs) });
+    toast("Never-block list cleared", { action: undoAction(res && res.undoTs) });
     refresh();
   });
 }
@@ -1205,9 +1190,7 @@ async function deleteAll(kind) {
   if (!n) return;
   const ok = await confirmDelete(
     kind === "channels" ? `Delete all ${plural(n, "channel")}?` : `Delete all ${plural(n, "blocked video")}?`,
-    kind === "channels"
-      ? "Every blocked channel is unblocked and removed from the list. Blocked videos, keywords and the never-block list stay."
-      : "Every individually blocked video is unblocked. Channels are not touched."
+    []
   );
   if (!ok) return;
   const res = await send({ type: MSG.DELETE_DATA, [kind]: "all" });
@@ -1276,7 +1259,7 @@ async function bulkRun(label, run, confirmOpts) {
 $("bulk-hide").addEventListener("click", () => {
   const ch = selectedIds("c");
   const vid = selectedIds("v");
-  bulkRun(`Hidden from the list: ${ch.length + vid.length} — still blocked.`, async () => {
+  bulkRun(`Hidden from the list: ${ch.length + vid.length}`, async () => {
     if (ch.length) await send({ type: MSG.SET_ENTRY_HIDDEN, kind: "channel", ids: ch, hidden: true });
     if (vid.length) await send({ type: MSG.SET_ENTRY_HIDDEN, kind: "video", ids: vid, hidden: true });
   });
@@ -1297,7 +1280,6 @@ $("bulk-allow").addEventListener("click", () => {
   const ch = selectedIds("c");
   bulkRun(`Added ${plural(ch.length, "channel")} to never-block.`, () => send({ type: MSG.ALLOW_CHANNEL, ids: ch }), {
     title: `Never block ${plural(ch.length, "channel")}?`,
-    body: "They stay in the blocklist, but nothing from them will be hidden while they're on the never-block list.",
     confirmLabel: "Never block"
   });
 });
@@ -1309,7 +1291,6 @@ $("bulk-unblock").addEventListener("click", () => {
   if (vid.length) parts.push(plural(vid.length, "video"));
   bulkRun(`Deleted ${parts.join(" and ")}.`, () => send({ type: MSG.DELETE_DATA, channels: ch, videos: vid }), {
     title: `Delete ${parts.join(" and ")}?`,
-    body: "They're unblocked and removed from the list. You can undo it from Recently removed.",
     confirmLabel: "Delete",
     danger: true
   });
@@ -1321,7 +1302,7 @@ $("bulk-unblock").addEventListener("click", () => {
 // channels and shows the progress the background writes to `bt_sweep`.
 async function bulkFetchSubs(ids, label) {
   if (!ids.length) {
-    toast("Every channel here already has a subscriber count.");
+    toast("Nothing to look up");
     return;
   }
   const res = await send({ type: MSG.START_SWEEP, ids, label });
@@ -1345,10 +1326,8 @@ function renderSweep(sw) {
     const paused = sw.pauseUntil > Date.now();
     $("bulk-progress-bar").style.width = sw.total ? `${(100 * done) / sw.total}%` : "0";
     $("bulk-progress-text").textContent =
-      `Fetching sub counts and @handles… ${done.toLocaleString()} / ${sw.total.toLocaleString()}` +
-      (paused
-        ? ` · paused, YouTube is throttling — resuming ${new Date(sw.pauseUntil).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
-        : " · keeps going if you close this page");
+      `Sub counts ${done.toLocaleString()} / ${sw.total.toLocaleString()}` +
+      (paused ? ` · throttled, resumes ${new Date(sw.pauseUntil).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "");
     return;
   }
   btn.classList.remove("bulk-active");
@@ -1357,7 +1336,7 @@ function renderSweep(sw) {
     sweepSeenRunning = false;
     toast(
       sw.stopped
-        ? `Stopped — ${sw.got.toLocaleString()} of ${sw.total.toLocaleString()} fetched. Run it again to resume.`
+        ? `Stopped: ${sw.got.toLocaleString()} / ${sw.total.toLocaleString()}`
         : `${sw.label || "Done"}: ${sw.got.toLocaleString()} fetched${sw.missed ? `, ${sw.missed.toLocaleString()} unavailable` : ""}.`,
       { ms: 6000 }
     );
@@ -1399,9 +1378,7 @@ $("quick-add").addEventListener("submit", async (e) => {
   const t = parseTargets(input.value);
   if (!t.channels.length && !t.videos.length) {
     toast(
-      t.unknown.length
-        ? `Couldn't tell what “${t.unknown[0]}” is. Use an @handle, a UC… ID, or a channel or video link. (/c/ and /user/ links name no channel — open it and block from the page.)`
-        : "Paste a channel or a video first.",
+      t.unknown.length ? `Not recognised: “${t.unknown[0]}”` : "Nothing to block",
       { error: true, ms: 8000 }
     );
     return;
@@ -1414,6 +1391,10 @@ $("quick-add").addEventListener("submit", async (e) => {
   $("quick-add-btn").disabled = true;
   const res = await send({ type: MSG.IMPORT_BLOCKLIST, channels, videos });
   $("quick-add-btn").disabled = false;
+  if (!res || !res.ok) {
+    toast("Not blocked: " + ((res && res.error) || "unknown error"), { error: true, ms: 9000 });
+    return;
+  }
   input.value = "";
   await refresh();
 
@@ -1625,12 +1606,12 @@ function convertOldBlockTube(raw) {
   for (const ln of lines(fd.channelName)) {
     const s = ln.trim();
     if (s && !s.startsWith("//")) {
-      skip("channelName", s, "XrnTube never blocks by display name (two channels can share one) — block it from YouTube instead");
+      skip("channelName", s, "display names aren't supported");
     }
   }
   for (const ln of lines(fd.comment)) {
     const s = ln.trim();
-    if (s && !s.startsWith("//")) skip("comment", s, "XrnTube has no comment-text filter");
+    if (s && !s.startsWith("//")) skip("comment", s, "comment filters aren't supported");
   }
   // The JS filter ships as a do-nothing template; only report one that has
   // real code in it and was switched on.
@@ -1788,23 +1769,23 @@ async function previewAndImport(plan) {
   };
   if (nCh) {
     const bits = [`${newCh.toLocaleString()} new`];
-    if (nCh - newCh) bits.push(`${(nCh - newCh).toLocaleString()} already blocked — anything they're missing (sub count, @handle, name) is filled in`);
+    if (nCh - newCh) bits.push(`${(nCh - newCh).toLocaleString()} already blocked`);
     if (withSubs) bits.push(`${withSubs.toLocaleString()} carry a sub count`);
     addRow("channels", `Channels — ${nCh.toLocaleString()}`, bits.join(" · "));
   }
   if (nVid) addRow("videos", `Videos — ${nVid.toLocaleString()}`, `${newVid.toLocaleString()} new`);
   if (plan.keywords.length) {
-    addRow("keywords", `Title keywords — ${plan.keywords.length.toLocaleString()}`, `${newKw.length.toLocaleString()} new; yours are kept`);
+    addRow("keywords", `Title keywords — ${plan.keywords.length.toLocaleString()}`, `${newKw.length.toLocaleString()} new`);
   }
   if (plan.duration) {
     const d = plan.duration;
     const parts = [];
     if (d.minSec) parts.push(`shorter than ${fmtDuration(d.minSec)}`);
     if (d.maxSec) parts.push(`longer than ${fmtDuration(d.maxSec)}`);
-    addRow("duration", `Length rule — block videos ${parts.join(" or ")}`, "Replaces your current length rule.");
+    addRow("duration", `Length rule — block videos ${parts.join(" or ")}`);
   }
   if (plan.commentLimit !== undefined) {
-    addRow("commentLimit", `Comment limit — ${plan.commentLimit ? plan.commentLimit + " comments" : "no limit"}`, "Replaces your current limit.");
+    addRow("commentLimit", `Comment limit — ${plan.commentLimit ? plan.commentLimit + " comments" : "no limit"}`);
   }
   if (plan.subs) {
     const s = plan.subs;
@@ -1812,16 +1793,16 @@ async function previewAndImport(plan) {
     if (s.subsMaxAgeDays !== undefined) parts.push(s.subsMaxAgeDays ? `older than ${plural(s.subsMaxAgeDays, "day")} hidden` : "any age");
     if (s.subsHideWatched !== undefined) parts.push(s.subsHideWatched ? "watched hidden" : "watched shown");
     if (s.subsHideUpcoming !== undefined) parts.push(s.subsHideUpcoming ? "upcoming hidden" : "upcoming shown");
-    addRow("subs", `Subscriptions page — ${parts.join(" · ")}`, "Replaces your current Subscriptions rules.");
+    addRow("subs", `Subscriptions page — ${parts.join(" · ")}`);
   }
-  if (allowKeys.length) addRow("allowlist", `Never-block list — ${allowKeys.length.toLocaleString()}`, "Merged with yours.");
+  if (allowKeys.length) addRow("allowlist", `Never-block list — ${allowKeys.length.toLocaleString()}`);
   if (plan.settings) {
-    addRow("settings", "“What gets hidden” switches", "Replaces your current switches with the backup's.");
+    addRow("settings", "“What gets hidden” switches");
   }
 
   const body = [h("p", { text: `This is ${plan.source}.` })];
   if (rows.length) body.push(h("ul", { class: "plan" }, rows));
-  else body.push(h("p", { text: "There's nothing in it XrnTube can import." }));
+  else body.push(h("p", { text: "Nothing to import" }));
 
   if (plan.skipped.length) {
     const byWhy = new Map();
@@ -1836,13 +1817,11 @@ async function previewAndImport(plan) {
       h(
         "details",
         { class: "skipped" },
-        h("summary", { text: `${plural(plan.skipped.length, "line")} can't be imported — see which and why` }),
+        h("summary", { text: `${plural(plan.skipped.length, "line")} not imported` }),
         h("pre", { text: report }),
         h("button", { class: "btn", type: "button", text: "Copy this list", onclick: () => copyText(report, "the list") })
       )
     );
-  } else if (rows.length) {
-    body.push(h("p", { class: "plan-sub", text: "✓ Every line in the file was recognised." }));
   }
 
   const go = await openModal({
@@ -1890,7 +1869,7 @@ async function previewAndImport(plan) {
   const need = Object.keys(state.channels).filter((id) => !subsAttempted(state.channels[id]));
   if (need.length) {
     showPage("blocklist");
-    bulkFetchSubs(need, "Import finished — sub counts");
+    bulkFetchSubs(need, "Sub counts");
   }
 }
 
@@ -1900,7 +1879,7 @@ async function importFile(file) {
   try {
     data = JSON.parse(await file.text());
   } catch {
-    toast(`“${file.name}” isn't valid JSON — is it the right file?`, { error: true, ms: 7000 });
+    toast(`“${file.name}” isn't valid JSON`, { error: true, ms: 7000 });
     return;
   }
   let plan;
@@ -1939,25 +1918,25 @@ function renderDataPage() {
   const nVid = Object.keys(state.videos || {}).length;
   const nKw = keywords.list.length;
   const nAllow = Object.keys(state.allowlist || {}).length;
-  $("backup-summary").textContent = `Right now: ${plural(nCh, "channel")} · ${plural(nVid, "video")} · ${plural(
+  $("backup-summary").textContent = `${plural(nCh, "channel")} · ${plural(nVid, "video")} · ${plural(
     nKw,
     "keyword"
-  )} · ${nAllow.toLocaleString()} never-block.`;
+  )} · ${nAllow.toLocaleString()} never-block`;
   const set = (id, n, text) => {
-    $(id + "-desc").textContent = n ? text : "Nothing to delete.";
+    $(id + "-desc").textContent = n ? text : "None";
     $(id).disabled = !n;
   };
-  set("danger-channels", nCh, `${plural(nCh, "channel")}, with their sub counts and video-only exceptions.`);
-  set("danger-videos", nVid, `${plural(nVid, "individually blocked video")}.`);
-  set("danger-keywords", nKw, `${plural(nKw, "title keyword")}. The length and comment limits stay.`);
-  set("danger-allowlist", nAllow, `${plural(nAllow, "channel")} that can never be blocked.`);
+  set("danger-channels", nCh, plural(nCh, "channel"));
+  set("danger-videos", nVid, plural(nVid, "video"));
+  set("danger-keywords", nKw, plural(nKw, "keyword"));
+  set("danger-allowlist", nAllow, plural(nAllow, "channel"));
   const f = lookupFailures();
   set(
     "danger-failed",
     f.gone.length + f.oneId.length + f.noCount.length + f.hidden.length,
     `${f.gone.length.toLocaleString()} gone · ${f.oneId.length.toLocaleString()} with one ID found` +
       (f.retrying ? ` (${f.retrying.toLocaleString()} being retried)` : "") +
-      ` · ${f.noCount.length.toLocaleString()} with no sub count · ${f.hidden.length.toLocaleString()} hiding it. You pick which.`
+      ` · ${f.noCount.length.toLocaleString()} with no sub count · ${f.hidden.length.toLocaleString()} hiding it`
   );
   $("danger-all").disabled = !(nCh || nVid || nKw || nAllow);
 }
@@ -1993,22 +1972,13 @@ function lookupFailures() {
 async function deleteLookupFailures() {
   const f = lookupFailures();
   const groups = [
-    ["gone", "Gone", "YouTube says these channels no longer exist — deleted, terminated or renamed.", true],
-    [
-      "oneId",
-      "Only one ID found",
-      "The lookup never found the channel's other ID (@handle / UC…), so these may show up where YouTube links that one — but they " +
-        "still block everywhere else. Usually a lookup YouTube was throttling: " +
-        (f.retrying
-          ? `${plural(f.retrying, "is", "are")} being looked up again over the next few days, so wait rather than delete.`
-          : "each has been retried and still doesn't resolve."),
-      false
-    ],
-    ["noCount", "No sub count", "Identified fine but no count came back — cosmetic: these still block everywhere.", false],
-    ["hidden", "Hide their sub count", "Live channels that just keep the number private — still real blocks.", false]
+    ["gone", "Gone", null, true],
+    ["oneId", "Only one ID found", f.retrying ? `${f.retrying.toLocaleString()} being looked up again` : null, false],
+    ["noCount", "No sub count", null, false],
+    ["hidden", "Hide their sub count", null, false]
   ].filter(([key]) => f[key].length);
   if (!groups.length) {
-    toast("Nothing to clean up — every channel that has been looked up resolved fine.");
+    toast("Nothing to clean up");
     return;
   }
   const boxes = {};
@@ -2023,14 +1993,12 @@ async function deleteLookupFailures() {
           "li",
           null,
           boxes[key],
-          h("div", null, h("div", { class: "plan-title", text: `${title} — ${f[key].length.toLocaleString()}` }), h("div", { class: "plan-sub", text: sub }))
+          h("div", null, h("div", { class: "plan-title", text: `${title} — ${f[key].length.toLocaleString()}` }), sub && h("div", { class: "plan-sub", text: sub }))
         );
       })
     ),
-    pending
-      ? `Not included: ${plural(pending, "channel")} not looked up yet — let the sub-count fetch finish first to catch every one.`
-      : "Deleted channels can be restored from Recently removed."
-  ];
+    pending ? `${plural(pending, "channel")} not looked up yet` : null
+  ].filter(Boolean);
   if (!(await openModal({ title: "Delete channels that can't be looked up?", body, confirmLabel: "Delete selected", danger: true }))) {
     return;
   }
@@ -2052,7 +2020,7 @@ $("danger-all").addEventListener("click", async () => {
   const nVid = Object.keys(state.videos || {}).length;
   const ok = await confirmDelete(
     "Delete everything?",
-    `${plural(nCh, "channel")}, ${plural(nVid, "video")}, ${plural(keywords.list.length, "keyword")} and the never-block list will be gone.`,
+    `${plural(nCh, "channel")} · ${plural(nVid, "video")} · ${plural(keywords.list.length, "keyword")} · never-block list`,
     { confirmLabel: "Delete everything", requireText: "delete" }
   );
   if (!ok) return;
@@ -2300,7 +2268,7 @@ function renderSettings() {
       await writeSettings(next);
     });
     masterCb.indeterminate = on > 0 && on < all;
-    master.title = `Turn everything in “${group.label}” ${on === all ? "off" : "on"}`;
+    master.title = `All of “${group.label}”`;
     meta.append(countEl, master);
     head.append(title, meta);
 
@@ -2387,7 +2355,7 @@ async function restoreFromServerHistory() {
   if (!res || !res.ok) {
     const why =
       res && res.status === 404
-        ? "this server keeps no history — update server/xrntube-sync.py on it."
+        ? "no history on this server"
         : (res && res.error) || "unknown error";
     toast("Couldn't list the server's copies: " + why, { error: true, ms: 8000 });
     return;
@@ -2395,7 +2363,6 @@ async function restoreFromServerHistory() {
   if (!res.items.length) {
     await openModal({
       title: "No earlier copies yet",
-      body: "The server keeps one each time a device pushes a change, so there will be some after the next edit.",
       confirmLabel: "Close",
       noCancel: true
     });
@@ -2436,10 +2403,7 @@ async function restoreFromServerHistory() {
   );
   const go = await openModal({
     title: "Restore an earlier copy",
-    body: [
-      "Each copy is the whole list as it stood at that time. Restoring adds back what it has and this list doesn't — nothing added since is removed. You'll see what it contains before anything changes.",
-      list
-    ],
+    body: [list],
     confirmLabel: "Preview"
   });
   if (!go) return;
@@ -2471,7 +2435,7 @@ async function renderSyncStatus() {
     if (document.activeElement !== sync.url) sync.url.value = s.url || "";
     if (document.activeElement !== sync.user) sync.user.value = s.user || "";
     sync.password.value = "";
-    sync.password.placeholder = "Password (saved — type to change)";
+    sync.password.placeholder = "Password (saved)";
   }
   if (!s.enabled) return;
   if (s.lastError) {
@@ -2482,13 +2446,14 @@ async function renderSyncStatus() {
   sync.status.className = "sync-status ok";
   sync.status.replaceChildren(
     h("div", {
-      text:
-        `Connected to ${new URL(s.url).host} as ${s.user} — ${s.remoteChannels.toLocaleString()} channels and ` +
-        `${s.remoteVideos.toLocaleString()} videos on the server. Pushed ${fmtAgo(s.lastPushedAt)}, pulled ${fmtAgo(s.lastPulledAt)}.`
-    }),
-    h("div", {
-      class: "sync-hint",
-      text: "To add another device: open this page there → Sync → the same address and login → Connect. It pulls this list."
+      text: [
+        new URL(s.url).host,
+        s.user,
+        plural(s.remoteChannels, "channel"),
+        plural(s.remoteVideos, "video"),
+        `pushed ${fmtAgo(s.lastPushedAt)}`,
+        `pulled ${fmtAgo(s.lastPulledAt)}`
+      ].join(" · ")
     })
   );
 }
@@ -2505,16 +2470,14 @@ function initSync() {
     const password = sync.password.value;
     // The worker refuses both of these too; this says so before asking it.
     if (!/^https?:\/\/[^/]+/i.test(url) || !safeSyncAddress(url) || !user) {
-      toast("Enter the server's address, starting with https:// (plain http:// only for localhost), and your user name.", {
-        error: true
-      });
+      toast("Address (https://) and user name needed", { error: true });
       return;
     }
     const status = await send({ type: MSG.GET_SYNC_STATUS });
     // The saved password goes only to the server and user it was saved for.
     const sameLogin = status && status.enabled && status.url === url.replace(/\/+$/, "") && status.user === user;
     if (!password && !sameLogin) {
-      toast(status && status.enabled ? "Enter the password for this server and user." : "Enter your password.", { error: true });
+      toast("Password needed", { error: true });
       sync.password.focus();
       return;
     }
@@ -2527,7 +2490,7 @@ function initSync() {
     });
     sync.save.disabled = false;
     if (!res || res.ok === false) toast("Couldn't connect: " + ((res && res.error) || "unknown error"), { error: true });
-    else toast("Connected — syncing now.");
+    else toast("Connected");
     await renderSyncStatus();
     refresh();
   };
@@ -2561,7 +2524,6 @@ function initSync() {
   sync.disconnect.addEventListener("click", async () => {
     const ok = await openModal({
       title: "Stop syncing on this device?",
-      body: "Your blocklist stays here; it just won't push or pull anymore.",
       confirmLabel: "Disconnect",
       danger: true
     });
@@ -2578,13 +2540,13 @@ initSync();
 // How this copy gets new versions (background.js → updating itself), and a
 // button that looks now. An installType of "development" is an unpacked load.
 const UPDATE_RESULT = {
-  reloading: (r) => `Version ${r.version} is in the folder: reloading. This page closes — open it again.`,
-  update_available: (r) => `Version ${r.version} found: installing. This page closes when it's in — open it again.`,
+  reloading: (r) => `Version ${r.version}: reloading`,
+  update_available: (r) => `Version ${r.version}: installing`,
   no_update: () => "Up to date.",
-  throttled: () => "The browser checked a moment ago and won't again yet. Try in a few minutes; it also checks on its own.",
-  no_update_url: () => "This copy has no update address to check.",
-  unreachable: () => "Couldn't reach the update server. The browser also checks on its own, every few hours.",
-  unsupported: () => "This browser can't be asked to check now; it looks for new versions on its own."
+  throttled: () => "Checked a moment ago: try later",
+  no_update_url: () => "No update address",
+  unreachable: () => "Update server unreachable",
+  unsupported: () => "Can't check in this browser"
 };
 // Firefox and its forks (Zen) have browser.runtime.getBrowserInfo; Chromium doesn't.
 const IS_GECKO = typeof browser !== "undefined" && !!(browser.runtime && browser.runtime.getBrowserInfo);
@@ -2596,20 +2558,13 @@ async function initUpdates() {
   const { version, update_url: updateUrl } = chrome.runtime.getManifest();
   const { installType } = await chrome.management.getSelf();
   if (installType === "development" && IS_GECKO) {
-    blurb.textContent =
-      `Version ${version}, loaded as a temporary add-on. It reloads itself when its folder gets a new ` +
-      "version, and the browser removes it when it closes. For a copy that stays, install a signed .xpi.";
+    blurb.textContent = `Version ${version} · temporary add-on`;
   } else if (installType === "development") {
-    blurb.textContent =
-      `Version ${version}, loaded unpacked from a folder. It reloads itself when that folder gets a new ` +
-      "version (npm run release, or a pull). A copy loaded from a .zip never does: install the .crx from " +
-      "your server's /xrntube/update/xrntube.crx instead, and it keeps itself up to date.";
+    blurb.textContent = `Version ${version} · loaded unpacked`;
   } else if (updateUrl) {
-    blurb.textContent =
-      `Version ${version}, installed from ${new URL(updateUrl).host}. New versions install themselves: ` +
-      "the browser looks every few hours, and Check now looks straight away.";
+    blurb.textContent = `Version ${version} · from ${new URL(updateUrl).host}`;
   } else {
-    blurb.textContent = `Version ${version}. New versions come from wherever it was installed.`;
+    blurb.textContent = `Version ${version}`;
   }
   button.addEventListener("click", async () => {
     button.disabled = true;
@@ -2755,27 +2710,25 @@ function initKeywords() {
     keywords.commentLimit = Math.max(0, Math.floor(Number($("comment-limit").value) || 0));
     if (!(await saveKeywords())) return;
     renderDuration();
-    toast(keywords.commentLimit ? `Watch pages keep ${keywords.commentLimit} comments.` : "Comments are no longer capped.");
+    toast(keywords.commentLimit ? `Comments: ${keywords.commentLimit}` : "Comments: all");
   });
   $("subs-age-save").addEventListener("click", async () => {
     keywords.subsMaxAgeDays = Math.max(0, Math.floor(Number($("subs-age").value) || 0));
     if (!(await saveKeywords())) return;
     renderDuration();
     toast(
-      keywords.subsMaxAgeDays
-        ? `Subscriptions hides videos ${plural(keywords.subsMaxAgeDays, "day")} old or older.`
-        : "Subscriptions shows videos of any age."
+      keywords.subsMaxAgeDays ? `Subscriptions: under ${plural(keywords.subsMaxAgeDays, "day")}` : "Subscriptions: any age"
     );
   });
   $("subs-watched").addEventListener("change", async (e) => {
     keywords.subsHideWatched = e.target.checked;
     if (!(await saveKeywords())) return;
-    toast(e.target.checked ? "Subscriptions hides videos you've watched." : "Subscriptions shows watched videos again.");
+    toast(e.target.checked ? "Watched videos hidden" : "Watched videos shown");
   });
   $("subs-upcoming").addEventListener("change", async (e) => {
     keywords.subsHideUpcoming = e.target.checked;
     if (!(await saveKeywords())) return;
-    toast(e.target.checked ? "Subscriptions hides premieres and streams that haven't started." : "Subscriptions shows upcoming premieres and streams again.");
+    toast(e.target.checked ? "Upcoming hidden" : "Upcoming shown");
   });
 
   // Adds one pattern or, when several lines were pasted, each line.
@@ -2822,7 +2775,7 @@ function initKeywords() {
   });
   $("kw-clear").addEventListener("click", async () => {
     const n = keywords.list.length;
-    if (!(await confirmDelete(`Remove all ${plural(n, "title keyword")}?`, "The length rule and comment limit stay.", { confirmLabel: "Remove all" }))) {
+    if (!(await confirmDelete(`Remove all ${plural(n, "title keyword")}?`, [], { confirmLabel: "Remove all" }))) {
       return;
     }
     const res = await send({ type: MSG.DELETE_DATA, keywords: true });

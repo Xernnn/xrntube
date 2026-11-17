@@ -104,7 +104,7 @@ function channelControls(channel) {
 
   const softBtn = document.createElement("button");
   softBtn.className = "block-btn secondary";
-  softBtn.textContent = "Block videos (allow some later)";
+  softBtn.textContent = "Block videos only";
   softBtn.addEventListener("click", block(CHANNEL_MODE.EXCEPT_WHITELIST, "Videos blocked (whitelist)"));
 
   btnGroup.append(fullBtn, softBtn);
@@ -123,15 +123,15 @@ function renderHealth(hp) {
   let warn = false;
   if (!hp.hook) {
     warn = true;
-    text = "⚠ The early filter isn't running on this tab, so blocked videos show for a moment before they go. Reload the tab; if it stays, YouTube changed something.";
+    text = "⚠ Early filter off: reload the tab";
   } else if (hp.degraded) {
     warn = true;
-    text = `⚠ ${hp.late} tiles got past the early filter on this page. They were still removed, a moment late — YouTube may have changed something.`;
+    text = `⚠ ${hp.late} removed late`;
   } else {
     const total = hp.early + hp.dom;
-    if (!total) text = "Nothing blocked on this page.";
-    else if (!hp.dom) text = `${total} removed on this page, all before they appeared.`;
-    else text = `${total} removed on this page — ${hp.early} before they appeared, ${hp.dom} just after.`;
+    if (!total) text = "0 removed";
+    else if (!hp.dom) text = `${total} removed`;
+    else text = `${total} removed · ${hp.dom} late`;
   }
   el.textContent = text;
   el.classList.toggle("warn", warn);
