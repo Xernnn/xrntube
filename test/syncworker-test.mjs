@@ -784,6 +784,49 @@ const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null 
     : fail("ids from a tab: " + JSON.stringify({ odd, unchanged, fetched, good, channels: Object.keys(d.local.bt_blocklist.channels) }));
 }
 
+// ---- 7b. two numbers, one answer ----
+// The popup asked for the whole list (about 1 MB at 5,000 channels) after every
+// click, for its two counters; each /embed/ player on a page asked for it too,
+// to work out whether its one video was blocked.
+{
+  const oembed = { "@embedchan": 0 };
+  const youtube = {
+    handle: async (u) => {
+      const v = new URL(u.searchParams.get("url") || "https://x/").searchParams.get("v");
+      const author = { vidofchann1: "@EmbedChan", vidallowed1: "@allowedchan", vidwhitelis: "@softchan", vidnobody01: "@nobody" }[v];
+      if (author === "@EmbedChan") oembed["@embedchan"]++;
+      return author ? new Response(JSON.stringify({ author_url: "https://www.youtube.com/" + author }), { status: 200 }) : new Response("", { status: 404 });
+    }
+  };
+  const d = await boot({
+    servers: { "https://www.youtube.com": youtube },
+    local: {
+      bt_blocklist: {
+        channels: {
+          "@embedchan": entry("Embed Chan", 1000),
+          "@allowedchan": entry("Allowed", 1000),
+          "@softchan": { ...entry("Soft", 1000), mode: "exceptWhitelist", whitelist: { vidwhitelis: true } }
+        },
+        videos: { blockedvid1: { title: "x", ts: 1000, updated_at: 1000 } }
+      },
+      bt_allowlist: { list: { "@allowedchan": { note: "", ts: 1000 } }, ts: 1000 }
+    }
+  });
+  const within = (p) => Promise.race([p, new Promise((r) => setTimeout(() => r("no answer"), 500))]);
+  const counts = await within(d.send({ type: "GET_COUNTS" }));
+  const ask = (videoId) => within(d.sendFromTab({ type: "EMBED_BLOCKED", videoId }));
+  const answers = {};
+  for (const v of ["blockedvid1", "vidofchann1", "vidallowed1", "vidwhitelis", "vidnobody01", "vidofchann1"]) answers[v] = (await ask(v)).blocked;
+  const odd = await ask("not a video id");
+  const embedReply = await ask("blockedvid1");
+  counts.ok && counts.channels === 3 && counts.videos === 1 && Object.keys(embedReply).sort().join() === "blocked,ok"
+    ? ok("the popup's counters come as two numbers (3 channels, 1 video), and an embed's answer is one yes or no, not the list")
+    : fail("counts: " + JSON.stringify({ counts, embedReply }));
+  JSON.stringify(answers) === JSON.stringify({ blockedvid1: true, vidofchann1: true, vidallowed1: false, vidwhitelis: false, vidnobody01: false }) && oembed["@embedchan"] === 1 && odd.ok === false
+    ? ok("an embed asks one question: its video blocked, or its channel (by either identity, looked up once), unless never-blocked or a video-only channel's exception")
+    : fail("embed answers: " + JSON.stringify({ answers, lookups: oembed, odd }));
+}
+
 // ---- 8. a lookup is not an edit ----
 // applyChannelInfo() stamped `updated_at` with the time of the lookup, which
 // is what the merge weighs an unblock on another device against. So a sweep

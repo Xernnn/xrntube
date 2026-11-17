@@ -45,6 +45,14 @@ self.XrnTube.MSG = {
   // cached, so it costs one small request per unseen video, and only on those
   // pages (a normal watch page reads the byline from the DOM instead).
   RESOLVE_VIDEO_CHANNEL: "RESOLVE_VIDEO_CHANNEL",
+  // How many channels and videos are blocked, for the popup's counters: the
+  // whole list (about 1 MB at 5,000 channels) crossed the message channel for
+  // two numbers after every click.
+  GET_COUNTS: "GET_COUNTS",
+  // From an /embed/<videoId> frame with "Block embedded videos" on: whether
+  // that video, or its channel, is blocked ({ blocked }). Each embed asked
+  // for the whole list instead, once per player on a page full of them.
+  EMBED_BLOCKED: "EMBED_BLOCKED",
   // Background -> content script: show a short transient banner on the page.
   // The right-click block has no other way to confirm it worked (the thing you
   // blocked may be off-screen), and this keeps us off the `notifications`

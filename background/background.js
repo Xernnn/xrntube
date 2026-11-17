@@ -827,6 +827,31 @@ function parseChannelHtml(html) {
 // Bounded in-memory cache; a service-worker restart just re-fetches.
 const videoChannelCache = new Map(); // videoId -> "@handle" | "UC…" | null
 const VIDEO_CHANNEL_CACHE_MAX = 500;
+// Whether an embedded player's video is blocked: by its id, or by its channel
+// (oEmbed, cached), through either identity the entry knows, unless the
+// channel is on the never-block list or the video is a video-only channel's
+// exception. What an /embed/ frame worked out for itself from the whole list.
+async function embedBlocked(videoId) {
+  const state = await loadAll();
+  if (state.videos[videoId]) return true;
+  const key = await resolveVideoChannel(videoId);
+  if (!key) return false;
+  const norm = (k) => (String(k).startsWith("@") ? String(k).toLowerCase() : String(k));
+  const allow = new Set(Object.keys((await getAllowlist()).list).map(norm));
+  if (allow.has(norm(key))) return false;
+  let entry = state.channels[key];
+  if (!entry) {
+    for (const [k, e] of Object.entries(state.channels)) {
+      if (norm(k) === norm(key) || (e && ((e.handle && norm(e.handle) === norm(key)) || e.ucid === key))) {
+        entry = e;
+        break;
+      }
+    }
+  }
+  if (!entry) return false;
+  return !(entry.mode === CHANNEL_MODE.EXCEPT_WHITELIST && entry.whitelist && entry.whitelist[videoId]);
+}
+
 async function resolveVideoChannel(videoId) {
   if (!/^[\w-]{11}$/.test(videoId || "")) return null;
   if (videoChannelCache.has(videoId)) return videoChannelCache.get(videoId);
@@ -1219,6 +1244,7 @@ async function runSweep() {
 // from a web page.
 const FROM_WEB_PAGES = new Set([
   MSG.GET_BLOCKLIST,
+  MSG.EMBED_BLOCKED,
   MSG.BLOCK_CHANNEL,
   MSG.UNBLOCK_CHANNEL,
   MSG.BLOCK_VIDEO,
@@ -1240,7 +1266,10 @@ const WEB_ID_RE = {
   [MSG.BLOCK_VIDEO]: DNR_VIDEO_ID_RE,
   [MSG.UNBLOCK_VIDEO]: DNR_VIDEO_ID_RE
 };
-const webIdOk = (msg) => !WEB_ID_RE[msg.type] || (typeof msg.id === "string" && WEB_ID_RE[msg.type].test(msg.id));
+const webIdOk = (msg) =>
+  msg.type === MSG.EMBED_BLOCKED
+    ? typeof msg.videoId === "string" && DNR_VIDEO_ID_RE.test(msg.videoId)
+    : !WEB_ID_RE[msg.type] || (typeof msg.id === "string" && WEB_ID_RE[msg.type].test(msg.id));
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
@@ -1593,6 +1622,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         case MSG.RESOLVE_VIDEO_CHANNEL: {
           sendResponse({ ok: true, channelKey: await resolveVideoChannel(msg.videoId) });
+          break;
+        }
+        case MSG.GET_COUNTS: {
+          const state = await loadAll();
+          sendResponse({ ok: true, channels: Object.keys(state.channels).length, videos: Object.keys(state.videos).length });
+          break;
+        }
+        case MSG.EMBED_BLOCKED: {
+          sendResponse({ ok: true, blocked: await embedBlocked(msg.videoId) });
           break;
         }
         case MSG.REBROADCAST_BLOCKLIST: {

@@ -38,41 +38,19 @@
     chrome.storage.sync.get({ [SETTINGS_KEY]: null }, (sres) => {
       if (chrome.runtime.lastError) return;
       if (!resolveSettings(sres[SETTINGS_KEY]).blockInEmbeds) return;
-      chrome.runtime.sendMessage({ type: MSG.GET_BLOCKLIST }, (bl) => {
-        if (chrome.runtime.lastError || !bl) return;
-        const allow = new Set(Object.keys(bl.allowlist || {}).map((k) => (k[0] === "@" ? k.toLowerCase() : k)));
-        const channels = bl.channels || {};
-        const byHandle = new Map();
-        const byUcid = new Map();
-        for (const [key, entry] of Object.entries(channels)) {
-          if (key.charAt(0) === "@") byHandle.set(key.toLowerCase(), entry);
-          else if (key.startsWith("UC")) byUcid.set(key, entry);
-          if (entry && entry.handle) byHandle.set(String(entry.handle).toLowerCase(), entry);
-          if (entry && entry.ucid) byUcid.set(String(entry.ucid), entry);
-        }
-        const lookup = (key) => {
-          if (!key || allow.has(key[0] === "@" ? key.toLowerCase() : key)) return undefined;
-          return channels[key] || byHandle.get(key.toLowerCase()) || byUcid.get(key);
-        };
-        const blank = () => {
-          document.documentElement.innerHTML =
-            '<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;' +
-            'background:#0f0f0f;color:#888;font:13px system-ui,-apple-system,sans-serif">Blocked by XrnTube</body>';
-          try {
-            document.querySelectorAll("video").forEach((v) => v.pause());
-          } catch {}
-        };
-        if ((bl.videos || {})[embedVideoId]) return blank();
-        // Nothing on an embed page names the uploader, so ask the background
-        // (oEmbed, cached) — the same lookup the top-level /embed/ guard uses.
-        chrome.runtime.sendMessage({ type: MSG.RESOLVE_VIDEO_CHANNEL, videoId: embedVideoId }, (res) => {
-          if (chrome.runtime.lastError || !res || !res.channelKey) return;
-          const entry = lookup(res.channelKey);
-          // A whitelisted video of a video-only channel still plays.
-          if (!entry) return;
-          if (entry.mode === CHANNEL_MODE.EXCEPT_WHITELIST && entry.whitelist && entry.whitelist[embedVideoId]) return;
-          blank();
-        });
+      // One question for the background, which has the list: the video, or
+      // its channel (nothing on an embed page names the uploader, so oEmbed,
+      // cached — the same lookup the top-level /embed/ guard uses), with the
+      // never-block list and a video-only channel's exceptions applied. Each
+      // embed asked for the whole list instead, once per player.
+      chrome.runtime.sendMessage({ type: MSG.EMBED_BLOCKED, videoId: embedVideoId }, (res) => {
+        if (chrome.runtime.lastError || !res || !res.blocked) return;
+        document.documentElement.innerHTML =
+          '<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;' +
+          'background:#0f0f0f;color:#888;font:13px system-ui,-apple-system,sans-serif">Blocked by XrnTube</body>';
+        try {
+          document.querySelectorAll("video").forEach((v) => v.pause());
+        } catch {}
       });
     });
     return;

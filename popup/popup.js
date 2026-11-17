@@ -51,11 +51,15 @@ function blockedStatus(text, onUnblock) {
   return wrap;
 }
 
+// Two numbers, not the whole list: it crossed the message channel (about 1 MB
+// at 5,000 channels) after every click.
+function showCounts(channels, videos) {
+  document.getElementById("channel-count").textContent = channels.toLocaleString();
+  document.getElementById("video-count").textContent = videos.toLocaleString();
+}
 async function refreshCounts() {
-  const blocklist = await chrome.runtime.sendMessage({ type: MSG.GET_BLOCKLIST });
-  document.getElementById("channel-count").textContent = Object.keys(blocklist.channels || {}).length.toLocaleString();
-  document.getElementById("video-count").textContent = Object.keys(blocklist.videos || {}).length.toLocaleString();
-  return blocklist;
+  const n = await chrome.runtime.sendMessage({ type: MSG.GET_COUNTS });
+  if (n && n.ok) showCounts(n.channels, n.videos);
 }
 
 function videoControls(target) {
@@ -135,7 +139,8 @@ function renderHealth(hp) {
 }
 
 async function init() {
-  const [blocklist, tab] = await Promise.all([refreshCounts(), getActiveTab()]);
+  const [blocklist, tab] = await Promise.all([chrome.runtime.sendMessage({ type: MSG.GET_BLOCKLIST }), getActiveTab()]);
+  showCounts(Object.keys(blocklist.channels || {}).length, Object.keys(blocklist.videos || {}).length);
 
   if (!isYouTubeUrl(tab?.url)) {
     document.getElementById("no-target").hidden = false;

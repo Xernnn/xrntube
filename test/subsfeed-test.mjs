@@ -15,6 +15,9 @@ import { chromium } from "playwright";
 //     lockups, judged by the ytd-browse a tile sits in — the Home page kept
 //     hidden in the same document keeps its old tile.
 //
+// Also, while the routes are here: a settled page isn't rescanned every 2 s,
+// and an /embed/ player on another site is blanked when its video is blocked.
+//
 // The JSON layer's half of these rules is datalayer-test's; this file is the
 // DOM scrub's, which is what catches what that layer can't see.
 
@@ -154,6 +157,45 @@ const shelfGone = await quiet.evaluate(() => !document.getElementById("probe-she
 shelfStayed && shelfGone
   ? ok("a page that has settled isn't rescanned every 2 s (a shelf made a Shorts shelf by an href alone stays), and the next element added brings the scrubs back")
   : fail("heartbeat on a settled page: " + JSON.stringify({ shelfStayed, shelfGone }));
+
+// ---- an embedded player on another site ----
+// With "Block embedded videos" on, each /embed/ frame asks the background one
+// question (EMBED_BLOCKED) instead of fetching the whole list: the player of
+// a blocked channel's video (found through oEmbed, faked here) is blanked,
+// another one plays. (A blocked video's own id is stopped earlier, by a
+// network rule.)
+await sw.evaluate(async () => {
+  const { bt_blocklist } = await chrome.storage.local.get("bt_blocklist");
+  const bl = bt_blocklist || { channels: {}, videos: {} };
+  bl.channels["@embedchan"] = { name: "Embed Chan", ts: Date.now(), updated_at: Date.now(), mode: "full", whitelist: {} };
+  await chrome.storage.local.set({ bt_blocklist: bl });
+  const { bt_settings } = await chrome.storage.sync.get("bt_settings");
+  await chrome.storage.sync.set({ bt_settings: { ...(bt_settings || {}), blockInEmbeds: true } });
+});
+await ctx.route("https://www.youtube.com/oembed**", (route) => {
+  const v = new URL(new URL(route.request().url()).searchParams.get("url")).searchParams.get("v");
+  return route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ author_url: v === "embedvideo1" ? "https://www.youtube.com/@EmbedChan" : "https://www.youtube.com/@someoneelse" })
+  });
+});
+await ctx.route("https://embedhost.example/**", (route) =>
+  route.fulfill({
+    status: 200,
+    contentType: "text/html",
+    body: '<!doctype html><iframe id="a" src="https://www.youtube.com/embed/embedvideo1"></iframe><iframe id="b" src="https://www.youtube.com/embed/embedvideo2"></iframe>'
+  })
+);
+for (const id of ["embedvideo1", "embedvideo2"]) pages[`www.youtube.com/embed/${id}`] = `<!doctype html><html><body><p>player ${id}</p></body></html>`;
+const host = await ctx.newPage();
+await host.goto("https://embedhost.example/");
+await host.waitForTimeout(3000);
+const frameText = (id) => host.frameLocator("#" + id).locator("body").textContent();
+const [embedA, embedB] = [await frameText("a"), await frameText("b")];
+/Blocked by XrnTube/.test(embedA) && /player embedvideo2/.test(embedB)
+  ? ok("on another site, the embedded player of a blocked channel's video is blanked, and another channel's plays")
+  : fail("embeds: " + JSON.stringify({ embedA: embedA.slice(0, 120), embedB: embedB.slice(0, 120) }));
 
 await ctx.close();
 console.log("\nDONE");
