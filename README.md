@@ -100,10 +100,14 @@ on fetches every new version from there by itself.
    `{ "server": "https://<your-server>/xrntube", "ssh": "<ssh-host>" }` (or a
    list of ssh hosts, tried in order, if there's more than one way in) —
    then `npm run release`. That signs `dist/xrntube-<version>.crx` and puts it
-   at `https://<your-server>/xrntube/update/xrntube.crx`. The first release
-   also makes the signing key, `~/.config/xrntube/xrntube.pem`: **back it
-   up**. Every update has to be signed with that key, and without it the
-   phone has to install afresh under a new extension ID.
+   at `https://<your-server>/xrntube/update/xrntube.crx`. It releases only
+   from `master` with everything committed (`--force` releases anyway). The
+   first release, `npm run release -- --new-key`, also makes the signing key,
+   `~/.config/xrntube/xrntube.pem`: **back it up**. Every update has to be
+   signed with that key, and without it the phone has to install afresh
+   under a new extension ID, so a later release with the file missing, or
+   with a key whose ID isn't the one the server's `updates.xml` names, stops
+   before anything is sent.
 2. On the phone, open that link in Quetta → **Download anyway** → **OK** to
    add it. (Quetta's Extensions page also takes the file: **from
    .zip/.crx/.user.js**.) If Quetta may not post notifications, Android can

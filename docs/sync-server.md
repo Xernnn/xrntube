@@ -135,23 +135,28 @@ the same for every user. No blocklist ever goes there.
 
 `npm run release` (`scripts/package.mjs --release`) publishes a version:
 
-1. reads `~/.config/xrntube/release.json` — `{ "server": "https://<host>/xrntube",
+1. refuses a tree that isn't `master` or has anything uncommitted (`--force`
+   releases it anyway): the package is what the folders hold;
+2. reads `~/.config/xrntube/release.json` — `{ "server": "https://<host>/xrntube",
    "ssh": "<ssh-host>" }`, where `"ssh"` may be a list tried in order (the
    tailnet, then the LAN), the first that answers being used — and the
-   signing key `~/.config/xrntube/xrntube.pem` (made on the first release;
-   neither is in the repo);
-2. asks the server which version is live and, if it's the same as
+   signing key `~/.config/xrntube/xrntube.pem` (neither is in the repo). A
+   missing key stops the release; only `--new-key`, for a first release,
+   makes one. A key whose extension ID isn't the one `dist/updates.xml` (the
+   last release's) or the server's `updates.xml` names stops it too, before
+   anything is built or sent (`scripts/release-guard.mjs`);
+3. asks the server which version is live and, if it's the same as
    `manifest.json`'s, bumps `manifest.json`'s last number past it — a browser
    only takes a higher version. If the server's is *newer*, it stops, with
    nothing built or changed: this checkout is behind what was shipped, and
    bumping it would hand every browser older code under a newer number
    (`releaseVersion()` in `scripts/crx.mjs`);
-3. signs `dist/xrntube-<version>.crx` (the zip plus that `update_url`) and
+4. signs `dist/xrntube-<version>.crx` (the zip plus that `update_url`) and
    writes `dist/updates.xml`;
-4. over ssh, puts the `.crx` (as itself and as `xrntube.crx`, the link a new
+5. over ssh, puts the `.crx` (as itself and as `xrntube.crx`, the link a new
    install starts from) into `<data>/update/`, then `updates.xml`, each moved
    into place whole, and removes older `.crx` files;
-5. reads `updates.xml` back through the public address to confirm.
+6. reads `updates.xml` back through the public address to confirm.
 
 **The key is the extension's identity.** Its ID is derived from the key, and
 a browser only accepts an update signed by the key it installed. Lose it and
