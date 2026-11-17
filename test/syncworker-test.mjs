@@ -753,6 +753,35 @@ const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null 
   blocked.ok && d.local.bt_blocklist.channels["@fromtile"] && deleted.ok && !d.local.bt_blocklist.channels["@kept"]
     ? ok("…while a tile's block still works from the tab, and the options page still deletes")
     : fail("allowed messages: " + JSON.stringify({ blocked, deleted, channels: Object.keys(d.local.bt_blocklist.channels) }));
+
+  // The ids a tab sends were taken as they came: a content-script bug (or a
+  // renderer taken over) stored "undefined" or anything else as a channel,
+  // synced it to every device, and the identity lookup fetched
+  // youtube.com/channel/<it>.
+  const listBefore = JSON.stringify(d.local.bt_blocklist);
+  const odd = [];
+  for (const m of [
+    { type: "BLOCK_CHANNEL", name: "No id" },
+    { type: "BLOCK_CHANNEL", id: "../../feed", name: "A path" },
+    { type: "BLOCK_CHANNEL", id: { toString: null }, name: "An object" },
+    { type: "BLOCK_VIDEO", id: "not-a-video-id", title: "Too long" },
+    { type: "UNBLOCK_CHANNEL", id: "@fromtile/../x" },
+    { type: "UNBLOCK_VIDEO", id: 42 }
+  ]) {
+    const res = await d.sendFromTab(m);
+    if (res && res.ok === false) odd.push(m.type);
+  }
+  const fetched = d.requests.filter((r) => r.url.includes("youtube.com/channel/")).map((r) => r.url);
+  const unchanged = listBefore === JSON.stringify(d.local.bt_blocklist);
+  const good = await Promise.all([
+    d.sendFromTab({ type: "BLOCK_CHANNEL", id: "UC" + "a".repeat(22), name: "By UC id" }),
+    d.sendFromTab({ type: "BLOCK_VIDEO", id: "abcdefghijk", title: "A video" }),
+    d.sendFromTab({ type: "BLOCK_CHANNEL", id: "@caf%C3%A9", name: "Café" })
+  ]);
+  odd.length === 6 && unchanged && !fetched.some((u) => /undefined|feed|object/.test(u)) && good.every((r) => r.ok) &&
+  d.local.bt_blocklist.channels["UC" + "a".repeat(22)] && d.local.bt_blocklist.videos.abcdefghijk && d.local.bt_blocklist.channels["@caf%C3%A9"]
+    ? ok("from a tab, a block or an unblock naming no channel or video id of a tile's shape is refused and stores nothing; a UC id, an @handle and an 11-character video id still go through")
+    : fail("ids from a tab: " + JSON.stringify({ odd, unchanged, fetched, good, channels: Object.keys(d.local.bt_blocklist.channels) }));
 }
 
 // ---- 8. a lookup is not an edit ----

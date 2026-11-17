@@ -1228,6 +1228,19 @@ const FROM_WEB_PAGES = new Set([
 function fromExtensionPage(sender) {
   return !!(sender && sender.id === chrome.runtime.id && String(sender.url || "").startsWith(chrome.runtime.getURL("")));
 }
+// What a tab may name in those: a channel key or a video id of the shape a
+// tile gives (normalizeChannelKey(), a watch link's 11 characters). They were
+// taken as they came, so a content-script bug or a renderer taken over could
+// store "undefined" or a path as a channel, sync it to every device, and have
+// the identity lookup fetch youtube.com/channel/<it>. The extension's own
+// pages may name any key the list holds, an old one of another shape too.
+const WEB_ID_RE = {
+  [MSG.BLOCK_CHANNEL]: DNR_CHANNEL_KEY_RE,
+  [MSG.UNBLOCK_CHANNEL]: DNR_CHANNEL_KEY_RE,
+  [MSG.BLOCK_VIDEO]: DNR_VIDEO_ID_RE,
+  [MSG.UNBLOCK_VIDEO]: DNR_VIDEO_ID_RE
+};
+const webIdOk = (msg) => !WEB_ID_RE[msg.type] || (typeof msg.id === "string" && WEB_ID_RE[msg.type].test(msg.id));
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
@@ -1237,6 +1250,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try {
       if (!FROM_WEB_PAGES.has(msg.type) && !fromExtensionPage(sender)) {
         sendResponse({ ok: false, error: "only the extension's own pages may send " + msg.type });
+        return;
+      }
+      if (!webIdOk(msg) && !fromExtensionPage(sender)) {
+        sendResponse({ ok: false, error: "not a channel or video id: " + String(msg.id).slice(0, 40) });
         return;
       }
       switch (msg.type) {
