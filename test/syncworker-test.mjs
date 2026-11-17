@@ -12,8 +12,8 @@ import vm from "vm";
 //     first start
 //   - a list the browser won't store fails the round before anything is
 //     sent, so the next round doesn't read what's missing here as deleted;
-//     and a bulk never-block or a restore that isn't saved says so instead
-//     of reporting it done
+//     a bulk never-block, a delete or a restore that isn't saved says so
+//     instead of reporting it done, and an import changes nothing at all
 //   - reconnecting to the same server and user (a new password after a 401)
 //     keeps the merge base, so deletions made elsewhere stay deleted; another
 //     server, or one that was reset, still merges as a first sync
@@ -360,14 +360,52 @@ const kwOf = (n) => Array.from({ length: n }, (_, i) => ({ p: "keyword number " 
     : fail("after two refused rounds: " + JSON.stringify({ second, puts: srv.puts.map((p) => size(p.allowlist)), server: size(srv.doc.allowlist), base: (d.local.bt_sync_base || {}).allow?.length }));
 }
 
-// A backup's never-block list that isn't saved doesn't stop its channels.
+// An import the browser won't store changes nothing, all or nothing: it used
+// to bring the channels in and then stop at a list that wouldn't save, with
+// the file's switches never applied and nothing said.
 {
-  const d = await boot({ local: { bt_allowlist: { list: allowOf(0, 100), ts: 1000 } } });
+  const d = await boot({ local: { bt_allowlist: { list: allowOf(0, 100), ts: 1000 }, bt_keywords: { list: [{ p: "mine" }], ts: 1000 } }, sync: { bt_settings: { removeRelated: false } } });
   d.refused.add("bt_allowlist");
-  const res = await d.send({ type: "IMPORT_BLOCKLIST", channels: { "@imported": { name: "Imported" } }, videos: {}, allowlist: allowOf(300, 100) });
-  res.ok && res.added.channels === 1 && res.allowAdded === 0 && /didn't save/.test(res.allowError || "") && size(d.local.bt_allowlist) === 100
-    ? ok("an import whose never-block list isn't saved brings the channels in and says the never-block list wasn't added")
-    : fail("import with a refused never-block list: " + JSON.stringify({ res, size: size(d.local.bt_allowlist) }));
+  const res = await d.send({
+    type: "IMPORT_BLOCKLIST",
+    channels: { "@imported": { name: "Imported" } },
+    videos: {},
+    allowlist: allowOf(300, 100),
+    keywords: { list: [{ p: "theirs" }], durMinSec: 90 },
+    settings: { removeRelated: true, removeShorts: false }
+  });
+  const ch = (d.local.bt_blocklist || { channels: {} }).channels;
+  res.ok === false && /didn't save/.test(res.error || "") && !ch["@imported"] && size(d.local.bt_allowlist) === 100 &&
+  kwIds(d.local.bt_keywords) === "mine" && !d.local.bt_keywords.durMinSec && JSON.stringify(d.sync.bt_settings) === '{"removeRelated":false}'
+    ? ok(`an import the browser won't store says so ("${res.error}") and changes nothing: no channel, keyword, never-block entry or switch`)
+    : fail("refused import: " + JSON.stringify({ res, channels: Object.keys(ch), allow: size(d.local.bt_allowlist), kw: d.local.bt_keywords, settings: d.sync.bt_settings }));
+
+  d.refused.delete("bt_allowlist");
+  const res2 = await d.send({
+    type: "IMPORT_BLOCKLIST",
+    channels: { "@imported": { name: "Imported" } },
+    videos: {},
+    allowlist: allowOf(300, 100),
+    keywords: { list: [{ p: "theirs" }, { p: "mine" }], durMinSec: 90 },
+    settings: { removeRelated: true }
+  });
+  const ch2 = d.local.bt_blocklist.channels;
+  res2.ok && res2.keywordsAdded === 1 && res2.allowAdded === 100 && ch2["@imported"] && size(d.local.bt_allowlist) === 200 &&
+  kwIds(d.local.bt_keywords) === "mine,theirs" && d.local.bt_keywords.durMinSec === 90 && d.sync.bt_settings.removeRelated === true
+    ? ok("…and once it does, the same import brings in all of it: the channel, the new keyword and its length rule, 100 never-block entries, the switches")
+    : fail("import after the refusal: " + JSON.stringify({ res2, kw: d.local.bt_keywords, allow: size(d.local.bt_allowlist), settings: d.sync.bt_settings }));
+}
+
+// Deleting the keywords while the browser refuses the write: the clear was
+// dropped silently, and the undo record and the count still claimed it.
+{
+  const d = await boot({ local: { bt_keywords: { list: [{ p: "a" }, { p: "b" }], ts: 1000 } } });
+  d.refused.add("bt_keywords");
+  const res = await d.send({ type: "DELETE_DATA", keywords: true });
+  const log = (await d.send({ type: "GET_RECENT_UNBLOCKS" })).log;
+  res.ok === false && kwIds(d.local.bt_keywords) === "a,b" && !log.length
+    ? ok("deleting the keywords while the browser refuses the write says so, keeps them, and leaves no undo record claiming they went")
+    : fail("refused keyword delete: " + JSON.stringify({ res, kw: d.local.bt_keywords, log }));
 }
 
 // Restoring a cleared never-block list while the browser refuses the write.

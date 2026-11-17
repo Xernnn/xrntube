@@ -489,6 +489,14 @@ function rowClickSelects(li, main) {
   });
 }
 
+// An answer from the background saying a write didn't happen: toasts it and
+// answers true, so the caller doesn't go on to say it did.
+function refused(res) {
+  if (!res || res.ok !== false) return false;
+  toast("Not saved: " + (res.error || "the browser refused it"), { error: true, ms: 9000 });
+  return true;
+}
+
 function undoAction(undoTs) {
   if (undoTs == null) return undefined;
   return {
@@ -1043,8 +1051,12 @@ function renderAllowlist() {
           type: "button",
           text: "Remove",
           onclick: async (e) => {
-            e.currentTarget.disabled = true;
-            await send({ type: MSG.DISALLOW_CHANNEL, id: key });
+            const btn = e.currentTarget;
+            btn.disabled = true;
+            if (refused(await send({ type: MSG.DISALLOW_CHANNEL, id: key }))) {
+              btn.disabled = false;
+              return;
+            }
             toast(`“${name || shown}” can be blocked again.`, {
               action: {
                 label: "Undo",
@@ -1094,6 +1106,7 @@ function initAllowlist() {
       return;
     }
     const res = await send({ type: MSG.DELETE_DATA, allowlist: true });
+    if (refused(res)) return;
     toast("Never-block list cleared.", { action: undoAction(res && res.undoTs) });
     refresh();
   });
@@ -1210,6 +1223,7 @@ async function deleteAll(kind) {
   if (!ok) return;
   const res = await send({ type: MSG.DELETE_DATA, [kind]: "all" });
   await refresh();
+  if (refused(res)) return;
   const r = (res && res.removed) || {};
   toast(`Deleted ${plural(r[kind] || 0, kind === "channels" ? "channel" : "video")}.`, {
     action: undoAction(res && res.undoTs)
@@ -1853,48 +1867,35 @@ async function previewAndImport(plan) {
   if (!go || !rows.length) return;
   const want = (k) => choice[k] && choice[k].checked;
 
+  // Keywords / length / comment limit / Subscriptions rules share one stored
+  // record; the background writes it with the list, all or nothing.
+  const kw = {
+    list: want("keywords") ? newKw : [],
+    ...(want("duration") ? { durMinSec: plan.duration.minSec || 0, durMaxSec: plan.duration.maxSec || 0 } : {}),
+    ...(want("commentLimit") ? { commentLimit: plan.commentLimit } : {}),
+    ...(want("subs") ? plan.subs : {})
+  };
   const res = await send({
     type: MSG.IMPORT_BLOCKLIST,
     channels: want("channels") ? plan.channels : {},
     videos: want("videos") ? plan.videos : {},
-    allowlist: want("allowlist") ? plan.allowlist : null
+    allowlist: want("allowlist") ? plan.allowlist : null,
+    keywords: kw,
+    settings: want("settings") ? resolveSettings(plan.settings) : null
   });
   if (!res || !res.ok) {
-    toast("The import failed — nothing was changed.", { error: true });
+    toast("Not imported: " + ((res && res.error) || "unknown error"), { error: true, ms: 9000 });
     return;
   }
-
-  // Keywords / length / comment limit share one stored record.
-  let kwChanged = false;
-  if (want("keywords") && newKw.length) {
-    keywords.list = keywords.list.concat(newKw);
-    kwChanged = true;
-  }
-  if (want("duration")) {
-    keywords.durMinSec = plan.duration.minSec || 0;
-    keywords.durMaxSec = plan.duration.maxSec || 0;
-    kwChanged = true;
-  }
-  if (want("commentLimit")) {
-    keywords.commentLimit = plan.commentLimit;
-    kwChanged = true;
-  }
-  if (want("subs")) {
-    Object.assign(keywords, plan.subs);
-    kwChanged = true;
-  }
-  if (kwChanged) await saveKeywords();
-  if (want("settings")) await writeSettings(resolveSettings(plan.settings));
 
   await refresh();
   const bits = [];
   if (res.added.channels) bits.push(plural(res.added.channels, "channel"));
   if (res.added.videos) bits.push(plural(res.added.videos, "video"));
-  if (want("keywords") && newKw.length) bits.push(plural(newKw.length, "keyword"));
+  if (res.keywordsAdded) bits.push(plural(res.keywordsAdded, "keyword"));
   if (res.allowAdded) bits.push(`${res.allowAdded} never-block`);
   const extra = res.enriched ? ` Updated ${plural(res.enriched, "existing entry", "existing entries")}.` : "";
   toast((bits.length ? `Imported ${bits.join(", ")}.` : "Nothing new to import.") + extra, { ms: 7000 });
-  if (res.allowError) toast("The never-block list wasn't imported. " + res.allowError, { error: true, ms: 9000 });
 
   // An imported UC…-only channel blocks nothing in feeds until its @handle is
   // known, so the lookup starts straight away rather than behind a prompt —
@@ -2050,6 +2051,7 @@ async function deleteLookupFailures() {
   if (!ids.length) return;
   const res = await send({ type: MSG.DELETE_DATA, channels: ids });
   await refresh();
+  if (refused(res)) return;
   toast(`Deleted ${plural(ids.length, "channel")}.`, { action: undoAction(res && res.undoTs) });
 }
 $("clean-failed-btn").addEventListener("click", () => deleteLookupFailures());
@@ -2070,6 +2072,7 @@ $("danger-all").addEventListener("click", async () => {
   if (!ok) return;
   const res = await send({ type: MSG.DELETE_DATA, channels: "all", videos: "all", keywords: true, allowlist: true });
   await refresh();
+  if (refused(res)) return;
   toast("Everything deleted.", { action: undoAction(res && res.undoTs) });
 });
 
@@ -2096,10 +2099,21 @@ chrome.storage.onChanged.addListener((changes, area) => {
 let currentSettings = { ...DEFAULT_SETTINGS };
 let settingsFilter = "";
 
+// Answers whether it was saved. A write the browser refuses (synced storage
+// takes only so many a minute) puts the switches back as stored, and says so.
 async function writeSettings(next) {
   currentSettings = next;
-  await chrome.storage.sync.set({ [SETTINGS_KEY]: currentSettings });
+  try {
+    await chrome.storage.sync.set({ [SETTINGS_KEY]: currentSettings });
+  } catch (err) {
+    const stored = await chrome.storage.sync.get(SETTINGS_KEY).catch(() => ({}));
+    currentSettings = resolveSettings(stored[SETTINGS_KEY]);
+    renderSettings();
+    toast("Not saved: " + String((err && err.message) || err), { error: true, ms: 9000 });
+    return false;
+  }
   renderSettings();
+  return true;
 }
 
 function matchesSettingFilter(group, item) {
@@ -2349,7 +2363,7 @@ async function initSettings() {
 
   $("settings-reset").addEventListener("click", async () => {
     const before = { ...currentSettings };
-    await writeSettings({ ...DEFAULT_SETTINGS });
+    if (!(await writeSettings({ ...DEFAULT_SETTINGS }))) return;
     toast("Switches reset to defaults.", { action: { label: "Undo", run: () => writeSettings(before) } });
   });
 
@@ -2669,9 +2683,9 @@ function renderKeywords() {
           class: "unblock-btn",
           type: "button",
           text: "Remove",
-          onclick: () => {
+          onclick: async () => {
             const [gone] = keywords.list.splice(i, 1);
-            saveKeywords();
+            if (!(await saveKeywords())) return;
             toast(`Removed “${gone.p}”.`, {
               action: {
                 label: "Undo",
@@ -2690,12 +2704,34 @@ function renderKeywords() {
   renderDataPage();
 }
 
+// Saves the record as this page holds it, and answers whether it was saved. A
+// write the browser refuses puts the page back to what storage holds and says
+// so: it used to keep the unsaved items on the page (a paste still toasted
+// "Added"), and every later save of the length, comment or Subscriptions
+// rules failed the same silent way until a reload.
 async function saveKeywords() {
-  keywords.ts = Date.now();
-  await chrome.storage.local.set({
+  const ts = Date.now();
+  try {
+    await writeKeywords(ts);
+  } catch (err) {
+    const stored = await chrome.storage.local.get(KEYWORDS_KEY).catch(() => ({}));
+    keywords = readKeywordsRecord(stored[KEYWORDS_KEY]);
+    renderKeywords();
+    renderDuration();
+    toast("Not saved: " + String((err && err.message) || err), { error: true, ms: 9000 });
+    return false;
+  }
+  keywords.ts = ts;
+  send({ type: MSG.SYNC_NOW }).catch(() => {});
+  renderKeywords();
+  return true;
+}
+
+function writeKeywords(ts) {
+  return chrome.storage.local.set({
     [KEYWORDS_KEY]: {
       list: keywords.list,
-      ts: keywords.ts,
+      ts,
       durMinSec: keywords.durMinSec || 0,
       durMaxSec: keywords.durMaxSec || 0,
       commentLimit: keywords.commentLimit || 0,
@@ -2704,8 +2740,6 @@ async function saveKeywords() {
       ...(keywords.subsHideUpcoming !== undefined ? { subsHideUpcoming: keywords.subsHideUpcoming } : {})
     }
   });
-  send({ type: MSG.SYNC_NOW }).catch(() => {});
-  renderKeywords();
 }
 
 function renderDuration() {
@@ -2724,22 +2758,22 @@ function initKeywords() {
     renderDuration();
   });
 
-  $("dur-save").addEventListener("click", () => {
+  $("dur-save").addEventListener("click", async () => {
     keywords.durMinSec = Math.max(0, Math.floor(Number($("dur-min").value) || 0));
     keywords.durMaxSec = Math.max(0, Math.floor(Number($("dur-max").value) || 0)) * 60;
-    saveKeywords();
+    if (!(await saveKeywords())) return;
     renderDuration();
     toast(keywords.durMinSec || keywords.durMaxSec ? "Length rule saved." : "Length rule off.");
   });
-  $("comment-save").addEventListener("click", () => {
+  $("comment-save").addEventListener("click", async () => {
     keywords.commentLimit = Math.max(0, Math.floor(Number($("comment-limit").value) || 0));
-    saveKeywords();
+    if (!(await saveKeywords())) return;
     renderDuration();
     toast(keywords.commentLimit ? `Watch pages keep ${keywords.commentLimit} comments.` : "Comments are no longer capped.");
   });
-  $("subs-age-save").addEventListener("click", () => {
+  $("subs-age-save").addEventListener("click", async () => {
     keywords.subsMaxAgeDays = Math.max(0, Math.floor(Number($("subs-age").value) || 0));
-    saveKeywords();
+    if (!(await saveKeywords())) return;
     renderDuration();
     toast(
       keywords.subsMaxAgeDays
@@ -2747,19 +2781,19 @@ function initKeywords() {
         : "Subscriptions shows videos of any age."
     );
   });
-  $("subs-watched").addEventListener("change", (e) => {
+  $("subs-watched").addEventListener("change", async (e) => {
     keywords.subsHideWatched = e.target.checked;
-    saveKeywords();
+    if (!(await saveKeywords())) return;
     toast(e.target.checked ? "Subscriptions hides videos you've watched." : "Subscriptions shows watched videos again.");
   });
-  $("subs-upcoming").addEventListener("change", (e) => {
+  $("subs-upcoming").addEventListener("change", async (e) => {
     keywords.subsHideUpcoming = e.target.checked;
-    saveKeywords();
+    if (!(await saveKeywords())) return;
     toast(e.target.checked ? "Subscriptions hides premieres and streams that haven't started." : "Subscriptions shows upcoming premieres and streams again.");
   });
 
   // Adds one pattern or, when several lines were pasted, each line.
-  const addPatterns = (patterns) => {
+  const addPatterns = async (patterns) => {
     const isRe = $("kw-regex").checked;
     let added = 0;
     for (const p of patterns) {
@@ -2777,8 +2811,7 @@ function initKeywords() {
       }
     }
     if (added) {
-      saveKeywords();
-      if (patterns.length > 1) toast(`Added ${plural(added, "keyword")}.`);
+      if ((await saveKeywords()) && patterns.length > 1) toast(`Added ${plural(added, "keyword")}.`);
     } else if (patterns.length) {
       toast("Already on the list.");
     }
@@ -2807,6 +2840,7 @@ function initKeywords() {
       return;
     }
     const res = await send({ type: MSG.DELETE_DATA, keywords: true });
+    if (refused(res)) return;
     toast(`Removed ${plural(n, "keyword")}.`, { action: undoAction(res && res.undoTs) });
   });
 
@@ -2864,8 +2898,9 @@ async function renderRecentUnblocks() {
           text: "Restore",
           onclick: async (e) => {
             e.currentTarget.disabled = true;
-            await send(rec.ts != null ? { type: MSG.RESTORE_UNBLOCK, ts: rec.ts } : { type: MSG.RESTORE_UNBLOCK, index: i });
+            const res = await send(rec.ts != null ? { type: MSG.RESTORE_UNBLOCK, ts: rec.ts } : { type: MSG.RESTORE_UNBLOCK, index: i });
             await refresh();
+            if (refused(res)) return;
             toast(`Restored ${d.name.replace(/ \(.*\)$/, "")}.`);
           }
         })

@@ -85,8 +85,10 @@ async function readStore() {
 let storeQueue = Promise.resolve();
 // Runs `change(state)` on a fresh copy of the store — `state.channels`,
 // `state.videos`, `state.tombstones` — then saves all three in one write,
-// unless `change` returns false. Resolves to the state, with what `change`
-// returned as `.result`.
+// unless `change` returns false. Other local keys `change` puts in
+// `state.also` ({ key: value }, the keyword or never-block list) go in that
+// same write, so they are saved with the list or, if the browser refuses it,
+// not at all. Resolves to the state, with what `change` returned as `.result`.
 function updateStore(change) {
   const run = storeQueue.then(async () => {
     const state = await readStore();
@@ -94,7 +96,8 @@ function updateStore(change) {
     if (result !== false) {
       await chrome.storage.local.set({
         [BLOCKLIST_KEY]: { channels: state.channels, videos: state.videos },
-        [STORAGE.TOMBSTONE_KEY]: pruneTombstones({ ...state.tombstones })
+        [STORAGE.TOMBSTONE_KEY]: pruneTombstones({ ...state.tombstones }),
+        ...(state.also || {})
       });
     }
     state.result = result;
@@ -298,8 +301,10 @@ async function getKeywordsRecord() {
 
 // DELETE_DATA: remove a set of channels / videos (or all of either), and
 // optionally every title keyword and never-block entry, as ONE undo record.
-// One store write and one tombstone write whatever the size, and it still
-// propagates through sync like a single unblock does.
+// One write whatever the size, the two lists included, so a write the browser
+// refuses removes nothing (the keywords' clear used to be dropped silently,
+// and its undo record and count still claimed it); and it still propagates
+// through sync like a single unblock does.
 async function deleteData(req) {
   const pick = (map, ids) => {
     if (ids === "all") return Object.keys(map);
@@ -308,10 +313,30 @@ async function deleteData(req) {
   const record = { t: "bulk", kind: "mixed", channels: {}, videos: {}, count: 0 };
   let chIds = [];
   let vidIds = [];
-  await updateStore((s) => {
+  let keywordCount = 0;
+  let allowCount = 0;
+  await updateStore(async (s) => {
     chIds = pick(s.channels, req.channels);
     vidIds = pick(s.videos, req.videos);
-    if (!chIds.length && !vidIds.length) return false;
+    const also = {};
+    if (req.keywords) {
+      const cur = await getKeywordsRecord();
+      keywordCount = cur.list.length;
+      if (keywordCount) {
+        record.keywords = cur.list;
+        also[KEYWORDS_KEY] = { ...cur, list: [], ts: Date.now() };
+      }
+    }
+    if (req.allowlist) {
+      const cur = await getAllowlist();
+      allowCount = Object.keys(cur.list).length;
+      if (allowCount) {
+        record.allowlist = cur.list;
+        also[ALLOWLIST_KEY] = { list: {}, ts: Date.now() };
+      }
+    }
+    if (!chIds.length && !vidIds.length && !keywordCount && !allowCount) return false;
+    s.also = also;
     for (const id of chIds) {
       record.channels[id] = s.channels[id];
       delete s.channels[id];
@@ -323,25 +348,6 @@ async function deleteData(req) {
       s.tombstones["video:" + id] = stampAfter(entryStamp(record.videos[id]));
     }
   });
-
-  let keywordCount = 0;
-  if (req.keywords) {
-    const cur = await getKeywordsRecord();
-    keywordCount = cur.list.length;
-    if (keywordCount) {
-      record.keywords = cur.list;
-      await chrome.storage.local.set({ [KEYWORDS_KEY]: { ...cur, list: [], ts: Date.now() } }).catch(() => {});
-    }
-  }
-  let allowCount = 0;
-  if (req.allowlist) {
-    const cur = await getAllowlist();
-    allowCount = Object.keys(cur.list).length;
-    if (allowCount) {
-      record.allowlist = cur.list;
-      await chrome.storage.local.set({ [ALLOWLIST_KEY]: { list: {}, ts: Date.now() } }).catch(() => {});
-    }
-  }
 
   record.count = chIds.length + vidIds.length + keywordCount + allowCount;
   const undoTs = record.count ? await pushRecentUnblock(record) : null;
@@ -1368,14 +1374,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case MSG.IMPORT_BLOCKLIST: {
           // Merge everything in one store update — not addEntry per entry,
           // which on a few-thousand-channel file is a few thousand writes.
+          // A file's keywords and never-block list go in that same write,
+          // and its switches just before it (they are in synced storage), so
+          // an import the browser won't store changes nothing: it used to
+          // bring the channels in, then stop at a keyword list that wouldn't
+          // save, with no word about it and the switches never applied.
           const now = syncedNow();
           const clearedTombs = [];
           const added = { channels: 0, videos: 0 };
           let enriched = 0;
           let duplicates = 0;
           let allowAdded = 0;
-          let allowError = null;
+          let keywordsAdded = 0;
           let folded = [];
+          let settingsBefore;
+          if (msg.settings && typeof msg.settings === "object") {
+            settingsBefore = (await chrome.storage.sync.get(SETTINGS_KEY))[SETTINGS_KEY];
+            await chrome.storage.sync.set({ [SETTINGS_KEY]: self.XrnTube.resolveSettings(msg.settings) }).catch((err) => {
+              throw new Error(`The browser didn't save it: ${String((err && err.message) || err)}`);
+            });
+          }
           await updateStore(async (state) => {
             const { channels, videos } = state;
 
@@ -1483,7 +1501,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               clearedTombs.push("video:" + id);
             }
 
-            // A backup's never-block list, merged in one write.
+            state.also = {};
+            // A backup's never-block list, merged with this one.
             if (msg.allowlist && typeof msg.allowlist === "object") {
               const cur = await getAllowlist();
               const list = { ...cur.list };
@@ -1493,18 +1512,49 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 list[norm] = { note: (v && v.note) || "", ts: Number(v && v.ts) || Date.now() };
                 allowAdded++;
               }
-              // A list that won't save doesn't stop the channels and videos,
-              // which are most of a backup; the answer says it wasn't added.
-              if (allowAdded) {
-                await saveLists({ [ALLOWLIST_KEY]: { list, ts: Date.now() } }).catch((err) => {
-                  allowError = err.message;
-                  allowAdded = 0;
-                });
+              if (allowAdded) state.also[ALLOWLIST_KEY] = { list, ts: Date.now() };
+            }
+            // Its keywords added to these, and any of the bounds it carries
+            // (length, comment limit, the Subscriptions rules) in place of
+            // these.
+            if (msg.keywords && typeof msg.keywords === "object") {
+              const cur = await getKeywordsRecord();
+              const kwKey = (k) => (k.re ? "re:" : "") + k.p;
+              const have = new Set(cur.list.map(kwKey));
+              const next = { ...cur, list: cur.list.slice() };
+              for (const k of Array.isArray(msg.keywords.list) ? msg.keywords.list : []) {
+                if (!k || typeof k.p !== "string" || !k.p.trim()) continue;
+                const item = { p: k.p, re: !!k.re };
+                if (have.has(kwKey(item))) continue;
+                have.add(kwKey(item));
+                next.list.push(item);
+                keywordsAdded++;
               }
+              let changed = keywordsAdded > 0;
+              for (const f of ["durMinSec", "durMaxSec", "commentLimit", "subsMaxAgeDays"]) {
+                if (msg.keywords[f] === undefined) continue;
+                next[f] = Math.max(0, Math.floor(Number(msg.keywords[f]) || 0));
+                changed = true;
+              }
+              for (const f of ["subsHideWatched", "subsHideUpcoming"]) {
+                if (msg.keywords[f] === undefined) continue;
+                next[f] = !!msg.keywords[f];
+                changed = true;
+              }
+              if (changed) state.also[KEYWORDS_KEY] = { ...next, ts: Date.now() };
             }
             folded = foldDuplicateChannels(channels);
             tombstoneFolded(state.tombstones, folded);
             for (const k of clearedTombs) delete state.tombstones[k];
+          }).catch(async (err) => {
+            // Nothing of the file is in local storage; put the switches back.
+            if (msg.settings && typeof msg.settings === "object") {
+              await (settingsBefore === undefined
+                ? chrome.storage.sync.remove(SETTINGS_KEY)
+                : chrome.storage.sync.set({ [SETTINGS_KEY]: settingsBefore })
+              ).catch(() => {});
+            }
+            throw new Error(`The browser didn't save it: ${String((err && err.message) || err)}`);
           });
 
           const fresh = await loadAll();
@@ -1519,7 +1569,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             enriched,
             duplicates,
             allowAdded,
-            allowError,
+            keywordsAdded,
             folded: folded.length
           });
           break;

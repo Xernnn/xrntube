@@ -215,6 +215,51 @@ subsBoxOff.subsHideWatched === true && JSON.stringify(shown) === "[true,false]" 
   ? ok("hide watched / hide upcoming save as they're ticked, untick on their own, and show as saved after a reload")
   : fail(`Subscriptions boxes: on=${JSON.stringify(subsBoxes)} off=${JSON.stringify(subsBoxOff)} shown=${JSON.stringify(shown)}`);
 
+// ---- 4c. a keyword save the browser refuses ----
+// The write was never caught: a paste still toasted "Added 2 keywords", the
+// page kept the unsaved items, and every later save of the length, comment or
+// Subscriptions rules carried them into the same refusal until a reload.
+await p.locator('.page-tab[data-page="keywords"]').click();
+await p.evaluate(() => {
+  for (const area of [chrome.storage.local, chrome.storage.sync]) {
+    const real = area.set.bind(area);
+    area.__realSet = real;
+    area.set = (items, ...rest) => (items && "bt_keywords" in items ? Promise.reject(new Error("QUOTA_BYTES quota exceeded")) : real(items, ...rest));
+  }
+});
+const toastTexts = () => p.locator(".toast span").allTextContents();
+await p.evaluate(() => {
+  const dt = new DataTransfer();
+  dt.setData("text", "unsaved one\nunsaved two");
+  document.getElementById("kw-input").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+});
+await p.waitForTimeout(400);
+const afterPaste = await toastTexts();
+const rowsShown = await p.locator("#kw-list > li").count();
+await p.fill("#dur-min", "45");
+await p.click("#dur-save");
+await p.waitForTimeout(400);
+const afterLength = await toastTexts();
+await p.evaluate(() => {
+  for (const area of [chrome.storage.local, chrome.storage.sync]) area.set = area.__realSet;
+});
+await p.fill("#dur-min", "45");
+await p.click("#dur-save");
+await p.waitForTimeout(400);
+const savedAfter = (await p.evaluate(() => chrome.storage.local.get("bt_keywords"))).bt_keywords;
+afterPaste.some((t) => t.startsWith("Not saved")) && !afterPaste.some((t) => /^Added/.test(t)) && rowsShown === 2
+  ? ok("a paste the browser refuses says it wasn't saved, not \"Added\", and the list shows what's stored")
+  : fail("refused paste: " + JSON.stringify({ afterPaste, rowsShown }));
+afterLength.filter((t) => t.startsWith("Not saved")).length >= 2 && !afterLength.includes("Length rule saved.")
+  ? ok("…a length save refused the same way says so too")
+  : fail("refused length save: " + JSON.stringify(afterLength));
+savedAfter.durMinSec === 45 && savedAfter.list.length === 2 && !savedAfter.list.some((k) => /unsaved/.test(k.p))
+  ? ok("…and once the browser takes writes again, the next save stores the length alone, without the refused keywords")
+  : fail("save after the refusals: " + JSON.stringify(savedAfter));
+await p.fill("#dur-min", "30");
+await p.click("#dur-save");
+await p.waitForTimeout(300);
+
 // ---- 5. per-row Delete + Undo toast ----
 await p.locator('.page-tab[data-page="blocklist"]').click();
 await p.waitForTimeout(300);
