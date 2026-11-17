@@ -249,17 +249,6 @@ function render() {
   renderEnrichNote(allChannels);
   renderCutNote(cut);
   syncBulkBar();
-
-  const clearVideosBtn = $("clear-videos-btn");
-  clearVideosBtn.hidden = allVideos.length === 0;
-  clearVideosBtn.textContent = `Clear ${plural(allVideos.length, "blocked video")}`;
-  const failures = lookupFailures();
-  const nFailed = failures.gone.length + failures.oneId.length + failures.noCount.length + failures.hidden.length;
-  $("clean-failed-btn").hidden = nFailed === 0;
-  $("clean-failed-btn").textContent = `Delete channels that can't be looked up (${nFailed.toLocaleString()})…`;
-  const clearChannelsBtn = $("clear-channels-btn");
-  clearChannelsBtn.hidden = allChannels.length === 0;
-  clearChannelsBtn.textContent = `Delete all ${plural(allChannels.length, "channel")}`;
 }
 
 function setNavCount(id, n) {
@@ -1229,8 +1218,6 @@ async function deleteAll(kind) {
     action: undoAction(res && res.undoTs)
   });
 }
-$("clear-videos-btn").addEventListener("click", () => deleteAll("videos"));
-$("clear-channels-btn").addEventListener("click", () => deleteAll("channels"));
 $("delete-all-videos-btn").addEventListener("click", () => deleteAll("videos"));
 $("delete-all-channels-btn").addEventListener("click", () => deleteAll("channels"));
 
@@ -2054,7 +2041,6 @@ async function deleteLookupFailures() {
   if (refused(res)) return;
   toast(`Deleted ${plural(ids.length, "channel")}.`, { action: undoAction(res && res.undoTs) });
 }
-$("clean-failed-btn").addEventListener("click", () => deleteLookupFailures());
 $("danger-failed").addEventListener("click", () => deleteLookupFailures());
 
 $("danger-channels").addEventListener("click", () => deleteAll("channels"));

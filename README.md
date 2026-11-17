@@ -298,8 +298,8 @@ which stays at the top as you scroll:
 - **⋯** — the once-in-a-while things: *Fetch all sub counts*, *Load counts for
   shown*, *Hide under N subs*, *Show video thumbnails* (off by default — it's a
   list of things you didn't want to see), *Download backup*, *Import /
-  restore*, *Clear all blocked videos*, *Delete channels that can't be looked
-  up…*, *Delete all channels*.
+  restore*. The deletes are each section's own **Delete all** and the Danger
+  zone (Backup & data).
 
 Each channel row shows a coloured initial, the name, and a quiet second line
 with the `@handle` (click to copy), the subscriber count, the block mode, when

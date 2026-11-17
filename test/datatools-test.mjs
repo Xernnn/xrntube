@@ -330,8 +330,8 @@ await msg({
   videos: {}
 });
 await p.waitForTimeout(600);
-await p.click("#bl-menu-btn");
-await p.click("#clean-failed-btn");
+await p.locator('.page-tab[data-page="data"]').click();
+await p.click("#danger-failed");
 await p.waitForSelector("#modal:not([hidden])");
 const offered = await p.evaluate(() =>
   [...document.querySelectorAll("#modal-body .plan > li")].map((li) => ({
@@ -364,6 +364,7 @@ await p.waitForTimeout(800);
 Object.keys((await blocklist()).channels).length === 6
   ? ok("…and Undo brings them back")
   : fail("undo after cleanup didn't restore");
+await p.locator('.page-tab[data-page="blocklist"]').click();
 
 // ---- 8b. a channel left with one identity is looked up again ----
 // YouTube is faked: every channel page this profile's worker asks for is a
