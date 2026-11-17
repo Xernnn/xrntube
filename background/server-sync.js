@@ -76,8 +76,14 @@
   let pushTimer = null;
   let running = false; // exactly one cycle at a time
   let rerunQueued = false; // a trigger arrived mid-cycle → run once more after
+  let cycleDone = Promise.resolve(); // settles when the running cycle ends
 
+  // A running cycle owns cfg, so it isn't read back from storage under it: the
+  // options page asking for the status between a push and the end of the
+  // round replaced the version just pushed with the stored one, and the next
+  // poll downloaded the whole list instead of getting a 304.
   async function loadCfg() {
+    if (running && cfg) return cfg;
     const res = await chrome.storage.local.get(STORAGE.SYNC_KEY);
     cfg = Object.assign(
       {
@@ -512,6 +518,8 @@
       return { ok: true, deferred: true };
     }
     running = true;
+    let done;
+    cycleDone = new Promise((resolve) => (done = resolve));
     try {
       const local = await host.read(); // { channels, videos, tombstones: { "kind:id": ts } }
       const rec = await readLocalRecords();
@@ -625,6 +633,7 @@
       return { ok: false, reason: "error", error: cfg.lastError, status: err && err.status };
     } finally {
       running = false;
+      done();
       if (rerunQueued) {
         rerunQueued = false;
         cycle();
@@ -663,6 +672,10 @@
     // options page: connect with { url, user, password }, or pass null to
     // disconnect this device.
     async configure(conn) {
+      // A round under way against the old connection finishes first: changed
+      // under it, it pushed the old server's merge to the new address with the
+      // old version as If-Match, and a disconnect left it an error to record.
+      while (running) await cycleDone;
       await loadCfg();
       const url = conn && conn.url ? String(conn.url).trim().replace(/\/+$/, "") : null;
       const user = url ? String(conn.user || "").trim() : null;

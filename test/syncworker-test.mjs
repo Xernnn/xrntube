@@ -52,8 +52,9 @@ const URL_ = ORIGIN + "/xrntube";
 // `perItem` refuses a set with an item over that many bytes (the key plus the
 // value as JSON), whole, as Chrome's storage.sync does at 8192. A set that
 // writes any key in `refused` is refused whole, as a browser out of space
-// would.
-function area(name, data, onChanged, perItem = 0, refused = new Set()) {
+// would. A set that writes a key in `gates` waits for that gate's release
+// (once), so a test can act while that write is under way.
+function area(name, data, onChanged, perItem = 0, refused = new Set(), gates = new Map()) {
   return {
     data,
     async get(keys) {
@@ -64,6 +65,13 @@ function area(name, data, onChanged, perItem = 0, refused = new Set()) {
       return Object.fromEntries([].concat(keys).filter((k) => k in data).map((k) => [k, structuredClone(data[k])]));
     },
     async set(obj) {
+      for (const k of Object.keys(obj)) {
+        const gate = gates.get(k);
+        if (!gate) continue;
+        gates.delete(k);
+        gate.arrived();
+        await gate.wait;
+      }
       const enc = new TextEncoder();
       if (perItem && Object.entries(obj).some(([k, v]) => enc.encode(k + JSON.stringify(v)).length > perItem)) {
         throw new Error("QUOTA_BYTES_PER_ITEM quota exceeded");
@@ -149,8 +157,9 @@ function server({ doc = {}, version = 1, user = "me", password = "pw" } = {}) {
 async function boot({ local = {}, sync = {}, servers = {} } = {}) {
   const onChanged = [];
   const refused = new Set();
+  const gates = new Map();
   const stores = {
-    local: area("local", structuredClone(local), onChanged, 0, refused),
+    local: area("local", structuredClone(local), onChanged, 0, refused, gates),
     sync: area("sync", structuredClone(sync), onChanged, 8192)
   };
   const requests = [];
@@ -201,7 +210,15 @@ async function boot({ local = {}, sync = {}, servers = {} } = {}) {
   const send = (msg) => new Promise((resolve) => onMessage(msg, OPTIONS_PAGE, resolve));
   const sendFromTab = (msg) => new Promise((resolve) => onMessage(msg, YOUTUBE_TAB, resolve));
   await send({ type: "GET_SYNC_STATUS" }); // init() has read its (empty) config by now
-  return { chrome, send, sendFromTab, X: ctx.XrnTube, local: stores.local.data, sync: stores.sync.data, requests, refused };
+  // Holds the next local write of `key` until release().
+  const hold = (key) => {
+    const g = {};
+    const arrived = new Promise((r) => (g.arrived = r));
+    const wait = new Promise((r) => (g.release = r));
+    gates.set(key, { arrived: g.arrived, wait });
+    return { arrived, release: g.release };
+  };
+  return { chrome, send, sendFromTab, X: ctx.XrnTube, local: stores.local.data, sync: stores.sync.data, requests, refused, hold };
 }
 
 // Connected and agreed with the server at version 6 on `base`; set straight
@@ -450,12 +467,62 @@ const kwOf = (n) => Array.from({ length: n }, (_, i) => ({ p: "keyword number " 
     : fail("rerun after a 412: " + JSON.stringify({ server: kwIds(srv.doc.keywords), serverAllow: size(srv.doc.allowlist), here: kwIds(d.local.bt_keywords), allowHere: size(d.local.bt_allowlist), puts: srv.puts.length }));
 }
 
+const kwRecords = (list) => ({ channels: {}, videos: {}, tombstones: {}, keywords: { list: list.map((p) => ({ p })), ts: 2000 }, allowlist: { list: {}, ts: 0 } });
+
+// ---- 2c. the record a running round works on ----
+// The options page asks for the sync status while the round is between its
+// push and its end. That read the stored record back over the one the round
+// was using, the version just pushed was lost, and the next poll downloaded
+// the whole list instead of getting a 304.
+{
+  const srv = server({ version: 7, doc: kwRecords(["a"]) });
+  const d = await boot({ servers: { [ORIGIN]: srv }, local: { bt_keywords: { list: [{ p: "a" }, { p: "new" }], ts: 1000 } } });
+  await connect(d, { base: { kw: { items: ["a"] }, allow: [], settings: null } });
+  srv.doc.settings = d.X.resolveSettings(null);
+  const gate = d.hold("bt_sync_base");
+  const round = d.send({ type: "SYNC_NOW" });
+  await gate.arrived; // the pulled copy saved as the base, before the push
+  gate.release();
+  const gate2 = d.hold("bt_sync_base");
+  await gate2.arrived; // the merge saved as the base, after the push
+  await d.send({ type: "GET_SYNC_STATUS" });
+  gate2.release();
+  await round;
+  const pushedAs = d.local.bt_sync.lastVersion;
+  const before = d.requests.length;
+  const next = await d.send({ type: "SYNC_NOW" });
+  srv.puts.length === 1 && pushedAs === `"${srv.version}"` && next.notModified && d.requests.length === before + 1
+    ? ok("the status asked for between a push and the end of its round doesn't undo the version it pushed: the next round is a 304")
+    : fail("status during a round: " + JSON.stringify({ puts: srv.puts.length, pushedAs, server: srv.version, next }));
+}
+// Connecting to another server while a round against the old one is under
+// way: the round went on with the new address and pushed the old server's
+// merge there, If-Match the old server's version.
+{
+  const old = server({ version: 7, doc: kwRecords(["from-old"]) });
+  const other = server({ version: 7, doc: kwRecords(["from-other"]) });
+  const d = await boot({ servers: { [ORIGIN]: old, "https://other.example": other }, local: { bt_keywords: { list: [{ p: "mine" }], ts: 1000 } } });
+  await connect(d, { base: { kw: { items: [] }, allow: [], settings: null } });
+  const hold = old.pause();
+  const round = d.send({ type: "SYNC_NOW" });
+  await hold.arrived;
+  const switched = d.send({ type: "SET_SYNC_CONFIG", conn: { url: "https://other.example/xrntube", user: "me", password: "pw" } });
+  await new Promise((r) => setTimeout(r, 20));
+  hold.release();
+  await round;
+  const res = await switched;
+  for (let i = 0; i < 50 && !other.puts.length; i++) await new Promise((r) => setTimeout(r, 20));
+  const toOther = other.puts.map((p) => kwIds(p.keywords));
+  res.ok && kwIds(old.doc.keywords) === "from-old,mine" && toOther.length === 1 && toOther[0] === "from-old,from-other,mine" && !d.local.bt_sync.lastError
+    ? ok("connecting elsewhere waits for the round under way: the old server gets its merge, the new one a first sync of its own")
+    : fail("connect during a round: " + JSON.stringify({ res, old: kwIds(old.doc.keywords), toOther, error: d.local.bt_sync.lastError }));
+}
+
 // ---- 3. reconnecting ----
 // Agreed on keywords a and b at version 6; another device has since deleted
 // b. Then the password changes: rounds get 401 until it's typed again.
 // configure() dropped the base on every connect, so the round after the new
 // password was a first sync — a union — and b came back, on every device.
-const kwRecords = (list) => ({ channels: {}, videos: {}, tombstones: {}, keywords: { list: list.map((p) => ({ p })), ts: 2000 }, allowlist: { list: {}, ts: 0 } });
 const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null } };
 {
   const srv = server({ version: 7, password: "new-pw", doc: kwRecords(["a"]) });
