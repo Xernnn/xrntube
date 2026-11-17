@@ -22,6 +22,10 @@ import { chromium } from "playwright";
 //   - a PUT that says gzip and isn't gets an answer, and one that inflates
 //     past the size limit is refused before it is inflated in full
 //   - wrong passwords sent all at once still get only ten guesses an address
+//   - a right login clears only its own name's mistakes, a device syncing
+//     clears none, and two right logins being checked at once both get in
+//   - a locked-out address is answered at once; only eight wrong logins are
+//     held their 2 s at a time
 //   - the address counted is the proxy's own hop, and an IPv6 line is its /64
 //   - a write sent from another site's page is refused; the extension's go on
 //   - a connection that goes quiet is let go
@@ -46,15 +50,19 @@ const PASS = "pässword-123"; // non-ASCII on purpose: Basic auth must survive i
 // A second login with a costlier hash, as a real htpasswd's is: a guess at it
 // is still being checked while the next ones arrive.
 const SLOW_USER = "slowhash";
+// A third, for two right logins being checked at the same time.
+const THIRD_USER = "third";
 writeFileSync(
   join(dir, "users"),
   execFileSync("python3", [
     "-c",
-    "import bcrypt,sys\nfor u, pw, cost in ((sys.argv[1], sys.argv[2], 4), (sys.argv[3], sys.argv[4], 10)):\n    print(u + ':' + bcrypt.hashpw(pw.encode(), bcrypt.gensalt(cost)).decode())",
+    "import bcrypt,sys\nfor u, pw, cost in ((sys.argv[1], sys.argv[2], 4), (sys.argv[3], sys.argv[4], 10), (sys.argv[5], sys.argv[6], 10)):\n    print(u + ':' + bcrypt.hashpw(pw.encode(), bcrypt.gensalt(cost)).decode())",
     USER,
     PASS,
     SLOW_USER,
-    "slow-pass"
+    "slow-pass",
+    THIRD_USER,
+    "third-pass"
   ])
 );
 const PORT = 5300 + Math.floor(Math.random() * 500);
@@ -532,6 +540,64 @@ try {
   /^HTTP\/1\.[01] 400/.test(badLength)
     ? ok("a Content-Length that isn't a number is answered 400")
     : fail(`a Content-Length that isn't a number: ${JSON.stringify(badLength.slice(0, 80))} (want a 400)`);
+
+  // ---- whose wrong passwords a right login clears ----
+  // A right login cleared its whole address's count. Behind Funnel every
+  // device comes from the same few addresses, so any device signing in, or
+  // syncing with its saved password (every round sends it), gave a guesser
+  // there its ten guesses back. And each login took its place in the count
+  // before it was checked: two devices signing in at once at an address with
+  // nine mistakes behind it, one got 429 with the right password.
+  {
+    const basicOf = (u, pw) => ({ Authorization: "Basic " + Buffer.from(`${u}:${pw}`).toString("base64") });
+    const at = (addr, u, pw) => fetch(`${URL_}/state`, { headers: { ...basicOf(u, pw), "X-Forwarded-For": addr } }).then((r) => r.status);
+    const nine = (addr, u) => Promise.all(Array.from({ length: 9 }, (_, i) => at(addr, u, "wrong" + i)));
+    const z = "203.0.113.30";
+    const first = await nine(z, "nobody");
+    const both = await Promise.all([at(z, SLOW_USER, "slow-pass"), at(z, THIRD_USER, "third-pass")]);
+    const tenth = await at(z, "nobody", "wrong9");
+    const eleventh = await at(z, "nobody", "wrong10");
+    first.every((s) => s === 401) && both.join() === "200,200"
+      ? ok("two right logins checked at the same time, at an address with nine wrong ones behind it, both get in")
+      : fail(`right logins in flight: nine wrong ${first}, then two right at once ${both}`);
+    tenth === 401 && eleventh === 429
+      ? ok("…and neither gave the guesser there its guesses back: the tenth wrong one is checked, the eleventh turned away")
+      : fail(`after other names' right logins: tenth ${tenth}, eleventh ${eleventh} (want 401, 429)`);
+
+    // A device syncing with a password already found right is a session, not
+    // a sign-in, and clears nothing, its own name's mistakes included.
+    const w = "203.0.113.31";
+    await nine(w, USER);
+    const synced = await at(w, USER, PASS);
+    const after = [await at(w, USER, "wrong9"), await at(w, USER, "wrong10")];
+    synced === 200 && after.join() === "401,429"
+      ? ok("a device syncing with its known password clears nothing: the tenth wrong guess is checked, the eleventh turned away")
+      : fail(`session login: ${synced}, then ${after} (want 200, then 401,429)`);
+
+    // A 429 is a login that wasn't checked, so holding it slowed no guess
+    // down: it only parked a thread for each request a flood sent.
+    const start = Date.now();
+    const locked = await at(w, USER, "wrong11");
+    const lockedMs = Date.now() - start;
+    locked === 429 && lockedMs < 1000
+      ? ok(`a locked-out address is answered at once (${lockedMs} ms), not held 2 s`)
+      : fail(`locked-out answer: ${locked} after ${lockedMs} ms`);
+
+    // Only a few wrong logins are held at a time: each is a thread on the
+    // phone, and many connections each sending a bad password parked one
+    // apiece for the whole 2 s.
+    const times = await Promise.all(
+      Array.from({ length: 12 }, async (_, i) => {
+        const t0 = Date.now();
+        const status = await at(`203.0.113.${100 + i}`, USER, "spread");
+        return [status, Date.now() - t0];
+      })
+    );
+    const held = times.filter(([, ms]) => ms >= 2000).length;
+    times.every(([status]) => status === 401) && held === 8
+      ? ok("twelve wrong logins at once from twelve addresses: eight are held 2 s, the rest answered at once")
+      : fail(`held wrong logins: ${JSON.stringify(times)}`);
+  }
 
   // Last, since it locks this address out: ten wrong passwords (sent at once, each held 2 s) and
   // even the right one gets 429 for 15 minutes. Basic auth from a loopback peer with a forwarded

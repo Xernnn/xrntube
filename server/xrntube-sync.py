@@ -57,6 +57,7 @@ import bcrypt
 
 MAX_BODY = 32 * 1024 * 1024
 FAIL_DELAY_S = 2  # after a wrong password, as Radicale does
+MAX_HELD = 8  # wrong logins held for FAIL_DELAY_S at once; any more are answered at once
 FAIL_LIMIT = 10  # wrong logins from one address within FAIL_WINDOW_S, then 429 until they age out
 FAIL_WINDOW_S = 15 * 60
 AUTH_CACHE_S = 600  # a bcrypt check costs ~0.3s on a phone; don't pay it per request
@@ -71,7 +72,10 @@ args = None
 lock = threading.Lock()
 auth_cache = {}  # sha256(user:password) -> (user, expires, users-file mtime)
 fail_lock = threading.Lock()
-failures = {}  # client address -> monotonic times of its recent wrong logins
+fail_settled = threading.Condition(fail_lock)  # a login being checked has been settled
+failures = {}  # client address -> [(monotonic time, user name tried)] of its recent wrong logins
+checking = {}  # client address -> how many of its logins are being checked right now
+held = threading.BoundedSemaphore(MAX_HELD)
 
 
 def client_address(handler):
@@ -118,30 +122,77 @@ def host_key(host):
     return host.strip().lower().removesuffix(":443").removesuffix(":80")
 
 
-def take_attempt(addr, counted):
-    """Whether this address may try a password now (False: it has used up its wrong logins).
+def recent_failures(addr, now):
+    """This address's wrong logins within FAIL_WINDOW_S; older ones are forgotten. Under fail_lock."""
+    recent = [f for f in failures.get(addr, ()) if now - f[0] < FAIL_WINDOW_S]
+    if recent:
+        failures[addr] = recent
+    else:
+        failures.pop(addr, None)
+    return recent
 
-    A counted attempt — one that carries a login — is recorded as a wrong one here, before its
-    password is checked, under the same lock as the limit: with the limit checked first and the
-    failure added after bcrypt, requests sent at once all got past a count of zero while the first
-    were still hashing, far more than FAIL_LIMIT guesses. A right password clears the address's
-    record (login()), its own attempt with it."""
-    now = time.monotonic()
+
+def locked_out(addr):
+    """Whether the address has used up its wrong logins."""
     with fail_lock:
-        recent = [t for t in failures.get(addr, ()) if now - t < FAIL_WINDOW_S]
-        if len(recent) >= FAIL_LIMIT:
-            failures[addr] = recent
-            return False
-        if counted:
-            if len(failures) > 10000:  # a flood from many addresses: forget the stale ones
-                for a in [a for a, ts in failures.items() if now - ts[-1] >= FAIL_WINDOW_S]:
-                    del failures[a]
-            recent.append(now)
-        if recent:
-            failures[addr] = recent
+        return len(recent_failures(addr, time.monotonic())) >= FAIL_LIMIT
+
+
+def reserve_attempt(addr):
+    """Waits for a place to check a login from this address in; False once the address has used up
+    its wrong logins. A login being checked holds a place until settle_attempt: counted only once
+    they had failed, requests sent at once all got past a count of zero while the first were still
+    hashing, far more than FAIL_LIMIT guesses. It isn't a wrong login, though: one that finds no
+    place left waits for the checks in flight to settle rather than being turned away, so two
+    devices signing in at once at an address with a few mistakes behind it never get 429 with the
+    right password."""
+    with fail_settled:
+        now = time.monotonic()
+        if len(failures) > 10000:  # a flood from many addresses: forget the stale ones
+            for a in [a for a, fs in failures.items() if now - fs[-1][0] >= FAIL_WINDOW_S]:
+                del failures[a]
+        while True:
+            recent = recent_failures(addr, time.monotonic())
+            if len(recent) >= FAIL_LIMIT:
+                return False
+            if len(recent) + checking.get(addr, 0) < FAIL_LIMIT:
+                checking[addr] = checking.get(addr, 0) + 1
+                return True
+            fail_settled.wait(1)
+
+
+def settle_attempt(addr, user, right):
+    """A login reserve_attempt let through has been checked. A wrong one counts against the address,
+    under the name it tried. A right one clears that name's mistakes from this address and no one
+    else's: any right login cleared the whole address, and behind Funnel every device comes from
+    the same few addresses, so a device signing in gave a guesser there its guesses back. None (a
+    login already found right, which is a device syncing, or a check that broke) settles nothing."""
+    with fail_settled:
+        left = checking.get(addr, 1) - 1
+        if left > 0:
+            checking[addr] = left
         else:
-            failures.pop(addr, None)
-        return True
+            checking.pop(addr, None)
+        if right is False:
+            failures.setdefault(addr, []).append((time.monotonic(), user))
+        elif right:
+            kept = [f for f in failures.get(addr, ()) if f[1] != user]
+            if kept:
+                failures[addr] = kept
+            else:
+                failures.pop(addr, None)
+        fail_settled.notify_all()
+
+
+def hold_wrong_login():
+    """Holds the answer to a wrong login FAIL_DELAY_S, to slow a guesser down. Each held answer is a
+    thread, and many connections each sending a bad password parked one apiece on the phone, so
+    at most MAX_HELD are held at a time; past that the lockout is what stops a guesser."""
+    if held.acquire(blocking=False):
+        try:
+            time.sleep(FAIL_DELAY_S)
+        finally:
+            held.release()
 
 
 def users_mtime():
@@ -151,13 +202,30 @@ def users_mtime():
         return 0
 
 
-def check_login(header):
-    """The user name for a valid `Authorization: Basic …`, else None."""
+def basic_login(header):
+    """(user, password) from `Authorization: Basic …`, or (None, None)."""
     if not header or not header.startswith("Basic "):
-        return None
+        return None, None
     try:
         user, _, password = base64.b64decode(header[6:]).decode("utf-8").partition(":")
     except Exception:
+        return None, None
+    return user, password
+
+
+def cached_login(header):
+    """The user name for a login already found right (the auth cache), else None: no check."""
+    user, password = basic_login(header)
+    if user is None:
+        return None
+    hit = auth_cache.get(hashlib.sha256(f"{user}:{password}".encode()).hexdigest())
+    return hit[0] if hit and hit[1] > time.time() and hit[2] == users_mtime() else None
+
+
+def check_login(header):
+    """The user name for a valid `Authorization: Basic …`, else None."""
+    user, password = basic_login(header)
+    if user is None:
         return None
     key = hashlib.sha256(f"{user}:{password}".encode()).hexdigest()
     mtime = users_mtime()
@@ -356,22 +424,30 @@ class Handler(BaseHTTPRequestHandler):
     def login(self):
         # Ten wrong passwords from one address in 15 minutes lock it out until they age out, as
         # xrnloops-sync and xrnrule-sync do: the delay alone still let a guesser try ~1800 an hour.
-        # Each login counts against the address before it is checked (take_attempt).
+        # A login holds a place in the count while it is checked (reserve_attempt). Turned away
+        # unchecked, it guessed nothing, so its 429 isn't held.
         addr = client_address(self)
         auth = self.headers.get("Authorization")
-        if not take_attempt(addr, counted=bool(auth)):
-            if auth:
-                time.sleep(FAIL_DELAY_S)
+        if not (reserve_attempt(addr) if auth else not locked_out(addr)):
             self.send(429, "too many wrong passwords; try again later", headers={"Retry-After": str(FAIL_WINDOW_S)})
             return None
-        user = check_login(auth)
+        user, right = None, None
+        if auth:
+            try:
+                # A login already found right is a device syncing, not someone signing in, and
+                # settles nothing: every round sends the password, and each cleared the count for
+                # its whole address.
+                user = cached_login(auth)
+                if not user:
+                    user = check_login(auth)
+                    right = bool(user)
+            finally:
+                settle_attempt(addr, (basic_login(auth)[0] or "")[:64], right)
         if not user:
             if auth:  # a request with none guessed nothing, and needn't hold a thread for it
-                time.sleep(FAIL_DELAY_S)
+                hold_wrong_login()
             self.send(401, "login required", headers={"WWW-Authenticate": 'Basic realm="XrnTube"'})
             return None
-        with fail_lock:
-            failures.pop(addr, None)
         return user
 
     def do_OPTIONS(self):  # CORS preflight: no login
