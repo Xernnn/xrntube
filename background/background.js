@@ -1762,10 +1762,14 @@ const syncHost = {
 
 self.XrnTube.serverSync.init(syncHost);
 
-// Periodic pull. Alarm registration is top-level and synchronous (MV3-safe);
-// the debounced push in server-sync.js can be lost if the worker sleeps, and
-// this is its backstop.
-chrome.alarms.create(SYNC.POLL_ALARM, { periodInMinutes: SYNC.POLL_PERIOD_MIN });
+// Periodic pull. The listener is registered at top level and synchronously
+// (MV3-safe); the debounced push in server-sync.js can be lost if the worker
+// sleeps, and this is its backstop. The alarm is created only when missing
+// (or set to another period): creating it again restarts its period, and the
+// worker wakes for every page load.
+chrome.alarms.get(SYNC.POLL_ALARM).then((a) => {
+  if (!a || a.periodInMinutes !== SYNC.POLL_PERIOD_MIN) chrome.alarms.create(SYNC.POLL_ALARM, { periodInMinutes: SYNC.POLL_PERIOD_MIN });
+});
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === SYNC.POLL_ALARM) self.XrnTube.serverSync.onPoll();
   if (alarm.name === SWEEP_ALARM) kickSweep();

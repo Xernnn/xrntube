@@ -643,13 +643,18 @@
 
   // ---- public API (consumed by background.js) --------------------------
   self.XrnTube.serverSync = {
-    // Called once, at background.js top level (every worker wake).
+    // Called once, at background.js top level (every worker wake). The
+    // worker wakes for any message, so on every page load; a round there
+    // fingerprinted the whole list and asked the server each time. Like a
+    // poll, it runs only when the last pull isn't fresh: a change made here
+    // pushes on its own (onLocalChange), and the poll alarm is the backstop
+    // for one whose debounce the sleeping worker lost.
     async init(hostImpl) {
       host = hostImpl;
       ready = loadCfg();
       await ready;
       host.setClockOffset(cfg.clockOffset || 0);
-      if (enabled()) cycle();
+      if (enabled() && host.now() - (cfg.lastPulledAt || 0) >= SYNC.POLL_FRESH_MS) cycle();
     },
 
     // From broadcastUpdate() after any local write — schedule a debounced push.

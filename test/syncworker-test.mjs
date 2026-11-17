@@ -154,7 +154,7 @@ function server({ doc = {}, version = 1, user = "me", password = "pw" } = {}) {
 // One device: the worker's scripts in a fresh context. Timers are recorded and
 // never fire, so the debounced push after an edit doesn't start rounds of its
 // own; each test runs its rounds with SYNC_NOW.
-async function boot({ local = {}, sync = {}, servers = {} } = {}) {
+async function boot({ local = {}, sync = {}, servers = {}, alarms = {} } = {}) {
   const onChanged = [];
   const refused = new Set();
   const gates = new Map();
@@ -184,7 +184,15 @@ async function boot({ local = {}, sync = {}, servers = {} } = {}) {
       getURL: (p) => "chrome-extension://xrntube-test/" + p,
       reload() {}
     },
-    alarms: { create() {}, clear() {}, get: async () => null, onAlarm: noop },
+    alarms: {
+      created: [],
+      create(name) {
+        this.created.push(name);
+      },
+      clear() {},
+      get: async (name) => alarms[name] || null,
+      onAlarm: noop
+    },
     tabs: { query: async () => [], sendMessage: async () => {} },
     declarativeNetRequest: { getDynamicRules: async () => [], updateDynamicRules: async () => {} },
     management: { getSelf: async () => ({ installType: "normal" }) }
@@ -516,6 +524,29 @@ const kwRecords = (list) => ({ channels: {}, videos: {}, tombstones: {}, keyword
   res.ok && kwIds(old.doc.keywords) === "from-old,mine" && toOther.length === 1 && toOther[0] === "from-old,from-other,mine" && !d.local.bt_sync.lastError
     ? ok("connecting elsewhere waits for the round under way: the old server gets its merge, the new one a first sync of its own")
     : fail("connect during a round: " + JSON.stringify({ res, old: kwIds(old.doc.keywords), toOther, error: d.local.bt_sync.lastError }));
+}
+
+// ---- 2d. a worker waking ----
+// The worker sleeps after ~30 s idle and wakes for any message, so every page
+// load woke it. Each wake ran a sync round (fingerprinting the whole list and
+// asking the server) however recently the last one ran, and created the poll
+// alarm again, which restarts its 3-minute period.
+{
+  const at = Date.now();
+  const srv = server({ version: 6, doc: kwRecords(["a"]) });
+  const cfg = { url: URL_, user: "me", password: "pw", lastVersion: '"6"', agreedFp: "older" };
+  const fresh = await boot({ servers: { [ORIGIN]: srv }, local: { bt_sync: { ...cfg, lastPulledAt: at - 20e3 } } });
+  await new Promise((r) => setTimeout(r, 50));
+  const stale = await boot({ servers: { [ORIGIN]: srv }, local: { bt_sync: { ...cfg, lastPulledAt: at - 5 * 60e3 } } });
+  await new Promise((r) => setTimeout(r, 50));
+  !fresh.requests.length && stale.requests.length >= 1
+    ? ok("a worker woken 20 s after its last pull asks the server nothing; one woken 5 minutes after syncs")
+    : fail("wake rounds: " + JSON.stringify({ fresh: fresh.requests.length, stale: stale.requests.length }));
+  const kept = await boot({ alarms: { "bt-sync-poll": { name: "bt-sync-poll", periodInMinutes: 3 } } });
+  const made = await boot();
+  !kept.chrome.alarms.created.includes("bt-sync-poll") && made.chrome.alarms.created.includes("bt-sync-poll")
+    ? ok("…and the poll alarm is created only when there isn't one, so a wake doesn't restart its period")
+    : fail("poll alarm: " + JSON.stringify({ kept: kept.chrome.alarms.created, made: made.chrome.alarms.created }));
 }
 
 // ---- 3. reconnecting ----
