@@ -43,7 +43,14 @@
 // PRIVACY: the MAIN world *is* the page, so `postMessage` here is readable by
 // YouTube's own scripts. Keeping the blocklist in the isolated world means
 // what crosses is only ever a description of what YouTube itself just sent
-// us, plus a list of indices — never the blocklist.
+// us, plus a list of indices — never the blocklist as a whole. That holds
+// for bulk disclosure only: any script on the page can post a "judge" message
+// of its own and read the verdict, so it can ask whether a channel, a video
+// or a title is blocked, one guess at a time. A shared token wouldn't stop
+// it: the hook's judge messages go through `postMessage` too, which the
+// page's own listeners see, token and all. So it is a known limit: a page that
+// wants to know has to guess, and YouTube already knows what it removed from
+// its own feed.
 (() => {
   "use strict";
 
