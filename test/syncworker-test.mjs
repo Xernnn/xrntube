@@ -121,6 +121,12 @@ function server({ doc = {}, version = 1, user = "me", password = "pw" } = {}) {
       return new Response(JSON.stringify(s.doc), { status: 200, headers: etag });
     }
     if (method === "PUT" && path === "/state") {
+      // Another device writing between this one's pull and its push.
+      if (s.beforePut) {
+        const write = s.beforePut;
+        s.beforePut = null;
+        write(s);
+      }
       const want = String(headers["If-Match"] || "");
       if (want !== "*" && want.replace(/"/g, "") !== String(s.version)) return new Response("changed", { status: 412, headers: etag });
       let body = init.body;
@@ -421,6 +427,27 @@ const kwOf = (n) => Array.from({ length: n }, (_, i) => ({ p: "keyword number " 
   res.ok === false && /didn't save/.test(res.error || "") && kept && retry.ok && size(d.local.bt_allowlist) === 160
     ? ok("a restore that isn't saved says so and keeps its undo record, which restores once the browser takes the write")
     : fail("restore with a refused write: " + JSON.stringify({ res, kept, retry, size: size(d.local.bt_allowlist) }));
+}
+
+// ---- 2b. a push refused after the merge was stored here ----
+// This device pulled the other device's keyword "theirs" and stored it, but
+// its push (it had a keyword of its own) got a 412: the other device had
+// written again, deleting "theirs". The rerun still held the old base, which
+// lacks "theirs", so "theirs" read as added here and was pushed back.
+{
+  const srv = server({ version: 7, doc: { channels: {}, videos: {}, tombstones: {}, keywords: { list: [{ p: "kept" }, { p: "theirs" }], ts: 2000 }, allowlist: { list: { [uc(1)]: { note: "", ts: 2000 } }, ts: 2000 } } });
+  const d = await boot({ servers: { [ORIGIN]: srv }, local: { bt_keywords: { list: [{ p: "mine" }, { p: "kept" }], ts: 1000 } } });
+  await connect(d, { base: { kw: { items: ["kept"] }, allow: [], settings: null } });
+  srv.doc.settings = d.X.resolveSettings(null);
+  srv.beforePut = (s) => {
+    s.doc = { ...s.doc, keywords: { list: [{ p: "kept" }], ts: 3000 }, allowlist: { list: {}, ts: 3000 } };
+    s.version++;
+  };
+  await d.send({ type: "SYNC_NOW" });
+  for (let i = 0; i < 50 && !srv.puts.length; i++) await new Promise((r) => setTimeout(r, 20));
+  kwIds(srv.doc.keywords) === "kept,mine" && size(srv.doc.allowlist) === 0 && kwIds(d.local.bt_keywords) === "kept,mine" && size(d.local.bt_allowlist) === 0
+    ? ok("a keyword and a never-block entry pulled, then deleted by the other device before this one's push landed, stay deleted on the rerun; this device's own keyword still goes out")
+    : fail("rerun after a 412: " + JSON.stringify({ server: kwIds(srv.doc.keywords), serverAllow: size(srv.doc.allowlist), here: kwIds(d.local.bt_keywords), allowHere: size(d.local.bt_allowlist), puts: srv.puts.length }));
 }
 
 // ---- 3. reconnecting ----

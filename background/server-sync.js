@@ -303,11 +303,31 @@
     const res = await chrome.storage.local.get(STORAGE.SYNC_BASE_KEY);
     return res[STORAGE.SYNC_BASE_KEY] || null;
   }
+  const kwBase = (keywords) => {
+    const kw = { items: keywords.list.map(kwId) };
+    for (const f of KW_FIELDS) if (keywords[f] !== undefined) kw[f] = keywords[f];
+    return kw;
+  };
   async function saveBase(merged) {
-    const kw = { items: merged.keywords.list.map(kwId) };
-    for (const f of KW_FIELDS) if (merged.keywords[f] !== undefined) kw[f] = merged.keywords[f];
     await chrome.storage.local.set({
-      [STORAGE.SYNC_BASE_KEY]: { kw, allow: Object.keys(merged.allowlist.list), settings: merged.settings }
+      [STORAGE.SYNC_BASE_KEY]: { kw: kwBase(merged.keywords), allow: Object.keys(merged.allowlist.list), settings: merged.settings }
+    });
+  }
+  // What this device and the server agree on once the merge is stored here
+  // and before it is pushed: the server's copy as pulled. A push that then
+  // fails (a 412: another device wrote meanwhile) leaves this as the base, so
+  // the rerun tells "deleted over there since" from "added here". With the
+  // older base kept, an item pulled and stored here, then deleted by the other
+  // device before this push landed, read as added here and was pushed back. A
+  // record the server's copy doesn't carry keeps the older base's part.
+  async function savePulledBase(remote, base) {
+    const b = base || {};
+    await chrome.storage.local.set({
+      [STORAGE.SYNC_BASE_KEY]: {
+        kw: remote.keywords ? kwBase(readKeywords(remote.keywords)) : b.kw,
+        allow: remote.allowlist ? Object.keys(readAllowlist(remote.allowlist).list) : b.allow,
+        settings: remote.settings ? readSettings(remote.settings) : b.settings
+      }
     });
   }
 
@@ -575,6 +595,7 @@
 
       let pushed = false;
       if (!sameBlocklist(remote, merged)) {
+        await savePulledBase(remote, base);
         await pushRemote(merged, version);
         pushed = true;
       } else {

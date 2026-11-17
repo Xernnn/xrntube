@@ -220,7 +220,11 @@ tombstones. **Keywords, the never-block list and the settings** (`bt_settings`,
 the "What gets hidden" switches) have no tombstones, so they merge three ways
 against `bt_sync_base` — what this device and the server agreed on at the end
 of the last cycle: in the base and gone from one side means deleted there,
-not in the base means added. Item by item for keywords and never-block keys,
+not in the base means added. Once a round has stored its merge here and is
+about to push, the base becomes the server's copy as pulled, so a push that
+gets a 412 reruns against it: an item pulled and stored here, then deleted on
+the other device before the push landed, stays deleted rather than reading
+as added here. Item by item for keywords and never-block keys,
 switch by switch for settings (a switch only a newer version knows rides
 through untouched, the server's value standing: dropped, as `resolveSettings()`
 drops it, it made an older and a newer device push the list at each other
