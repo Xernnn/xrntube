@@ -196,6 +196,18 @@ const RECENT_UNBLOCK_MAX = 40;
 // record whole however big it is — that is the one an Undo toast points at.
 const RECENT_UNBLOCK_MAX_ENTRIES = 20000;
 
+// Every write of the log goes through here, one at a time, each reading the
+// log afresh: two unblocks landing together (the popup and the options page,
+// or two tabs) each read it, put their record in front and wrote it back, and
+// one record was lost; a restore wrote back the log as it had read it before
+// its own store write, dropping a record pushed meanwhile.
+let logQueue = Promise.resolve();
+function updateLog(change) {
+  const run = logQueue.then(change);
+  logQueue = run.catch(() => {});
+  return run;
+}
+
 async function getRecentUnblocks() {
   const res = await chrome.storage.local.get(RECENT_UNBLOCK_KEY);
   return Array.isArray(res[RECENT_UNBLOCK_KEY]) ? res[RECENT_UNBLOCK_KEY] : [];
@@ -214,7 +226,10 @@ function recordSize(rec) {
 
 // Returns the record's `ts`, which doubles as its id: strictly increasing, so
 // two removals in the same millisecond still get distinct handles.
-async function pushRecentUnblock(record) {
+function pushRecentUnblock(record) {
+  return updateLog(() => pushRecentUnblockNow(record));
+}
+async function pushRecentUnblockNow(record) {
   const log = await getRecentUnblocks();
   const ts = Math.max(syncedNow(), log.length ? (log[0].ts || 0) + 1 : 0);
   log.unshift({ ...record, ts });
@@ -281,8 +296,12 @@ async function restoreRecentUnblock(ref) {
       const cur = await getAllowlist();
       await saveLists({ [ALLOWLIST_KEY]: { list: { ...rec.allowlist, ...cur.list }, ts: Date.now() } });
     }
-    log.splice(index, 1);
-    await chrome.storage.local.set({ [RECENT_UNBLOCK_KEY]: log });
+    await updateLog(async () => {
+      const cur = await getRecentUnblocks();
+      const at = rec.ts != null ? cur.findIndex((r) => r.ts === rec.ts) : cur.findIndex((r) => JSON.stringify(r) === JSON.stringify(rec));
+      if (at >= 0) cur.splice(at, 1);
+      await chrome.storage.local.set({ [RECENT_UNBLOCK_KEY]: cur });
+    });
   } catch (err) {
     error = String((err && err.message) || err);
   }
@@ -1649,7 +1668,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case MSG.CLEAR_RECENT_UNBLOCKS: {
-          await chrome.storage.local.set({ [RECENT_UNBLOCK_KEY]: [] });
+          await updateLog(() => chrome.storage.local.set({ [RECENT_UNBLOCK_KEY]: [] }));
           sendResponse({ ok: true });
           break;
         }

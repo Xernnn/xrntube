@@ -827,6 +827,25 @@ const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null 
     : fail("embed answers: " + JSON.stringify({ answers, lookups: oembed, odd }));
 }
 
+// ---- 7c. the undo log, written one at a time ----
+// Two unblocks landing together (the popup and the options page, or two
+// tabs) each read the log, put their record in front and wrote it back, so
+// one record was lost; a restore wrote back the log as it read it before its
+// own write, dropping a record pushed meanwhile.
+{
+  const d = await boot({
+    local: { bt_blocklist: { channels: { "@one": entry("One", 1000), "@two": entry("Two", 1000), "@three": entry("Three", 1000), "@four": entry("Four", 1000) }, videos: {} } }
+  });
+  await Promise.all([d.send({ type: "UNBLOCK_CHANNEL", id: "@one" }), d.sendFromTab({ type: "UNBLOCK_CHANNEL", id: "@two" })]);
+  const both = (await d.send({ type: "GET_RECENT_UNBLOCKS" })).log.map((r) => r.id).sort().join();
+  const first = (await d.send({ type: "GET_RECENT_UNBLOCKS" })).log.find((r) => r.id === "@one");
+  await Promise.all([d.send({ type: "RESTORE_UNBLOCK", ts: first.ts }), d.sendFromTab({ type: "UNBLOCK_CHANNEL", id: "@three" })]);
+  const after = (await d.send({ type: "GET_RECENT_UNBLOCKS" })).log.map((r) => r.id).sort().join();
+  both === "@one,@two" && after === "@three,@two" && d.local.bt_blocklist.channels["@one"]
+    ? ok("two unblocks at once both keep their undo record, and a restore landing beside a third unblock keeps that one's")
+    : fail("undo log: " + JSON.stringify({ both, after }));
+}
+
 // ---- 8. a lookup is not an edit ----
 // applyChannelInfo() stamped `updated_at` with the time of the lookup, which
 // is what the merge weighs an unblock on another device against. So a sweep
