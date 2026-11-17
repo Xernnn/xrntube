@@ -36,7 +36,7 @@ await ext.waitForTimeout(600);
 
 const setLimit = async (n) => {
   await ext.evaluate(
-    (v) => chrome.storage.sync.set({ bt_keywords: { list: [], ts: Date.now(), durMinSec: 0, durMaxSec: 0, commentLimit: v } }),
+    (v) => chrome.storage.local.set({ bt_keywords: { list: [], ts: Date.now(), durMinSec: 0, durMaxSec: 0, commentLimit: v } }),
     n
   );
   await ext.waitForTimeout(800);

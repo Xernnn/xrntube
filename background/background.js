@@ -19,7 +19,6 @@ const {
   subsAttempted,
   knowsOneIdentity,
   resolveRetryDue,
-  oversizeSyncItems,
   cutHandleOf
 } = self.XrnTube;
 
@@ -59,9 +58,17 @@ const entryStamp = (e) => (e ? e.updated_at || e.ts || 0 : 0);
 // records its removal, or the other way round.
 const BLOCKLIST_KEY = STORAGE.BLOCKLIST_KEY;
 let migrated = null;
+// Every earlier layout moved into this one, once per worker start, before
+// anything reads the list, the keywords or the never-block list.
+const ensureMigrated = () =>
+  migrated ||
+  (migrated = (async () => {
+    await migrateFromSyncChunks();
+    await migrateListsToLocal();
+  })());
 
 async function loadAll() {
-  await (migrated || (migrated = migrateFromSyncChunks()));
+  await ensureMigrated();
   const r = await chrome.storage.local.get(BLOCKLIST_KEY);
   const bl = r[BLOCKLIST_KEY] || {};
   return { channels: bl.channels || {}, videos: bl.videos || {} };
@@ -69,7 +76,7 @@ async function loadAll() {
 
 // The list and its tombstones, in one read.
 async function readStore() {
-  await (migrated || (migrated = migrateFromSyncChunks()));
+  await ensureMigrated();
   const r = await chrome.storage.local.get([BLOCKLIST_KEY, STORAGE.TOMBSTONE_KEY]);
   const bl = r[BLOCKLIST_KEY] || {};
   return { channels: bl.channels || {}, videos: bl.videos || {}, tombstones: r[STORAGE.TOMBSTONE_KEY] || {} };
@@ -123,6 +130,24 @@ async function migrateFromSyncChunks() {
   await chrome.storage.local.set({ [BLOCKLIST_KEY]: bl });
   if (oldKeys.length) await chrome.storage.sync.remove(oldKeys);
   await chrome.storage.local.remove("bt_overflow");
+}
+
+// Up to 2.1.10, the keyword list and the never-block list were one
+// chrome.storage.sync item each, and the browser keeps at most 8 KB in one:
+// about 150 never-block channels, or a couple of hundred keywords. A write
+// past that was refused, and a sync round whose merge went past it failed on
+// that device every time. They travel through the sync server now, like the
+// blocklist, so they live in chrome.storage.local (see KEYWORDS_KEY). Copied
+// over once: a device that already has the local copy keeps it. The synced
+// copy is left where it is: another browser on the same account still on an
+// older version reads it, and removing it would look to that one like every
+// keyword deleted, which its next sync round would send everywhere.
+async function migrateListsToLocal() {
+  const keys = [KEYWORDS_KEY, ALLOWLIST_KEY];
+  const [sync, local] = await Promise.all([chrome.storage.sync.get(keys), chrome.storage.local.get(keys)]);
+  const move = {};
+  for (const k of keys) if (sync[k] !== undefined && local[k] === undefined) move[k] = sync[k];
+  if (Object.keys(move).length) await chrome.storage.local.set(move);
 }
 
 async function addEntry(kind, id, label, extra) {
@@ -247,11 +272,11 @@ async function restoreRecentUnblock(ref) {
       for (const k of rec.keywords) {
         if (!list.some((x) => x.p === k.p && !!x.re === !!k.re)) list.push(k);
       }
-      await saveSynced({ [KEYWORDS_KEY]: { ...cur, list, ts: Date.now() } });
+      await saveLists({ [KEYWORDS_KEY]: { ...cur, list, ts: Date.now() } });
     }
     if (rec.allowlist && Object.keys(rec.allowlist).length) {
       const cur = await getAllowlist();
-      await saveSynced({ [ALLOWLIST_KEY]: { list: { ...rec.allowlist, ...cur.list }, ts: Date.now() } });
+      await saveLists({ [ALLOWLIST_KEY]: { list: { ...rec.allowlist, ...cur.list }, ts: Date.now() } });
     }
     log.splice(index, 1);
     await chrome.storage.local.set({ [RECENT_UNBLOCK_KEY]: log });
@@ -265,7 +290,8 @@ async function restoreRecentUnblock(ref) {
 
 // The title-keyword record, as the options page writes it (see KEYWORDS_KEY).
 async function getKeywordsRecord() {
-  const res = await chrome.storage.sync.get(KEYWORDS_KEY);
+  await ensureMigrated();
+  const res = await chrome.storage.local.get(KEYWORDS_KEY);
   const k = res[KEYWORDS_KEY];
   return k && Array.isArray(k.list) ? { ...k, list: k.list } : { list: [], ts: 0 };
 }
@@ -304,7 +330,7 @@ async function deleteData(req) {
     keywordCount = cur.list.length;
     if (keywordCount) {
       record.keywords = cur.list;
-      await chrome.storage.sync.set({ [KEYWORDS_KEY]: { ...cur, list: [], ts: Date.now() } }).catch(() => {});
+      await chrome.storage.local.set({ [KEYWORDS_KEY]: { ...cur, list: [], ts: Date.now() } }).catch(() => {});
     }
   }
   let allowCount = 0;
@@ -313,7 +339,7 @@ async function deleteData(req) {
     allowCount = Object.keys(cur.list).length;
     if (allowCount) {
       record.allowlist = cur.list;
-      await chrome.storage.sync.set({ [ALLOWLIST_KEY]: { list: {}, ts: Date.now() } }).catch(() => {});
+      await chrome.storage.local.set({ [ALLOWLIST_KEY]: { list: {}, ts: Date.now() } }).catch(() => {});
     }
   }
 
@@ -411,7 +437,8 @@ async function getSettings() {
 // blocked. `@handle` keys are stored lowercased so a DOM link and a stored
 // key compare regardless of case.
 async function getAllowlist() {
-  const res = await chrome.storage.sync.get(ALLOWLIST_KEY);
+  await ensureMigrated();
+  const res = await chrome.storage.local.get(ALLOWLIST_KEY);
   const a = res[ALLOWLIST_KEY];
   return a && a.list && typeof a.list === "object" ? { list: a.list, ts: Number(a.ts) || 0 } : { list: {}, ts: 0 };
 }
@@ -433,24 +460,19 @@ async function setAllowed(keys, on, note) {
     else delete list[norm];
   }
   const next = { list, ts: Date.now() };
-  await saveSynced({ [ALLOWLIST_KEY]: next });
+  await saveLists({ [ALLOWLIST_KEY]: next });
   return next;
 }
 
-// chrome.storage.sync.set() for the keyword and never-block lists, with a
-// refusal turned into an error that says which list and why. Never swallowed:
-// a bulk "Never block" of 150 rows, over the 8 KB the browser stores in one
-// item, answered "added" and kept none of them.
-async function saveSynced(items) {
+// chrome.storage.local.set() for the keyword and never-block lists, with a
+// refusal turned into an error that says so. Never swallowed: a bulk "Never
+// block" that the browser refused (when these lists were in synced storage,
+// 150 rows were over its 8 KB an item) answered "added" and kept none of them.
+async function saveLists(items) {
   try {
-    await chrome.storage.sync.set(items);
+    await chrome.storage.local.set(items);
   } catch (err) {
-    const over = oversizeSyncItems(items);
-    throw new Error(
-      over.length
-        ? `The ${over.join(" and the ")} would be too big: the browser keeps it in its synced storage, at most 8 KB an item (about 150 never-block channels).`
-        : `The browser didn't save it: ${String((err && err.message) || err)}`
-    );
+    throw new Error(`The browser didn't save it: ${String((err && err.message) || err)}`);
   }
 }
 
@@ -1474,7 +1496,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               // A list that won't save doesn't stop the channels and videos,
               // which are most of a backup; the answer says it wasn't added.
               if (allowAdded) {
-                await saveSynced({ [ALLOWLIST_KEY]: { list, ts: Date.now() } }).catch((err) => {
+                await saveLists({ [ALLOWLIST_KEY]: { list, ts: Date.now() } }).catch((err) => {
                   allowError = err.message;
                   allowAdded = 0;
                 });
@@ -1814,17 +1836,17 @@ loadSweep().then((s) => {
 // so a settings change has to rebuild the DNR rule set. (content.js watches
 // bt_settings itself for its own behaviours.)
 //
-// Settings, keywords and the never-block list are written straight to
-// chrome.storage.sync by whichever page edits them, never through
-// broadcastUpdate(), so this is where the server sync hears about them. A
-// change the sync cycle itself wrote lands here too; the cycle it schedules
-// finds nothing to push.
+// Settings (chrome.storage.sync), keywords and the never-block list
+// (chrome.storage.local) are written straight to storage by whichever page
+// edits them, never through broadcastUpdate(), so this is where the server
+// sync hears about them. A change the sync cycle itself wrote lands here too;
+// the cycle it schedules finds nothing to push.
 chrome.storage.onChanged.addListener(async (changes, area) => {
-  if (area !== "sync") return;
-  if (changes[SETTINGS_KEY] || changes[KEYWORDS_KEY] || changes[ALLOWLIST_KEY]) {
+  const settings = area === "sync" && changes[SETTINGS_KEY];
+  if (settings || (area === "local" && (changes[KEYWORDS_KEY] || changes[ALLOWLIST_KEY]))) {
     self.XrnTube.serverSync.onLocalChange();
   }
-  if (changes[SETTINGS_KEY]) {
+  if (settings) {
     await rebuildDnrRules(await loadAll());
   }
 });

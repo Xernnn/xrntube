@@ -1460,10 +1460,12 @@ async function fillVideoTitles(ids) {
 
 // ---------- backup ----------
 async function exportBackup() {
-  const [bl, stored] = await Promise.all([
+  const [bl, lists, synced] = await Promise.all([
     send({ type: MSG.GET_BLOCKLIST }),
-    chrome.storage.sync.get([KEYWORDS_KEY, SETTINGS_KEY])
+    chrome.storage.local.get(KEYWORDS_KEY),
+    chrome.storage.sync.get(SETTINGS_KEY)
   ]);
+  const stored = { ...lists, ...synced };
   const kw = stored[KEYWORDS_KEY] || {};
   const backup = {
     format: "xrntube-backup",
@@ -2690,7 +2692,7 @@ function renderKeywords() {
 
 async function saveKeywords() {
   keywords.ts = Date.now();
-  await chrome.storage.sync.set({
+  await chrome.storage.local.set({
     [KEYWORDS_KEY]: {
       list: keywords.list,
       ts: keywords.ts,
@@ -2716,7 +2718,7 @@ function renderDuration() {
 }
 
 function initKeywords() {
-  chrome.storage.sync.get(KEYWORDS_KEY).then((r) => {
+  chrome.storage.local.get(KEYWORDS_KEY).then((r) => {
     keywords = readKeywordsRecord(r[KEYWORDS_KEY]);
     renderKeywords();
     renderDuration();
@@ -2809,7 +2811,7 @@ function initKeywords() {
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "sync" && changes[KEYWORDS_KEY]) {
+    if (area === "local" && changes[KEYWORDS_KEY]) {
       keywords = readKeywordsRecord(changes[KEYWORDS_KEY].newValue);
       renderKeywords();
       renderDuration();

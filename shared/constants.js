@@ -86,7 +86,7 @@ self.XrnTube.MSG = {
   // Channel allow-list ("never block these"): a hard override that wins over
   // every block path — a collaborator block, a title-keyword / duration
   // filter, an age rule. ALLOW_CHANNEL adds a key ("UC…" or "@handle"),
-  // DISALLOW_CHANNEL removes it. Stored in chrome.storage.sync under
+  // DISALLOW_CHANNEL removes it. Stored in chrome.storage.local under
   // ALLOWLIST_KEY and carried in the GET_BLOCKLIST / BLOCKLIST_UPDATED payload.
   ALLOW_CHANNEL: "ALLOW_CHANNEL",
   DISALLOW_CHANNEL: "DISALLOW_CHANNEL"
@@ -179,19 +179,22 @@ self.XrnTube.resolveRetryDue = function (id, entry, now) {
   if ((entry.idTries || 0) >= X.RESOLVE_MAX_TRIES) return false;
   return now - entry.subsAt >= X.RESOLVE_RETRY_MS;
 };
-// chrome.storage.sync. { list: [{ p: <pattern>, re: <bool: treat as regex> }],
+// chrome.storage.local. { list: [{ p: <pattern>, re: <bool: treat as regex> }],
 // ts: <ms> }. A video whose title matches any pattern is scrubbed (JS only —
-// CSS can't match text). ts drives last-write-wins in the sync merge.
+// CSS can't match text). ts drives last-write-wins in the sync merge. In
+// chrome.storage.sync up to 2.1.10, where one item holds at most 8 KB; the
+// sync server carries it between devices, and background.js's
+// migrateListsToLocal() copied it over.
 self.XrnTube.KEYWORDS_KEY = "bt_keywords";
-// chrome.storage.sync. { list: { [channelKey]: { note?, ts } }, ts: <ms> } —
-// channels that must never be hidden, whatever else matches. `ts` drives
-// last-write-wins in the sync merge (same scheme as KEYWORDS_KEY).
+// chrome.storage.local (synced storage up to 2.1.10, as KEYWORDS_KEY).
+// { list: { [channelKey]: { note?, ts } }, ts: <ms> } — channels that must
+// never be hidden, whatever else matches. `ts` drives last-write-wins in the
+// sync merge (same scheme as KEYWORDS_KEY).
 self.XrnTube.ALLOWLIST_KEY = "bt_allowlist";
 // chrome.storage.sync holds at most 8 KB in one item — its key plus its value
 // as JSON — in Chrome and Firefox alike, and refuses the whole write when an
-// item is over. The keyword list and the never-block list are one item each,
-// so either can get there: the never-block list at about 150 channels. Which
-// of `items` ({ key: value }, as passed to set()) are over, by name.
+// item is over. Only the settings are kept there now. Which of `items`
+// ({ key: value }, as passed to set()) are over, by name.
 self.XrnTube.SYNC_ITEM_MAX_BYTES = 8192;
 self.XrnTube.oversizeSyncItems = function (items) {
   const X = self.XrnTube;

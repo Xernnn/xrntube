@@ -260,8 +260,14 @@
     return stableStringify((al && al.list) || {});
   }
 
+  // The keywords and the never-block list are in chrome.storage.local, the
+  // settings in chrome.storage.sync (see KEYWORDS_KEY in shared/constants.js).
   async function readLocalRecords() {
-    const r = await chrome.storage.sync.get([KEYWORDS_KEY, ALLOWLIST_KEY, SETTINGS_KEY]);
+    const [lists, synced] = await Promise.all([
+      chrome.storage.local.get([KEYWORDS_KEY, ALLOWLIST_KEY]),
+      chrome.storage.sync.get(SETTINGS_KEY)
+    ]);
+    const r = { ...lists, ...synced };
     return {
       keywords: readKeywords(r[KEYWORDS_KEY]),
       allowlist: readAllowlist(r[ALLOWLIST_KEY]),
@@ -534,21 +540,26 @@
       const writes = {};
       if (kwFingerprint(merged.keywords) !== kwFingerprint(fresh.keywords)) writes[KEYWORDS_KEY] = merged.keywords;
       if (allowFingerprint(merged.allowlist) !== allowFingerprint(fresh.allowlist)) writes[ALLOWLIST_KEY] = merged.allowlist;
-      if (stableStringify(merged.settings) !== stableStringify(fresh.settings)) writes[SETTINGS_KEY] = merged.settings;
+      const settingsChanged = stableStringify(merged.settings) !== stableStringify(fresh.settings);
+      if (settingsChanged) writes[SETTINGS_KEY] = merged.settings;
       if (Object.keys(writes).length) {
         try {
-          await chrome.storage.sync.set(writes);
+          // The settings first: synced storage is the one with limits, and
+          // a refusal there then leaves nothing half written.
+          if (settingsChanged) await chrome.storage.sync.set({ [SETTINGS_KEY]: merged.settings });
+          const lists = { ...writes };
+          delete lists[SETTINGS_KEY];
+          if (Object.keys(lists).length) await chrome.storage.local.set(lists);
         } catch (err) {
           // Pushing this merge, or keeping it as the base, would say this
           // device holds what it couldn't save, and the next round would read
           // every item missing here as deleted here — and delete it on every
           // device. So the round ends before anything is changed or sent.
-          const over = oversizeSyncItems(writes);
+          const over = settingsChanged ? oversizeSyncItems({ [SETTINGS_KEY]: merged.settings }) : [];
           throw new Error(
             over.length
-              ? `merged with the server's, the ${over.join(" and the ")} won't fit in this browser's synced storage ` +
-                  "(8 KB an item: about 150 never-block channels). Nothing was changed or sent; remove some entries and sync again"
-              : `this device couldn't save what it merged (${String((err && err.message) || err)}). Nothing was changed or sent, and the next sync tries again`
+              ? "merged with the server's, the settings won't fit in this browser's synced storage (8 KB an item). Nothing was sent"
+              : `this device couldn't save what it merged (${String((err && err.message) || err)}). Nothing was sent, and the next sync tries again`
           );
         }
       }

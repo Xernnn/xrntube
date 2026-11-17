@@ -132,12 +132,12 @@ try {
 
   // ---- A pushes, B pulls ----
   await A.send({ type: "IMPORT_BLOCKLIST", channels: { "@alpha": stamped("Alpha"), "@beta": stamped("Beta") }, videos: { aaaaaaaaaaa: { title: "v" } } });
-  await A.p.evaluate(() => chrome.storage.sync.set({ bt_keywords: { list: [{ p: "reaction", re: false }], ts: Date.now() } }));
+  await A.p.evaluate(() => chrome.storage.local.set({ bt_keywords: { list: [{ p: "reaction", re: false }], ts: Date.now() } }));
   const conA = await A.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_, user: USER, password: PASS } });
   conA && conA.ok ? ok("device A connects and pushes") : fail("connect A: " + JSON.stringify(conA));
   const conB = await B.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_ + "/", user: USER, password: PASS } });
   const bList = await B.list();
-  const bKw = (await B.p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+  const bKw = (await B.p.evaluate(() => chrome.storage.local.get("bt_keywords"))).bt_keywords;
   conB && conB.ok && bList["@alpha"] && bList["@beta"] && bKw && bKw.list.length === 1
     ? ok("device B connects and pulls A's channels and keywords")
     : fail(`pull on B: ${JSON.stringify(conB)} channels=${Object.keys(bList)} kw=${JSON.stringify(bKw)}`);
@@ -219,16 +219,16 @@ try {
   const editKw = (d, op) =>
     d.p.evaluate(
       ({ add, drop, set, strip }) =>
-        chrome.storage.sync.get("bt_keywords").then((r) => {
+        chrome.storage.local.get("bt_keywords").then((r) => {
           const k = { ...(r.bt_keywords || { list: [] }) };
           for (const f of [].concat(strip || [])) delete k[f];
           let list = k.list.filter((x) => x.p !== drop);
           if (add) list = [{ p: add, re: false }, ...list];
-          return chrome.storage.sync.set({ bt_keywords: { ...k, ...(set || {}), list, ts: Date.now() } });
+          return chrome.storage.local.set({ bt_keywords: { ...k, ...(set || {}), list, ts: Date.now() } });
         }),
       op
     );
-  const kwOf = async (d) => (await d.p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+  const kwOf = async (d) => (await d.p.evaluate(() => chrome.storage.local.get("bt_keywords"))).bt_keywords;
   await editKw(A, { add: "from-a" });
   await editKw(B, { add: "from-b" });
   await settle(A, B);

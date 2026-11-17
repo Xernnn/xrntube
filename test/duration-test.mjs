@@ -27,7 +27,7 @@ const extId = sw.url().split("/")[2];
 const ext = await ctx.newPage();
 await ext.goto(`chrome-extension://${extId}/options/options.html`);
 const setKeywords = (rec) =>
-  ext.evaluate((r) => new Promise((res) => chrome.storage.sync.set({ bt_keywords: r }, res)), rec);
+  ext.evaluate((r) => new Promise((res) => chrome.storage.local.set({ bt_keywords: r }, res)), rec);
 
 // Tiles still on the page, with the duration each one advertises. Reading the
 // badge the same way the extension does keeps the expectation honest.

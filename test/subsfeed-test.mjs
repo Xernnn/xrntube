@@ -32,7 +32,7 @@ const ok = (m) => console.log("ok:", m);
 
 const sw = ctx.serviceWorkers()[0] || (await ctx.waitForEvent("serviceworker", { timeout: 15000 }));
 await sw.evaluate(() =>
-  chrome.storage.sync.set({
+  chrome.storage.local.set({
     bt_keywords: { list: [], ts: Date.now(), durMinSec: 0, durMaxSec: 0, subsMaxAgeDays: 7, subsHideWatched: true, subsHideUpcoming: true }
   })
 );

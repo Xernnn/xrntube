@@ -3202,7 +3202,7 @@
     postHookConfig();
     if (settingsLoaded) runExtras(); // a live toggle change — re-apply now
   }
-  // ---------- title-keyword filters (chrome.storage.sync: bt_keywords) ----------
+  // ---------- title-keyword filters (chrome.storage.local: bt_keywords) ----------
   // A video whose title matches any pattern is scrubbed. JS-scrub only — CSS
   // can't match text — so there's a one-frame window vs. the :has() layer.
   function applyKeywords(rec) {
@@ -3236,17 +3236,27 @@
     return false;
   }
 
-  chrome.storage.sync.get({ [SETTINGS_KEY]: null, [KEYWORDS_KEY]: null }, (res) => {
-    // A failed read still has to start the scrubs, on the defaults.
-    if (chrome.runtime.lastError || !res) res = {};
-    applyKeywords(res[KEYWORDS_KEY]);
-    applySettings(res[SETTINGS_KEY]);
-    settingsLoaded = true;
-    runExtras();
-  });
+  // The switches are in synced storage, the keywords in local storage; the
+  // scrubs start once both are read. A failed read still has to start them,
+  // on the defaults.
+  {
+    const got = {};
+    let pending = 2;
+    const read = (area, key) =>
+      chrome.storage[area].get({ [key]: null }, (res) => {
+        got[key] = chrome.runtime.lastError || !res ? null : res[key];
+        if (--pending) return;
+        applyKeywords(got[KEYWORDS_KEY]);
+        applySettings(got[SETTINGS_KEY]);
+        settingsLoaded = true;
+        runExtras();
+      });
+    read("sync", SETTINGS_KEY);
+    read("local", KEYWORDS_KEY);
+  }
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "sync") return;
-    if (changes[SETTINGS_KEY]) applySettings(changes[SETTINGS_KEY].newValue);
+    if (area === "sync" && changes[SETTINGS_KEY]) applySettings(changes[SETTINGS_KEY].newValue);
+    if (area !== "local") return;
     if (changes[KEYWORDS_KEY]) {
       applyKeywords(changes[KEYWORDS_KEY].newValue);
       // re-scan already-checked tiles against the new patterns
