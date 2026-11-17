@@ -184,11 +184,12 @@ self.XrnTube = self.XrnTube || {};
     return undefined;
   }
 
-  // The title-keyword + duration filter record (chrome.storage.sync) compiled
-  // into something a hot loop can use. Capped at 200 patterns; a pattern that
+  // The title-keyword + duration filter record (chrome.storage.local) compiled
+  // into something a hot loop can use. Every pattern counts: a cap of 200 here
+  // left the rest stored and listed but matching nothing. A pattern that
   // doesn't compile is dropped rather than taking the page down with it.
   function compileFilters(rec) {
-    const list = (rec && Array.isArray(rec.list) ? rec.list : []).slice(0, 200);
+    const list = rec && Array.isArray(rec.list) ? rec.list : [];
     const matchers = list
       .map(({ p, re }) => {
         const src = String(p || "").trim();
