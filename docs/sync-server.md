@@ -21,6 +21,7 @@ builds: `{ v, channels, videos, tombstones, keywords, allowlist, settings }`.
 | `GET /download/<file>` | a file from `<data>/downloads` — the packed extension, for a phone to fetch |
 | `GET /update/<file>` | **no login**: `updates.xml` or a `.crx` from `<data>/update` — what a browser's own extension updater polls (see below) |
 | `GET /health` | `ok`, no login (for monitoring) |
+| `HEAD` on any `GET` above | the same answer without its body |
 
 Every path also works under the mount prefix (`/xrntube/state`), so it doesn't
 matter whether the proxy in front strips it.

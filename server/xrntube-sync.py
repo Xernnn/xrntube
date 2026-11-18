@@ -23,6 +23,7 @@ calendar password is the sync password).
                            the signed .crx it names, which a browser's own
                            extension updater fetches (it can't send a login)
     GET  /health           200 "ok", no login (for monitoring)
+    HEAD                   any GET above, answered without its body
 
 Every write keeps the copy it replaces, gzipped, under <data>/users/<user>/
 history: the newest --keep-recent of them, plus the newest of each of the
@@ -379,6 +380,16 @@ class Handler(BaseHTTPRequestHandler):
         who = headers.get("X-Forwarded-For", self.client_address[0]) if headers else "-"
         sys.stderr.write(f"{who} {fmt % a}".translate(LOG_ESCAPES) + "\n")
 
+    def handle(self):
+        # A caller hanging up, mid-upload or before the answer is out, is the network, not a fault
+        # here: a phone loses its signal, a laptop shuts its lid. One line says so; socketserver
+        # printed some 30 lines of traceback for each, which a log reader shows as an error.
+        try:
+            super().handle()
+        except ConnectionError as e:
+            self.close_connection = True
+            self.log_message("connection dropped: %s", type(e).__name__)
+
     def parse_request(self):
         if not super().parse_request():
             return False
@@ -478,7 +489,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
-                self.wfile.write(data)
+                if self.command != "HEAD":
+                    self.wfile.write(data)
                 return
             return self.send(404, "not found")
         user = self.login()
@@ -519,9 +531,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Disposition", f'attachment; filename="{name}"')
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
-                self.wfile.write(data)
+                if self.command != "HEAD":
+                    self.wfile.write(data)
                 return
         self.send(404, "not found")
+
+    # A GET's answer without its body, as curl -I and monitors ask: http.server answered 501
+    # "Unsupported method", which a log reader that rates every 5xx as an error shows as one.
+    do_HEAD = do_GET
 
     def do_PUT(self):
         path = self.route()
@@ -537,6 +554,11 @@ class Handler(BaseHTTPRequestHandler):
         if length <= 0 or length > MAX_BODY:
             return self.send(413, "body missing or too large")
         raw = self.rfile.read(length)
+        if len(raw) < length:
+            # The connection closed part way, as a reverse proxy closes this side when the
+            # device's drops. What came is no document, so it isn't read as one.
+            self.close_connection = True
+            return self.send(400, "the upload stopped short")
         if (self.headers.get("Content-Encoding") or "").lower() == "gzip":
             # Inflated with the limit the plain body has: MAX_BODY above is the compressed length,
             # and a few KB of gzip can hold gigabytes. A body that isn't gzip is answered, too;
