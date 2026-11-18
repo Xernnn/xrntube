@@ -541,6 +541,64 @@ try {
     ? ok("a Content-Length that isn't a number is answered 400")
     : fail(`a Content-Length that isn't a number: ${JSON.stringify(badLength.slice(0, 80))} (want a 400)`);
 
+  // ---- HEAD is a GET without its body ----
+  // curl -I and monitors got http.server's 501 "Unsupported method", which a
+  // log reader that rates every 5xx as an error shows as one. The update and
+  // download files are written out by hand, so they must leave the bytes out too.
+  {
+    const login = `Authorization: Basic ${Buffer.from(`${USER}:${PASS}`).toString("base64")}\r\n`;
+    const heads = {
+      "/health": [await rawReply("HEAD /xrntube/health HTTP/1.0\r\n\r\n"), 2],
+      "/update/…crx": [await rawReply("HEAD /xrntube/update/xrntube-9.9.9.crx HTTP/1.0\r\n\r\n"), crxBytes.length],
+      "/download/…zip": [await rawReply(`HEAD /xrntube/download/xrntube.zip HTTP/1.0\r\n${login}\r\n`), 3],
+      "/state": [await rawReply(`HEAD /xrntube/state HTTP/1.0\r\n${login}\r\n`), null]
+    };
+    const wrong = Object.entries(heads).filter(
+      ([, [got, length]]) =>
+        !/^HTTP\/1\.[01] 200/.test(got) || !got.endsWith("\r\n\r\n") || (length !== null && !got.includes(`Content-Length: ${length}\r\n`))
+    );
+    !wrong.length
+      ? ok("HEAD is answered like GET, without the body: health, an update file, a download, the state")
+      : fail(`HEAD: ${wrong.map(([path, [got]]) => `${path} → ${JSON.stringify(got.slice(-60))}`).join("; ")}`);
+  }
+
+  // ---- an upload cut short, and a caller that hangs up ----
+  // A device whose connection drops part way through a PUT leaves the body
+  // short of its Content-Length, as the reverse proxy in front closes this
+  // side too. The half that came was parsed and answered "must be a JSON
+  // object", and a reset while reading ended in a traceback in the log.
+  {
+    const login = `Authorization: Basic ${Buffer.from(`${USER}:${PASS}`).toString("base64")}\r\n`;
+    const body = JSON.stringify({ channels: Array.from({ length: 400 }, (_, i) => ({ name: "cut" + i })) });
+    const cutUpload = (reset) =>
+      new Promise((resolve) => {
+        let got = "";
+        const sock = connect(PORT, "127.0.0.1", () => {
+          sock.write(
+            `PUT /xrntube/state HTTP/1.1\r\nHost: x\r\n${login}If-Match: "999999"\r\nContent-Type: application/json\r\n` +
+              `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body.slice(0, body.length / 2)}`
+          );
+          if (reset) setTimeout(() => sock.resetAndDestroy(), 300);
+          else sock.end(); // only this side: the answer can still come back
+        });
+        sock.on("data", (d) => (got += d));
+        sock.on("close", () => resolve(got));
+        sock.on("error", () => resolve(got));
+        sock.setTimeout(5000, () => sock.destroy());
+      });
+    mark = serverLog.length;
+    const halfClosed = await cutUpload(false);
+    await cutUpload(true);
+    await logSettles();
+    const cutLog = serverLog.slice(mark);
+    /^HTTP\/1\.[01] 400/.test(halfClosed) && halfClosed.includes("the upload stopped short")
+      ? ok("an upload cut short is answered 400 \"the upload stopped short\", not read as a document")
+      : fail(`an upload cut short: ${JSON.stringify(halfClosed.slice(-80))}`);
+    !cutLog.includes("Traceback") && cutLog.includes("connection dropped: ConnectionResetError")
+      ? ok("a caller that hangs up mid-upload is one line in the log, not a traceback")
+      : fail(`log of a hang-up: ${JSON.stringify(cutLog.slice(0, 400))}`);
+  }
+
   // ---- whose wrong passwords a right login clears ----
   // A right login cleared its whole address's count. Behind Funnel every
   // device comes from the same few addresses, so any device signing in, or
