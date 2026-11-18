@@ -36,7 +36,13 @@ dropped a block made meanwhile and undid an unblock. Until v2 the blocklist live
 50-entry chunks with a local-only overflow, forced by its 8KB-per-item and
 512-item limits — the cause of two silent-write bugs. `migrateFromSyncChunks()`
 folds that layout into the new key on the first `loadAll()`, and removes the
-old keys only after the new one is written. Also rebuilds
+old keys only after the new one is written. The keyword and never-block lists
+followed after 2.1.10: they were one `chrome.storage.sync` item each, at most
+8 KB (about 150 never-block channels), so a bulk never-block or a sync merge
+past that was refused every time. `migrateListsToLocal()` copies them into
+`chrome.storage.local` under the same keys, once, before anything reads them,
+and leaves the synced copy for a browser on the same account still on an
+older version (removing it would read there as every keyword deleted). Also rebuilds
 `declarativeNetRequest` dynamic rules whenever the blocklist changes, and
 broadcasts `BLOCKLIST_UPDATED` to every open YouTube tab after each write.
 `rebuildDnrRules()` assigns rule IDs from fixed bases —
@@ -214,7 +220,11 @@ tombstones. **Keywords, the never-block list and the settings** (`bt_settings`,
 the "What gets hidden" switches) have no tombstones, so they merge three ways
 against `bt_sync_base` — what this device and the server agreed on at the end
 of the last cycle: in the base and gone from one side means deleted there,
-not in the base means added. Item by item for keywords and never-block keys,
+not in the base means added. Once a round has stored its merge here and is
+about to push, the base becomes the server's copy as pulled, so a push that
+gets a 412 reruns against it: an item pulled and stored here, then deleted on
+the other device before the push landed, stays deleted rather than reading
+as added here. Item by item for keywords and never-block keys,
 switch by switch for settings (a switch only a newer version knows rides
 through untouched, the server's value standing: dropped, as `resolveSettings()`
 drops it, it made an older and a newer device push the list at each other
@@ -225,10 +235,12 @@ a connect to another server or user, or a server whose version went
 reconnect to the same server and user (a new password, say) keeps the base
 and `lastVersion`: it is the same copy, and dropping the base there brought
 back everything deleted elsewhere since. Without one, lists union, and settings take the server's
-set whole, so a newly connected device adopts the others' switches. Settings,
-keywords and the allow-list are written straight to `chrome.storage.sync` by
-whoever edits them; background.js's `storage.onChanged` is what calls
-`onLocalChange()` for them.
+set whole, so a newly connected device adopts the others' switches. Settings
+(`chrome.storage.sync`), keywords and the allow-list (`chrome.storage.local`)
+are written straight to storage by whoever edits them; background.js's
+`storage.onChanged` is what calls `onLocalChange()` for them. A round writes
+a merged settings set first and the lists after, and a write the browser
+refuses ends the round before anything is pushed or kept as the base.
 
 **A merge must converge.** The push decision compares the merged document with
 the server's; anything one device normalises differently from the server
@@ -552,7 +564,8 @@ goes through it, rebuilds the static instant-hide stylesheet
 (`buildStaticCSS()` joins the `STATIC_CSS_PARTS` whose **leaf** key is on,
 so the CSS layer is per-element too) plus the blocklist half, and — on a
 *live* change — re-runs `runExtras()`. The startup `runExtras()` is deferred
-until `chrome.storage.sync.get` resolves (`settingsLoaded`), because a
+until the settings (`chrome.storage.sync`) and the keywords
+(`chrome.storage.local`) are both read (`settingsLoaded`), because a
 `remove*` a user has turned off must not fire its irreversible `.remove()`
 once before their settings arrive. `chrome.storage.onChanged` keeps it live.
 Blocklist enforcement itself has no toggle — it's the point of the extension.
@@ -624,8 +637,13 @@ noticeably slower.
 its contents inline instead, and anything added to only one of the three
 copies silently never ran on a normal page load — that is precisely how the
 page-redirect check ended up dead on fresh loads while looking wired up. A
-`setInterval` heartbeat re-triggers the same throttle every 2s as a
-fallback, and `yt-navigate-finish` runs the batch on SPA navigation. Only
+heartbeat re-triggers the same throttle every 2s as a fallback, for what
+changes without adding an element the observer sees — but only for five
+beats after the page last grew or navigated, and while a tile or a shelf
+still waits to hydrate (`data-bt-pending`, `data-bt-shelf-try`), and never
+on a hidden tab (`wakeHeartbeat()` / `heartbeatBeat()`). It used to beat for
+as long as a tab stayed open, a video playing for an hour included.
+`yt-navigate-finish` runs the batch on SPA navigation. Only
 the blocklist-driven removals in `processRenderer()` — and `scrubPosts()`,
 cheap because posts are rare — run in the hot per-mutation path
 (`scheduleFlush` / the `MutationObserver` callback via `sweep()`) —
@@ -774,8 +792,8 @@ The full blocklist manager (search, block, delete, backup/import), opened via
 `chrome.runtime.openOptionsPage()`. Listens to `chrome.storage.onChanged` to
 live-refresh (debounced ~300ms; `suppressStorageRefresh` mutes it during a
 bulk sub-count load or a bulk action). The page is a two-column shell: a
-sticky `.sidenav` (brand, six `.page-tab` buttons with live count badges, a
-footer with the keyboard hints) beside a `.main` column holding `.wrap`.
+sticky `.sidenav` (brand, six `.page-tab` buttons with live count badges)
+beside a `.main` column holding `.wrap`.
 `showPage()` toggles the `.page` divs `#page-blocklist` / `#page-keywords` /
 `#page-allowlist` / `#page-settings` / `#page-sync` / `#page-data`, last one
 remembered in `localStorage`; a `#<page>` hash (the popup's "Backup &
@@ -979,11 +997,10 @@ also be listed in the MAIN entry.
 ## Sync
 
 One layer: the user's server, through `server-sync.js` (see that section and
-[sync-server.md](sync-server.md)). `chrome.storage.sync` still carries the
-small records — `bt_settings`, `bt_keywords`, `bt_allowlist` — between
-Chrome profiles on one Google account, and the server merge carries all
-three too (three-way, against `bt_sync_base`); the blocklist itself is local
-and travels only through the server.
+[sync-server.md](sync-server.md)). `chrome.storage.sync` still carries
+`bt_settings` between Chrome profiles on one Google account; `bt_keywords`
+and `bt_allowlist` are local, like the blocklist. The server merge carries
+all three (three-way, against `bt_sync_base`), and the blocklist.
 
 The blocklist merges per entry, last-write-wins on `updated_at` with
 tombstones. It is intentionally simple — conflicts are rare for one person

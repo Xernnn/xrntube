@@ -78,7 +78,7 @@ afterwards.
 1. Open `about:debugging` → **This Firefox** → **Load Temporary Add-on…** and
    choose `manifest.json` in the folder (or the `.zip` from `npm run package`,
    which Firefox takes as an `.xpi`).
-2. If the popup says XrnTube isn't allowed on YouTube, click **Allow on
+2. If the popup says **No access to YouTube**, click **Allow on
    YouTube** (Firefox can withhold an extension's site access, and it can be
    switched off in `about:addons` → XrnTube → **Permissions**), then reload
    YouTube.
@@ -100,10 +100,14 @@ on fetches every new version from there by itself.
    `{ "server": "https://<your-server>/xrntube", "ssh": "<ssh-host>" }` (or a
    list of ssh hosts, tried in order, if there's more than one way in) —
    then `npm run release`. That signs `dist/xrntube-<version>.crx` and puts it
-   at `https://<your-server>/xrntube/update/xrntube.crx`. The first release
-   also makes the signing key, `~/.config/xrntube/xrntube.pem`: **back it
-   up**. Every update has to be signed with that key, and without it the
-   phone has to install afresh under a new extension ID.
+   at `https://<your-server>/xrntube/update/xrntube.crx`. It releases only
+   from `master` with everything committed (`--force` releases anyway). The
+   first release, `npm run release -- --new-key`, also makes the signing key,
+   `~/.config/xrntube/xrntube.pem`: **back it up**. Every update has to be
+   signed with that key, and without it the phone has to install afresh
+   under a new extension ID, so a later release with the file missing, or
+   with a key whose ID isn't the one the server's `updates.xml` names, stops
+   before anything is sent.
 2. On the phone, open that link in Quetta → **Download anyway** → **OK** to
    add it. (Quetta's Extensions page also takes the file: **from
    .zip/.crx/.user.js**.) If Quetta may not post notifications, Android can
@@ -134,8 +138,8 @@ updating:
 
 1. Search for a channel you've blocked: its videos shouldn't appear at all,
    not even for a moment.
-2. Open the popup on that search page. The grey line should say things were
-   removed "before they appeared". A **⚠** line means the early filter isn't
+2. Open the popup on that search page. The grey line should say **N
+   removed** with no "late". A **⚠** line means the early filter isn't
    running on the phone (see Troubleshooting).
 3. Tap the YouTube logo: it should open Subscriptions without passing through
    the home feed.
@@ -187,7 +191,7 @@ Everywhere a channel can be blocked, you get both:
 - **Block channel** — the hard option. Their page redirects to Subscriptions,
   and every video, playlist, community post and comment of theirs is removed
   wherever it appears.
-- **Block all videos (allow some later)** — the soft option. The channel's own
+- **Block videos only** — the soft option. The channel's own
   page stays reachable and both its channel card and the big channel panel
   search shows for a name query stay visible (with their video lists emptied),
   but its videos are removed everywhere. Their comments stay too, since you didn't
@@ -294,8 +298,8 @@ which stays at the top as you scroll:
 - **⋯** — the once-in-a-while things: *Fetch all sub counts*, *Load counts for
   shown*, *Hide under N subs*, *Show video thumbnails* (off by default — it's a
   list of things you didn't want to see), *Download backup*, *Import /
-  restore*, *Clear all blocked videos*, *Delete channels that can't be looked
-  up…*, *Delete all channels*.
+  restore*. The deletes are each section's own **Delete all** and the Danger
+  zone (Backup & data).
 
 Each channel row shows a coloured initial, the name, and a quiet second line
 with the `@handle` (click to copy), the subscriber count, the block mode, when
@@ -515,11 +519,12 @@ hand) keeps the old script, which can no longer save anything. Reload the
 tab.
 
 **What the popup's grey line means.** On a YouTube tab the popup says how
-many things it removed on this page — "before they appeared" (taken out of
-YouTube's data before the page was drawn) or "just after" (removed from the
-page a moment later). A few "just after" on the first screen is normal. A
-**⚠** line means the early filter isn't working on this page: everything is
-still removed, but blocked videos flash up first. That usually means YouTube
+many things it removed on this page (**N removed**), and how many of those
+were "late": removed from the page a moment after it was drawn rather than
+taken out of YouTube's data before it. A few late on the first screen is
+normal. A **⚠** line (**Early filter off**, or **N removed late**) means the
+early filter isn't working on this page: everything is still removed, but
+blocked videos flash up first. That usually means YouTube
 changed something; reloading the tab is worth one try, and on the developer
 side `npm run test:canary` checks the same thing against live YouTube.
 

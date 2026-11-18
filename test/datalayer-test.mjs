@@ -335,6 +335,17 @@ const results = (o) =>
   same(videoIds(out), ["mmmmmmmmmmm"]) ? ok("title keyword filter applies at the data layer") : fail("keyword missed");
 }
 {
+  // Past the 200th: compileFilters() kept only the first 200 patterns, so the
+  // rest were stored and listed but matched nothing, and nothing said so.
+  const list = Array.from({ length: 250 }, (_, i) => ({ p: `kw${i}x`, re: false }));
+  const out = await filter(
+    { channels: {}, videos: {}, allowlist: {} },
+    { list },
+    wrap([video("lllllllllll", "a title with kw249x in it", "Good", GOOD, "@good"), video("mmmmmmmmmmm", "an honest title", "Good", GOOD, "@good")])
+  );
+  same(videoIds(out), ["mmmmmmmmmmm"]) ? ok("the 250th of 250 title keywords applies too") : fail("keyword past the 200th missed: " + videoIds(out));
+}
+{
   // the fixture's duration badge is 12:34 = 754s
   const out = await filter(
     { channels: {}, videos: {}, allowlist: {} },

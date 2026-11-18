@@ -146,7 +146,7 @@ that alone.
 
 ## Title-keyword and duration filters
 
-`chrome.storage.sync` key `bt_keywords` =
+`chrome.storage.local` key `bt_keywords` =
 `{ list: [{ p, re }], ts, durMinSec, durMaxSec, commentLimit, subsMaxAgeDays,
 subsHideWatched, subsHideUpcoming }` (the comment limit below, the last three
 in the next section). A video is scrubbed if
@@ -181,7 +181,9 @@ and a title, length or date that arrived after that was never read
 no duration, ever — isn't re-read for the life of the page; size it against
 the **2s heartbeat**, not the ~400ms throttle, because the throttle only fires
 on DOM mutation and a settled page is driven by the heartbeat alone (at 8
-tries ≈ 16s a 2½-hour video still slipped through). The options **Keywords** page
+tries ≈ 16s a 2½-hour video still slipped through). The heartbeat keeps
+beating while any tile is pending (`data-bt-pending`), so the whole bound is
+used. The options **Keywords** page
 tab edits both (title list + a "Block videos by length" block). The sync
 merge carries the whole `keywords` object as last-write-wins on `ts`;
 `kwFingerprint()` (list + duration bounds, ts excluded) in `sameBlocklist()`
@@ -254,17 +256,18 @@ them fingerprints exactly as it did before they existed.
 
 ## Channel allow-list ("Never-block")
 
-`chrome.storage.sync` key `bt_allowlist` =
+`chrome.storage.local` key `bt_allowlist` =
 `{ list: { [channelKey]: { note?, ts } }, ts }` — a hard override that beats
 *every* block path: a direct block, a collaborator block, a keyword/duration
 filter, an age rule, and the DNR channel-page redirect. `@handle` keys are
 stored lowercased. Background owns the writes (`MSG.ALLOW_CHANNEL` /
-`DISALLOW_CHANNEL` → `setAllowed()`). The whole list is one sync-storage
-item, and the browser holds at most 8 KB in one — about 150 channels — so a
-write past that is refused: `saveSynced()` answers with an error saying so,
-which the options page shows (a bulk "Never block" used to report success
-and keep nothing), and a sync round whose merge won't fit fails before it
-sends anything. It's carried in the `GET_BLOCKLIST` /
+`DISALLOW_CHANNEL` → `setAllowed()`). Up to 2.1.10 the whole list was one
+sync-storage item, which the browser holds at most 8 KB of — about 150
+channels; it is local now (see architecture.md → the blocklist store). A
+write the browser refuses still fails loudly: `saveLists()` answers with an
+error, which the options page shows (a bulk "Never block" used to report
+success and keep nothing), and a sync round whose merge isn't stored fails
+before it sends anything. It's carried in the `GET_BLOCKLIST` /
 `BLOCKLIST_UPDATED` payload and also read live by `content.js` via
 `chrome.storage.onChanged`. `content.js` builds `allowSet` and short-circuits
 in `blockedEntryFor()` (returns `undefined` for an allow-listed key — covers

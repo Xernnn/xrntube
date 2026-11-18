@@ -51,11 +51,15 @@ function blockedStatus(text, onUnblock) {
   return wrap;
 }
 
+// Two numbers, not the whole list: it crossed the message channel (about 1 MB
+// at 5,000 channels) after every click.
+function showCounts(channels, videos) {
+  document.getElementById("channel-count").textContent = channels.toLocaleString();
+  document.getElementById("video-count").textContent = videos.toLocaleString();
+}
 async function refreshCounts() {
-  const blocklist = await chrome.runtime.sendMessage({ type: MSG.GET_BLOCKLIST });
-  document.getElementById("channel-count").textContent = Object.keys(blocklist.channels || {}).length.toLocaleString();
-  document.getElementById("video-count").textContent = Object.keys(blocklist.videos || {}).length.toLocaleString();
-  return blocklist;
+  const n = await chrome.runtime.sendMessage({ type: MSG.GET_COUNTS });
+  if (n && n.ok) showCounts(n.channels, n.videos);
 }
 
 function videoControls(target) {
@@ -100,7 +104,7 @@ function channelControls(channel) {
 
   const softBtn = document.createElement("button");
   softBtn.className = "block-btn secondary";
-  softBtn.textContent = "Block videos (allow some later)";
+  softBtn.textContent = "Block videos only";
   softBtn.addEventListener("click", block(CHANNEL_MODE.EXCEPT_WHITELIST, "Videos blocked (whitelist)"));
 
   btnGroup.append(fullBtn, softBtn);
@@ -119,15 +123,15 @@ function renderHealth(hp) {
   let warn = false;
   if (!hp.hook) {
     warn = true;
-    text = "⚠ The early filter isn't running on this tab, so blocked videos show for a moment before they go. Reload the tab; if it stays, YouTube changed something.";
+    text = "⚠ Early filter off: reload the tab";
   } else if (hp.degraded) {
     warn = true;
-    text = `⚠ ${hp.late} tiles got past the early filter on this page. They were still removed, a moment late — YouTube may have changed something.`;
+    text = `⚠ ${hp.late} removed late`;
   } else {
     const total = hp.early + hp.dom;
-    if (!total) text = "Nothing blocked on this page.";
-    else if (!hp.dom) text = `${total} removed on this page, all before they appeared.`;
-    else text = `${total} removed on this page — ${hp.early} before they appeared, ${hp.dom} just after.`;
+    if (!total) text = "0 removed";
+    else if (!hp.dom) text = `${total} removed`;
+    else text = `${total} removed · ${hp.dom} late`;
   }
   el.textContent = text;
   el.classList.toggle("warn", warn);
@@ -135,7 +139,8 @@ function renderHealth(hp) {
 }
 
 async function init() {
-  const [blocklist, tab] = await Promise.all([refreshCounts(), getActiveTab()]);
+  const [blocklist, tab] = await Promise.all([chrome.runtime.sendMessage({ type: MSG.GET_BLOCKLIST }), getActiveTab()]);
+  showCounts(Object.keys(blocklist.channels || {}).length, Object.keys(blocklist.videos || {}).length);
 
   if (!isYouTubeUrl(tab?.url)) {
     document.getElementById("no-target").hidden = false;

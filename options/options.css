@@ -181,17 +181,6 @@ kbd {
 .nav-count:empty { display: none; }
 .page-tab.active .nav-count { background: transparent; color: inherit; }
 
-.sidenav-foot {
-  display: grid;
-  gap: 8px;
-  margin-top: auto;
-  padding: 10px;
-  border-radius: var(--radius-sm);
-  background: var(--panel-2);
-  color: var(--ink-3);
-  font-size: 12px;
-}
-
 .main { min-width: 0; padding: 26px 28px 96px; }
 .wrap { max-width: 1180px; margin: 0 auto; }
 
@@ -745,7 +734,6 @@ a.drawer-btn { text-decoration: none; display: inline-flex; align-items: center;
 }
 .sync-status.ok { border-color: var(--on); }
 .sync-status.error { border-color: var(--danger); color: var(--danger); }
-.sync-hint { color: var(--ink-3); font-size: 12.5px; }
 .sync-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .sync-actions[hidden] { display: none; }
 .sync-danger { color: var(--danger); border-color: var(--danger); }
@@ -897,7 +885,7 @@ a.drawer-btn { text-decoration: none; display: inline-flex; align-items: center;
   /* The logo alone leaves room for all six pages in the strip. */
   .brand { gap: 0; padding: 0; font-size: 0; }
   .nav { flex: 1; flex-direction: row; justify-content: space-between; }
-  .sidenav-foot, .nav-label, .nav-count { display: none; }
+  .nav-label, .nav-count { display: none; }
   .page-tab { width: auto; padding: 8px; }
   .main { padding: 18px 16px 64px; }
   .thumb { width: 72px; height: 40px; }

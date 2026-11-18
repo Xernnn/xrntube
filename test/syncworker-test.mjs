@@ -6,10 +6,14 @@ import vm from "vm";
 // can pause a download and act while it is under way.
 //   - a block, an unblock and a keyword added while the list downloads all
 //     survive the round, and reach the server with it
-//   - a list the browser won't store (chrome.storage.sync's 8 KB an item)
-//     fails the round before anything is sent, so the next round doesn't read
-//     what's missing here as deleted; and a bulk never-block, an import or a
-//     restore that won't fit says so instead of reporting it done
+//   - the keyword and never-block lists live in local storage, past synced
+//     storage's 8 KB an item (about 150 never-block channels), and an install
+//     that kept them in synced storage has them moved over on the worker's
+//     first start
+//   - a list the browser won't store fails the round before anything is
+//     sent, so the next round doesn't read what's missing here as deleted;
+//     a bulk never-block, a delete or a restore that isn't saved says so
+//     instead of reporting it done, and an import changes nothing at all
 //   - reconnecting to the same server and user (a new password after a 401)
 //     keeps the merge base, so deletions made elsewhere stay deleted; another
 //     server, or one that was reset, still merges as a first sync
@@ -46,8 +50,11 @@ const URL_ = ORIGIN + "/xrntube";
 
 // A chrome.storage area: get in all three shapes, onChanged like the browser's.
 // `perItem` refuses a set with an item over that many bytes (the key plus the
-// value as JSON), whole, as Chrome's storage.sync does at 8192.
-function area(name, data, onChanged, perItem = 0) {
+// value as JSON), whole, as Chrome's storage.sync does at 8192. A set that
+// writes any key in `refused` is refused whole, as a browser out of space
+// would. A set that writes a key in `gates` waits for that gate's release
+// (once), so a test can act while that write is under way.
+function area(name, data, onChanged, perItem = 0, refused = new Set(), gates = new Map()) {
   return {
     data,
     async get(keys) {
@@ -58,10 +65,18 @@ function area(name, data, onChanged, perItem = 0) {
       return Object.fromEntries([].concat(keys).filter((k) => k in data).map((k) => [k, structuredClone(data[k])]));
     },
     async set(obj) {
+      for (const k of Object.keys(obj)) {
+        const gate = gates.get(k);
+        if (!gate) continue;
+        gates.delete(k);
+        gate.arrived();
+        await gate.wait;
+      }
       const enc = new TextEncoder();
       if (perItem && Object.entries(obj).some(([k, v]) => enc.encode(k + JSON.stringify(v)).length > perItem)) {
         throw new Error("QUOTA_BYTES_PER_ITEM quota exceeded");
       }
+      if (Object.keys(obj).some((k) => refused.has(k))) throw new Error("QUOTA_BYTES quota exceeded");
       const changes = {};
       for (const [k, v] of Object.entries(obj)) {
         changes[k] = { oldValue: data[k], newValue: structuredClone(v) };
@@ -114,6 +129,12 @@ function server({ doc = {}, version = 1, user = "me", password = "pw" } = {}) {
       return new Response(JSON.stringify(s.doc), { status: 200, headers: etag });
     }
     if (method === "PUT" && path === "/state") {
+      // Another device writing between this one's pull and its push.
+      if (s.beforePut) {
+        const write = s.beforePut;
+        s.beforePut = null;
+        write(s);
+      }
       const want = String(headers["If-Match"] || "");
       if (want !== "*" && want.replace(/"/g, "") !== String(s.version)) return new Response("changed", { status: 412, headers: etag });
       let body = init.body;
@@ -133,10 +154,12 @@ function server({ doc = {}, version = 1, user = "me", password = "pw" } = {}) {
 // One device: the worker's scripts in a fresh context. Timers are recorded and
 // never fire, so the debounced push after an edit doesn't start rounds of its
 // own; each test runs its rounds with SYNC_NOW.
-async function boot({ local = {}, sync = {}, servers = {} } = {}) {
+async function boot({ local = {}, sync = {}, servers = {}, alarms = {} } = {}) {
   const onChanged = [];
+  const refused = new Set();
+  const gates = new Map();
   const stores = {
-    local: area("local", structuredClone(local), onChanged),
+    local: area("local", structuredClone(local), onChanged, 0, refused, gates),
     sync: area("sync", structuredClone(sync), onChanged, 8192)
   };
   const requests = [];
@@ -161,7 +184,15 @@ async function boot({ local = {}, sync = {}, servers = {} } = {}) {
       getURL: (p) => "chrome-extension://xrntube-test/" + p,
       reload() {}
     },
-    alarms: { create() {}, clear() {}, get: async () => null, onAlarm: noop },
+    alarms: {
+      created: [],
+      create(name) {
+        this.created.push(name);
+      },
+      clear() {},
+      get: async (name) => alarms[name] || null,
+      onAlarm: noop
+    },
     tabs: { query: async () => [], sendMessage: async () => {} },
     declarativeNetRequest: { getDynamicRules: async () => [], updateDynamicRules: async () => {} },
     management: { getSelf: async () => ({ installType: "normal" }) }
@@ -187,7 +218,15 @@ async function boot({ local = {}, sync = {}, servers = {} } = {}) {
   const send = (msg) => new Promise((resolve) => onMessage(msg, OPTIONS_PAGE, resolve));
   const sendFromTab = (msg) => new Promise((resolve) => onMessage(msg, YOUTUBE_TAB, resolve));
   await send({ type: "GET_SYNC_STATUS" }); // init() has read its (empty) config by now
-  return { chrome, send, sendFromTab, X: ctx.XrnTube, local: stores.local.data, sync: stores.sync.data, requests };
+  // Holds the next local write of `key` until release().
+  const hold = (key) => {
+    const g = {};
+    const arrived = new Promise((r) => (g.arrived = r));
+    const wait = new Promise((r) => (g.release = r));
+    gates.set(key, { arrived: g.arrived, wait });
+    return { arrived, release: g.release };
+  };
+  return { chrome, send, sendFromTab, X: ctx.XrnTube, local: stores.local.data, sync: stores.sync.data, requests, refused, hold };
 }
 
 // Connected and agreed with the server at version 6 on `base`; set straight
@@ -219,8 +258,7 @@ const kwIds = (k) => ((k && k.list) || []).map((x) => x.p).sort().join(",");
   });
   const d = await boot({
     servers: { [ORIGIN]: srv },
-    local: { bt_blocklist: { channels: { "@old": OLD }, videos: {} } },
-    sync: { bt_keywords: { list: [{ p: "kept" }], ts: 1000 } }
+    local: { bt_blocklist: { channels: { "@old": OLD }, videos: {} }, bt_keywords: { list: [{ p: "kept" }], ts: 1000 } }
   });
   await connect(d, { base: { kw: { items: ["kept"] }, allow: [], settings: null } });
 
@@ -230,7 +268,7 @@ const kwIds = (k) => ((k && k.list) || []).map((x) => x.p).sort().join(",");
   await d.send({ type: "BLOCK_CHANNEL", id: "@during", name: "During" });
   await d.send({ type: "UNBLOCK_CHANNEL", id: "@old" });
   // The options page writes keywords to storage itself.
-  await d.chrome.storage.sync.set({ bt_keywords: { list: [{ p: "added-meanwhile" }, { p: "kept" }], ts: 3000 } });
+  await d.chrome.storage.local.set({ bt_keywords: { list: [{ p: "added-meanwhile" }, { p: "kept" }], ts: 3000 } });
   hold.release();
   const res = await round;
 
@@ -239,9 +277,9 @@ const kwIds = (k) => ((k && k.list) || []).map((x) => x.p).sort().join(",");
   ch["@during"] && !ch["@old"] && ch["@remote"] && tombs["channel:@old"] && !tombs["channel:@during"]
     ? ok("a block and an unblock made while the list downloaded both stand after the round (with the other device's block merged in)")
     : fail("edits during the download: " + JSON.stringify({ res, channels: Object.keys(ch), tombs }));
-  kwIds(d.sync.bt_keywords) === "added-meanwhile,from-remote,kept"
+  kwIds(d.local.bt_keywords) === "added-meanwhile,from-remote,kept"
     ? ok("…and so does a keyword added meanwhile")
-    : fail("keyword added during the download: " + kwIds(d.sync.bt_keywords));
+    : fail("keyword added during the download: " + kwIds(d.local.bt_keywords));
   const pushed = srv.doc;
   res.ok && pushed.channels["@during"] && !pushed.channels["@old"] && pushed.tombstones["channel:@old"] && kwIds(pushed.keywords) === "added-meanwhile,from-remote,kept"
     ? ok("the round's push carries all three to the server")
@@ -253,64 +291,262 @@ const kwIds = (k) => ((k && k.list) || []).map((x) => x.p).sort().join(",");
     : fail("the round after: " + JSON.stringify({ again, puts: srv.puts.length - puts }));
 }
 
-// ---- 2. a list too big for synced storage ----
-// chrome.storage.sync holds 8 KB an item, and the never-block list is one
-// item: about 150 channels. The write was swallowed, and everything after it
-// carried on as if it had worked.
+// ---- 2. lists past synced storage's 8 KB an item ----
+// chrome.storage.sync holds 8 KB an item, and the keyword list and the
+// never-block list were one item each: about 150 never-block channels. A
+// bulk never-block past that was refused, and a sync round whose merge went
+// past it failed on that device every round until entries were removed by
+// hand. They live in local storage now.
 const uc = (i) => "UC" + String(i).padStart(22, "x");
 // As setAllowed() stores them: ~58 bytes each, so 150 are over 8 KB and 100 are not.
 const allowOf = (from, n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [uc(from + i), { note: "", ts: 1762790400000 }]));
 const size = (a) => Object.keys((a && a.list) || {}).length;
+const kwOf = (n) => Array.from({ length: n }, (_, i) => ({ p: "keyword number " + i, re: false }));
 
-// A bulk "Never block" of 200 rows answered ok and saved nothing.
+// A bulk "Never block" of 200 rows, and 400 keywords in a round's merge.
 {
-  const d = await boot({ sync: { bt_allowlist: { list: allowOf(0, 1), ts: 1000 } } });
+  const d = await boot({ local: { bt_allowlist: { list: allowOf(0, 1), ts: 1000 } } });
   const res = await d.send({ type: "ALLOW_CHANNEL", ids: Array.from({ length: 200 }, (_, i) => uc(1000 + i)) });
-  res.ok === false && /never-block list would be too big/.test(res.error || "") && size(d.sync.bt_allowlist) === 1
-    ? ok(`a bulk never-block of 200 channels is refused, saying why ("${res.error}"), and the list is as it was`)
-    : fail("bulk never-block over the quota: " + JSON.stringify({ res, size: size(d.sync.bt_allowlist) }));
+  res.ok && size(d.local.bt_allowlist) === 201 && !d.sync.bt_allowlist
+    ? ok("a bulk never-block of 200 channels is saved (201 in all, in local storage)")
+    : fail("bulk never-block of 200: " + JSON.stringify({ res, local: size(d.local.bt_allowlist), sync: size(d.sync.bt_allowlist) }));
+}
+// This device agreed 60 never-block entries and 100 keywords with the server;
+// another device has since added 90 and 300. The round failed on the old
+// layout, every time, and nothing reached this device.
+{
+  const mine = allowOf(0, 60);
+  const srv = server({
+    version: 7,
+    doc: { channels: {}, videos: {}, tombstones: {}, allowlist: { list: { ...mine, ...allowOf(500, 90) }, ts: 2000 }, keywords: { list: kwOf(400), ts: 2000 } }
+  });
+  const d = await boot({ servers: { [ORIGIN]: srv }, local: { bt_allowlist: { list: mine, ts: 1000 }, bt_keywords: { list: kwOf(100), ts: 1000 } } });
+  await connect(d, { base: { kw: { items: kwOf(100).map((k) => k.p) }, allow: Object.keys(mine), settings: null } });
+  srv.doc.settings = d.X.resolveSettings(null); // the same switches as here: nothing else to push
+  const first = await d.send({ type: "SYNC_NOW" });
+  const second = await d.send({ type: "SYNC_NOW" });
+  first.ok && size(d.local.bt_allowlist) === 150 && d.local.bt_keywords.list.length === 400 && second.ok && second.notModified && srv.puts.length === 0
+    ? ok("a round whose merge comes to 150 never-block channels and 400 keywords stores both here, and the next round agrees (a 304)")
+    : fail("round past 8 KB: " + JSON.stringify({ first, second, allow: size(d.local.bt_allowlist), keywords: (d.local.bt_keywords || {}).list?.length, puts: srv.puts.length }));
 }
 
+// What 2.1.10 left: both lists in synced storage. The worker's first start
+// moves them over, before anything reads them, and leaves the synced copy
+// for a browser on the same account still on the old version.
+{
+  const kw = { list: [{ p: "moved" }, { p: "m.ved", re: true }], ts: 1500, durMinSec: 60, commentLimit: 20 };
+  const al = { list: allowOf(0, 3), ts: 1500 };
+  const d = await boot({ sync: { bt_keywords: kw, bt_allowlist: al, bt_settings: { removeRelated: false } } });
+  const bl = await d.send({ type: "GET_BLOCKLIST" });
+  JSON.stringify(d.local.bt_keywords) === JSON.stringify(kw) && JSON.stringify(d.local.bt_allowlist) === JSON.stringify(al) && Object.keys(bl.allowlist).length === 3 && d.sync.bt_keywords && d.sync.bt_allowlist && d.sync.bt_settings
+    ? ok("an install with its keywords and never-block list in synced storage has both moved to local storage on the worker's first start, the synced copies left as they were")
+    : fail("migration: " + JSON.stringify({ local: { kw: d.local.bt_keywords, al: size(d.local.bt_allowlist) }, answered: Object.keys(bl.allowlist || {}).length, sync: Object.keys(d.sync) }));
+
+  // A device that already moved keeps what it has: the synced copy is stale.
+  const d2 = await boot({ local: { bt_keywords: { list: [], ts: 3000 } }, sync: { bt_keywords: kw, bt_allowlist: al } });
+  await d2.send({ type: "GET_BLOCKLIST" });
+  d2.local.bt_keywords.list.length === 0 && size(d2.local.bt_allowlist) === 3
+    ? ok("…once: a list already in local storage (here, every keyword deleted) isn't brought back from the stale synced copy")
+    : fail("migration over a local copy: " + JSON.stringify({ kw: d2.local.bt_keywords, al: size(d2.local.bt_allowlist) }));
+
+  // Synced with the server before the update: the moved lists are what it
+  // agreed, so the round after has nothing to send.
+  const srv = server({ version: 7, doc: { channels: {}, videos: {}, tombstones: {}, keywords: kw, allowlist: al } });
+  const d3 = await boot({ servers: { [ORIGIN]: srv }, sync: { bt_keywords: kw, bt_allowlist: al } });
+  await connect(d3, { base: { kw: { items: ["moved", "re:m.ved"], durMinSec: 60, commentLimit: 20 }, allow: Object.keys(al.list), settings: null } });
+  srv.doc.settings = d3.X.resolveSettings(null);
+  const res = await d3.send({ type: "SYNC_NOW" });
+  res.ok && srv.puts.length === 0 && kwIds(d3.local.bt_keywords) === "m.ved,moved"
+    ? ok("…and a device that synced before the move pushes nothing after it: its lists read as unchanged, not as deleted")
+    : fail("sync after the migration: " + JSON.stringify({ res, puts: srv.puts.map((p) => ({ kw: kwIds(p.keywords), al: size(p.allowlist) })) }));
+}
+
+// A write the browser refuses (out of space) is still reported, never
+// swallowed: a bulk never-block answered "added" and kept nothing.
+{
+  const d = await boot({ local: { bt_allowlist: { list: allowOf(0, 1), ts: 1000 } } });
+  d.refused.add("bt_allowlist");
+  const res = await d.send({ type: "ALLOW_CHANNEL", ids: [uc(1000), uc(1001)] });
+  res.ok === false && /didn't save/.test(res.error || "") && size(d.local.bt_allowlist) === 1
+    ? ok(`a refused never-block write answers so ("${res.error}"), and the list is as it was`)
+    : fail("refused never-block: " + JSON.stringify({ res, size: size(d.local.bt_allowlist) }));
+}
 // This device agreed 60 never-block entries with the server; another device
-// has since added 90. The two together don't fit here. The round stored
-// nothing but pushed the merge and kept it as the base, and the next one read
-// the 90 as deleted on this device and deleted them everywhere.
+// has since added 90, and this device can't store the merge. Pushing it, or
+// keeping it as the base, would have the next round read the 90 as deleted
+// on this device and delete them everywhere.
 {
   const mine = allowOf(0, 60);
   const srv = server({ version: 7, doc: { channels: {}, videos: {}, tombstones: {}, allowlist: { list: { ...mine, ...allowOf(500, 90) }, ts: 2000 } } });
-  const d = await boot({ servers: { [ORIGIN]: srv }, sync: { bt_allowlist: { list: mine, ts: 1000 } } });
+  const d = await boot({ servers: { [ORIGIN]: srv }, local: { bt_allowlist: { list: mine, ts: 1000 } } });
   await connect(d, { base: { kw: { items: [] }, allow: Object.keys(mine), settings: null } });
+  d.refused.add("bt_allowlist");
   const first = await d.send({ type: "SYNC_NOW" });
   const second = await d.send({ type: "SYNC_NOW" });
-  !first.ok && /never-block list won't fit/.test(first.error || "") && /Nothing was changed or sent/.test(first.error)
-    ? ok(`a round whose merge won't fit in synced storage fails, saying so: "${first.error}"`)
-    : fail("round over the quota: " + JSON.stringify(first));
-  !second.ok && srv.puts.length === 0 && size(srv.doc.allowlist) === 150 && d.local.bt_sync_base.allow.length === 60 && size(d.sync.bt_allowlist) === 60
+  !first.ok && /couldn't save what it merged/.test(first.error || "") && /Nothing was sent/.test(first.error)
+    ? ok(`a round whose merge this device can't store fails, saying so: "${first.error}"`)
+    : fail("round with a refused write: " + JSON.stringify(first));
+  !second.ok && srv.puts.length === 0 && size(srv.doc.allowlist) === 150 && d.local.bt_sync_base.allow.length === 60 && size(d.local.bt_allowlist) === 60
     ? ok("…pushes nothing and keeps its old base, so the round after it doesn't delete the other device's 90 entries from the server")
-    : fail("after two rounds over the quota: " + JSON.stringify({ second, puts: srv.puts.map((p) => size(p.allowlist)), server: size(srv.doc.allowlist), base: (d.local.bt_sync_base || {}).allow?.length }));
+    : fail("after two refused rounds: " + JSON.stringify({ second, puts: srv.puts.map((p) => size(p.allowlist)), server: size(srv.doc.allowlist), base: (d.local.bt_sync_base || {}).allow?.length }));
 }
 
-// A backup's never-block list that won't fit doesn't stop its channels.
+// An import the browser won't store changes nothing, all or nothing: it used
+// to bring the channels in and then stop at a list that wouldn't save, with
+// the file's switches never applied and nothing said.
 {
-  const d = await boot({ sync: { bt_allowlist: { list: allowOf(0, 100), ts: 1000 } } });
-  const res = await d.send({ type: "IMPORT_BLOCKLIST", channels: { "@imported": { name: "Imported" } }, videos: {}, allowlist: allowOf(300, 100) });
-  res.ok && res.added.channels === 1 && res.allowAdded === 0 && /never-block list would be too big/.test(res.allowError || "") && size(d.sync.bt_allowlist) === 100
-    ? ok("an import whose never-block list won't fit brings the channels in and says the never-block list wasn't added")
-    : fail("import over the quota: " + JSON.stringify({ res, size: size(d.sync.bt_allowlist) }));
+  const d = await boot({ local: { bt_allowlist: { list: allowOf(0, 100), ts: 1000 }, bt_keywords: { list: [{ p: "mine" }], ts: 1000 } }, sync: { bt_settings: { removeRelated: false } } });
+  d.refused.add("bt_allowlist");
+  const res = await d.send({
+    type: "IMPORT_BLOCKLIST",
+    channels: { "@imported": { name: "Imported" } },
+    videos: {},
+    allowlist: allowOf(300, 100),
+    keywords: { list: [{ p: "theirs" }], durMinSec: 90 },
+    settings: { removeRelated: true, removeShorts: false }
+  });
+  const ch = (d.local.bt_blocklist || { channels: {} }).channels;
+  res.ok === false && /didn't save/.test(res.error || "") && !ch["@imported"] && size(d.local.bt_allowlist) === 100 &&
+  kwIds(d.local.bt_keywords) === "mine" && !d.local.bt_keywords.durMinSec && JSON.stringify(d.sync.bt_settings) === '{"removeRelated":false}'
+    ? ok(`an import the browser won't store says so ("${res.error}") and changes nothing: no channel, keyword, never-block entry or switch`)
+    : fail("refused import: " + JSON.stringify({ res, channels: Object.keys(ch), allow: size(d.local.bt_allowlist), kw: d.local.bt_keywords, settings: d.sync.bt_settings }));
+
+  d.refused.delete("bt_allowlist");
+  const res2 = await d.send({
+    type: "IMPORT_BLOCKLIST",
+    channels: { "@imported": { name: "Imported" } },
+    videos: {},
+    allowlist: allowOf(300, 100),
+    keywords: { list: [{ p: "theirs" }, { p: "mine" }], durMinSec: 90 },
+    settings: { removeRelated: true }
+  });
+  const ch2 = d.local.bt_blocklist.channels;
+  res2.ok && res2.keywordsAdded === 1 && res2.allowAdded === 100 && ch2["@imported"] && size(d.local.bt_allowlist) === 200 &&
+  kwIds(d.local.bt_keywords) === "mine,theirs" && d.local.bt_keywords.durMinSec === 90 && d.sync.bt_settings.removeRelated === true
+    ? ok("…and once it does, the same import brings in all of it: the channel, the new keyword and its length rule, 100 never-block entries, the switches")
+    : fail("import after the refusal: " + JSON.stringify({ res2, kw: d.local.bt_keywords, allow: size(d.local.bt_allowlist), settings: d.sync.bt_settings }));
 }
 
-// Restoring a cleared never-block list onto one that has grown since.
+// Deleting the keywords while the browser refuses the write: the clear was
+// dropped silently, and the undo record and the count still claimed it.
 {
-  const d = await boot({ sync: { bt_allowlist: { list: allowOf(0, 100), ts: 1000 } } });
+  const d = await boot({ local: { bt_keywords: { list: [{ p: "a" }, { p: "b" }], ts: 1000 } } });
+  d.refused.add("bt_keywords");
+  const res = await d.send({ type: "DELETE_DATA", keywords: true });
+  const log = (await d.send({ type: "GET_RECENT_UNBLOCKS" })).log;
+  res.ok === false && kwIds(d.local.bt_keywords) === "a,b" && !log.length
+    ? ok("deleting the keywords while the browser refuses the write says so, keeps them, and leaves no undo record claiming they went")
+    : fail("refused keyword delete: " + JSON.stringify({ res, kw: d.local.bt_keywords, log }));
+}
+
+// Restoring a cleared never-block list while the browser refuses the write.
+{
+  const d = await boot({ local: { bt_allowlist: { list: allowOf(0, 100), ts: 1000 } } });
   const cleared = await d.send({ type: "DELETE_DATA", allowlist: true });
   await d.send({ type: "ALLOW_CHANNEL", ids: Object.keys(allowOf(700, 60)) });
+  d.refused.add("bt_allowlist");
   const res = await d.send({ type: "RESTORE_UNBLOCK", ts: cleared.undoTs });
   const kept = (await d.send({ type: "GET_RECENT_UNBLOCKS" })).log.some((r) => r.ts === cleared.undoTs);
-  await d.send({ type: "DISALLOW_CHANNEL", ids: Object.keys(allowOf(700, 60)) });
+  d.refused.delete("bt_allowlist");
   const retry = await d.send({ type: "RESTORE_UNBLOCK", ts: cleared.undoTs });
-  res.ok === false && /never-block list would be too big/.test(res.error || "") && kept && retry.ok && size(d.sync.bt_allowlist) === 100
-    ? ok("a restore that won't fit says so and keeps its undo record, which restores once there's room")
-    : fail("restore over the quota: " + JSON.stringify({ res, kept, retry, size: size(d.sync.bt_allowlist) }));
+  res.ok === false && /didn't save/.test(res.error || "") && kept && retry.ok && size(d.local.bt_allowlist) === 160
+    ? ok("a restore that isn't saved says so and keeps its undo record, which restores once the browser takes the write")
+    : fail("restore with a refused write: " + JSON.stringify({ res, kept, retry, size: size(d.local.bt_allowlist) }));
+}
+
+// ---- 2b. a push refused after the merge was stored here ----
+// This device pulled the other device's keyword "theirs" and stored it, but
+// its push (it had a keyword of its own) got a 412: the other device had
+// written again, deleting "theirs". The rerun still held the old base, which
+// lacks "theirs", so "theirs" read as added here and was pushed back.
+{
+  const srv = server({ version: 7, doc: { channels: {}, videos: {}, tombstones: {}, keywords: { list: [{ p: "kept" }, { p: "theirs" }], ts: 2000 }, allowlist: { list: { [uc(1)]: { note: "", ts: 2000 } }, ts: 2000 } } });
+  const d = await boot({ servers: { [ORIGIN]: srv }, local: { bt_keywords: { list: [{ p: "mine" }, { p: "kept" }], ts: 1000 } } });
+  await connect(d, { base: { kw: { items: ["kept"] }, allow: [], settings: null } });
+  srv.doc.settings = d.X.resolveSettings(null);
+  srv.beforePut = (s) => {
+    s.doc = { ...s.doc, keywords: { list: [{ p: "kept" }], ts: 3000 }, allowlist: { list: {}, ts: 3000 } };
+    s.version++;
+  };
+  await d.send({ type: "SYNC_NOW" });
+  for (let i = 0; i < 50 && !srv.puts.length; i++) await new Promise((r) => setTimeout(r, 20));
+  kwIds(srv.doc.keywords) === "kept,mine" && size(srv.doc.allowlist) === 0 && kwIds(d.local.bt_keywords) === "kept,mine" && size(d.local.bt_allowlist) === 0
+    ? ok("a keyword and a never-block entry pulled, then deleted by the other device before this one's push landed, stay deleted on the rerun; this device's own keyword still goes out")
+    : fail("rerun after a 412: " + JSON.stringify({ server: kwIds(srv.doc.keywords), serverAllow: size(srv.doc.allowlist), here: kwIds(d.local.bt_keywords), allowHere: size(d.local.bt_allowlist), puts: srv.puts.length }));
+}
+
+const kwRecords = (list) => ({ channels: {}, videos: {}, tombstones: {}, keywords: { list: list.map((p) => ({ p })), ts: 2000 }, allowlist: { list: {}, ts: 0 } });
+
+// ---- 2c. the record a running round works on ----
+// The options page asks for the sync status while the round is between its
+// push and its end. That read the stored record back over the one the round
+// was using, the version just pushed was lost, and the next poll downloaded
+// the whole list instead of getting a 304.
+{
+  const srv = server({ version: 7, doc: kwRecords(["a"]) });
+  const d = await boot({ servers: { [ORIGIN]: srv }, local: { bt_keywords: { list: [{ p: "a" }, { p: "new" }], ts: 1000 } } });
+  await connect(d, { base: { kw: { items: ["a"] }, allow: [], settings: null } });
+  srv.doc.settings = d.X.resolveSettings(null);
+  const gate = d.hold("bt_sync_base");
+  const round = d.send({ type: "SYNC_NOW" });
+  await gate.arrived; // the pulled copy saved as the base, before the push
+  gate.release();
+  const gate2 = d.hold("bt_sync_base");
+  await gate2.arrived; // the merge saved as the base, after the push
+  await d.send({ type: "GET_SYNC_STATUS" });
+  gate2.release();
+  await round;
+  const pushedAs = d.local.bt_sync.lastVersion;
+  const before = d.requests.length;
+  const next = await d.send({ type: "SYNC_NOW" });
+  srv.puts.length === 1 && pushedAs === `"${srv.version}"` && next.notModified && d.requests.length === before + 1
+    ? ok("the status asked for between a push and the end of its round doesn't undo the version it pushed: the next round is a 304")
+    : fail("status during a round: " + JSON.stringify({ puts: srv.puts.length, pushedAs, server: srv.version, next }));
+}
+// Connecting to another server while a round against the old one is under
+// way: the round went on with the new address and pushed the old server's
+// merge there, If-Match the old server's version.
+{
+  const old = server({ version: 7, doc: kwRecords(["from-old"]) });
+  const other = server({ version: 7, doc: kwRecords(["from-other"]) });
+  const d = await boot({ servers: { [ORIGIN]: old, "https://other.example": other }, local: { bt_keywords: { list: [{ p: "mine" }], ts: 1000 } } });
+  await connect(d, { base: { kw: { items: [] }, allow: [], settings: null } });
+  const hold = old.pause();
+  const round = d.send({ type: "SYNC_NOW" });
+  await hold.arrived;
+  const switched = d.send({ type: "SET_SYNC_CONFIG", conn: { url: "https://other.example/xrntube", user: "me", password: "pw" } });
+  await new Promise((r) => setTimeout(r, 20));
+  hold.release();
+  await round;
+  const res = await switched;
+  for (let i = 0; i < 50 && !other.puts.length; i++) await new Promise((r) => setTimeout(r, 20));
+  const toOther = other.puts.map((p) => kwIds(p.keywords));
+  res.ok && kwIds(old.doc.keywords) === "from-old,mine" && toOther.length === 1 && toOther[0] === "from-old,from-other,mine" && !d.local.bt_sync.lastError
+    ? ok("connecting elsewhere waits for the round under way: the old server gets its merge, the new one a first sync of its own")
+    : fail("connect during a round: " + JSON.stringify({ res, old: kwIds(old.doc.keywords), toOther, error: d.local.bt_sync.lastError }));
+}
+
+// ---- 2d. a worker waking ----
+// The worker sleeps after ~30 s idle and wakes for any message, so every page
+// load woke it. Each wake ran a sync round (fingerprinting the whole list and
+// asking the server) however recently the last one ran, and created the poll
+// alarm again, which restarts its 3-minute period.
+{
+  const at = Date.now();
+  const srv = server({ version: 6, doc: kwRecords(["a"]) });
+  const cfg = { url: URL_, user: "me", password: "pw", lastVersion: '"6"', agreedFp: "older" };
+  const fresh = await boot({ servers: { [ORIGIN]: srv }, local: { bt_sync: { ...cfg, lastPulledAt: at - 20e3 } } });
+  await new Promise((r) => setTimeout(r, 50));
+  const stale = await boot({ servers: { [ORIGIN]: srv }, local: { bt_sync: { ...cfg, lastPulledAt: at - 5 * 60e3 } } });
+  await new Promise((r) => setTimeout(r, 50));
+  !fresh.requests.length && stale.requests.length >= 1
+    ? ok("a worker woken 20 s after its last pull asks the server nothing; one woken 5 minutes after syncs")
+    : fail("wake rounds: " + JSON.stringify({ fresh: fresh.requests.length, stale: stale.requests.length }));
+  const kept = await boot({ alarms: { "bt-sync-poll": { name: "bt-sync-poll", periodInMinutes: 3 } } });
+  const made = await boot();
+  !kept.chrome.alarms.created.includes("bt-sync-poll") && made.chrome.alarms.created.includes("bt-sync-poll")
+    ? ok("…and the poll alarm is created only when there isn't one, so a wake doesn't restart its period")
+    : fail("poll alarm: " + JSON.stringify({ kept: kept.chrome.alarms.created, made: made.chrome.alarms.created }));
 }
 
 // ---- 3. reconnecting ----
@@ -318,27 +554,26 @@ const size = (a) => Object.keys((a && a.list) || {}).length;
 // b. Then the password changes: rounds get 401 until it's typed again.
 // configure() dropped the base on every connect, so the round after the new
 // password was a first sync — a union — and b came back, on every device.
-const kwRecords = (list) => ({ channels: {}, videos: {}, tombstones: {}, keywords: { list: list.map((p) => ({ p })), ts: 2000 }, allowlist: { list: {}, ts: 0 } });
 const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null } };
 {
   const srv = server({ version: 7, password: "new-pw", doc: kwRecords(["a"]) });
-  const d = await boot({ servers: { [ORIGIN]: srv }, sync: { bt_keywords: { list: [{ p: "a" }, { p: "b" }], ts: 1000 } } });
+  const d = await boot({ servers: { [ORIGIN]: srv }, local: { bt_keywords: { list: [{ p: "a" }, { p: "b" }], ts: 1000 } } });
   await connect(d, agreedAB);
   const refused = await d.send({ type: "SYNC_NOW" });
   const res = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_ + "/", user: "me", password: "new-pw" } });
-  refused.status === 401 && res.ok && kwIds(d.sync.bt_keywords) === "a" && kwIds(srv.doc.keywords) === "a"
+  refused.status === 401 && res.ok && kwIds(d.local.bt_keywords) === "a" && kwIds(srv.doc.keywords) === "a"
     ? ok("a new password for the same server and user keeps the base: a keyword deleted on another device stays deleted, here and on the server")
-    : fail("reconnect to the same server: " + JSON.stringify({ refused, res, here: kwIds(d.sync.bt_keywords), server: kwIds(srv.doc.keywords) }));
+    : fail("reconnect to the same server: " + JSON.stringify({ refused, res, here: kwIds(d.local.bt_keywords), server: kwIds(srv.doc.keywords) }));
 }
 // The base belongs to the copy it was agreed with: another server, or the
 // same one reset (its version went backwards), merges as a first sync.
 {
   const other = server({ version: 3, doc: kwRecords(["a"]) });
-  const d = await boot({ servers: { "https://other.example": other }, sync: { bt_keywords: { list: [{ p: "a" }, { p: "b" }], ts: 1000 } } });
+  const d = await boot({ servers: { "https://other.example": other }, local: { bt_keywords: { list: [{ p: "a" }, { p: "b" }], ts: 1000 } } });
   await connect(d, agreedAB);
   const res = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: "https://other.example/xrntube", user: "me", password: "pw" } });
   const reset = server({ version: 2, doc: kwRecords(["a"]) });
-  const d2 = await boot({ servers: { [ORIGIN]: reset }, sync: { bt_keywords: { list: [{ p: "a" }, { p: "b" }], ts: 1000 } } });
+  const d2 = await boot({ servers: { [ORIGIN]: reset }, local: { bt_keywords: { list: [{ p: "a" }, { p: "b" }], ts: 1000 } } });
   await connect(d2, agreedAB);
   const res2 = await d2.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_, user: "me", password: "pw" } });
   res.ok && kwIds(other.doc.keywords) === "a,b" && res2.ok && kwIds(reset.doc.keywords) === "a,b"
@@ -355,7 +590,7 @@ const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null 
   const local = { 5233: server({ doc: kwRecords(["a"]) }) };
   const d = await boot({
     servers: { [ORIGIN]: srv, "http://127.0.0.1:5233": local[5233], "http://localhost:5233": local[5233] },
-    sync: { bt_keywords: { list: [{ p: "a" }], ts: 1000 } }
+    local: { bt_keywords: { list: [{ p: "a" }], ts: 1000 } }
   });
   await connect(d, agreedAB);
   const elsewhere = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: "https://elsewhere.example/xrntube", user: "me" } });
@@ -518,6 +753,97 @@ const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null 
   blocked.ok && d.local.bt_blocklist.channels["@fromtile"] && deleted.ok && !d.local.bt_blocklist.channels["@kept"]
     ? ok("…while a tile's block still works from the tab, and the options page still deletes")
     : fail("allowed messages: " + JSON.stringify({ blocked, deleted, channels: Object.keys(d.local.bt_blocklist.channels) }));
+
+  // The ids a tab sends were taken as they came: a content-script bug (or a
+  // renderer taken over) stored "undefined" or anything else as a channel,
+  // synced it to every device, and the identity lookup fetched
+  // youtube.com/channel/<it>.
+  const listBefore = JSON.stringify(d.local.bt_blocklist);
+  const odd = [];
+  for (const m of [
+    { type: "BLOCK_CHANNEL", name: "No id" },
+    { type: "BLOCK_CHANNEL", id: "../../feed", name: "A path" },
+    { type: "BLOCK_CHANNEL", id: { toString: null }, name: "An object" },
+    { type: "BLOCK_VIDEO", id: "not-a-video-id", title: "Too long" },
+    { type: "UNBLOCK_CHANNEL", id: "@fromtile/../x" },
+    { type: "UNBLOCK_VIDEO", id: 42 }
+  ]) {
+    const res = await d.sendFromTab(m);
+    if (res && res.ok === false) odd.push(m.type);
+  }
+  const fetched = d.requests.filter((r) => r.url.includes("youtube.com/channel/")).map((r) => r.url);
+  const unchanged = listBefore === JSON.stringify(d.local.bt_blocklist);
+  const good = await Promise.all([
+    d.sendFromTab({ type: "BLOCK_CHANNEL", id: "UC" + "a".repeat(22), name: "By UC id" }),
+    d.sendFromTab({ type: "BLOCK_VIDEO", id: "abcdefghijk", title: "A video" }),
+    d.sendFromTab({ type: "BLOCK_CHANNEL", id: "@caf%C3%A9", name: "Café" })
+  ]);
+  odd.length === 6 && unchanged && !fetched.some((u) => /undefined|feed|object/.test(u)) && good.every((r) => r.ok) &&
+  d.local.bt_blocklist.channels["UC" + "a".repeat(22)] && d.local.bt_blocklist.videos.abcdefghijk && d.local.bt_blocklist.channels["@caf%C3%A9"]
+    ? ok("from a tab, a block or an unblock naming no channel or video id of a tile's shape is refused and stores nothing; a UC id, an @handle and an 11-character video id still go through")
+    : fail("ids from a tab: " + JSON.stringify({ odd, unchanged, fetched, good, channels: Object.keys(d.local.bt_blocklist.channels) }));
+}
+
+// ---- 7b. two numbers, one answer ----
+// The popup asked for the whole list (about 1 MB at 5,000 channels) after every
+// click, for its two counters; each /embed/ player on a page asked for it too,
+// to work out whether its one video was blocked.
+{
+  const oembed = { "@embedchan": 0 };
+  const youtube = {
+    handle: async (u) => {
+      const v = new URL(u.searchParams.get("url") || "https://x/").searchParams.get("v");
+      const author = { vidofchann1: "@EmbedChan", vidallowed1: "@allowedchan", vidwhitelis: "@softchan", vidnobody01: "@nobody" }[v];
+      if (author === "@EmbedChan") oembed["@embedchan"]++;
+      return author ? new Response(JSON.stringify({ author_url: "https://www.youtube.com/" + author }), { status: 200 }) : new Response("", { status: 404 });
+    }
+  };
+  const d = await boot({
+    servers: { "https://www.youtube.com": youtube },
+    local: {
+      bt_blocklist: {
+        channels: {
+          "@embedchan": entry("Embed Chan", 1000),
+          "@allowedchan": entry("Allowed", 1000),
+          "@softchan": { ...entry("Soft", 1000), mode: "exceptWhitelist", whitelist: { vidwhitelis: true } }
+        },
+        videos: { blockedvid1: { title: "x", ts: 1000, updated_at: 1000 } }
+      },
+      bt_allowlist: { list: { "@allowedchan": { note: "", ts: 1000 } }, ts: 1000 }
+    }
+  });
+  const within = (p) => Promise.race([p, new Promise((r) => setTimeout(() => r("no answer"), 500))]);
+  const counts = await within(d.send({ type: "GET_COUNTS" }));
+  const ask = (videoId) => within(d.sendFromTab({ type: "EMBED_BLOCKED", videoId }));
+  const answers = {};
+  for (const v of ["blockedvid1", "vidofchann1", "vidallowed1", "vidwhitelis", "vidnobody01", "vidofchann1"]) answers[v] = (await ask(v)).blocked;
+  const odd = await ask("not a video id");
+  const embedReply = await ask("blockedvid1");
+  counts.ok && counts.channels === 3 && counts.videos === 1 && Object.keys(embedReply).sort().join() === "blocked,ok"
+    ? ok("the popup's counters come as two numbers (3 channels, 1 video), and an embed's answer is one yes or no, not the list")
+    : fail("counts: " + JSON.stringify({ counts, embedReply }));
+  JSON.stringify(answers) === JSON.stringify({ blockedvid1: true, vidofchann1: true, vidallowed1: false, vidwhitelis: false, vidnobody01: false }) && oembed["@embedchan"] === 1 && odd.ok === false
+    ? ok("an embed asks one question: its video blocked, or its channel (by either identity, looked up once), unless never-blocked or a video-only channel's exception")
+    : fail("embed answers: " + JSON.stringify({ answers, lookups: oembed, odd }));
+}
+
+// ---- 7c. the undo log, written one at a time ----
+// Two unblocks landing together (the popup and the options page, or two
+// tabs) each read the log, put their record in front and wrote it back, so
+// one record was lost; a restore wrote back the log as it read it before its
+// own write, dropping a record pushed meanwhile.
+{
+  const d = await boot({
+    local: { bt_blocklist: { channels: { "@one": entry("One", 1000), "@two": entry("Two", 1000), "@three": entry("Three", 1000), "@four": entry("Four", 1000) }, videos: {} } }
+  });
+  await Promise.all([d.send({ type: "UNBLOCK_CHANNEL", id: "@one" }), d.sendFromTab({ type: "UNBLOCK_CHANNEL", id: "@two" })]);
+  const both = (await d.send({ type: "GET_RECENT_UNBLOCKS" })).log.map((r) => r.id).sort().join();
+  const first = (await d.send({ type: "GET_RECENT_UNBLOCKS" })).log.find((r) => r.id === "@one");
+  await Promise.all([d.send({ type: "RESTORE_UNBLOCK", ts: first.ts }), d.sendFromTab({ type: "UNBLOCK_CHANNEL", id: "@three" })]);
+  const after = (await d.send({ type: "GET_RECENT_UNBLOCKS" })).log.map((r) => r.id).sort().join();
+  both === "@one,@two" && after === "@three,@two" && d.local.bt_blocklist.channels["@one"]
+    ? ok("two unblocks at once both keep their undo record, and a restore landing beside a third unblock keeps that one's")
+    : fail("undo log: " + JSON.stringify({ both, after }));
 }
 
 // ---- 8. a lookup is not an edit ----

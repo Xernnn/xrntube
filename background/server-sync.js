@@ -76,8 +76,14 @@
   let pushTimer = null;
   let running = false; // exactly one cycle at a time
   let rerunQueued = false; // a trigger arrived mid-cycle → run once more after
+  let cycleDone = Promise.resolve(); // settles when the running cycle ends
 
+  // A running cycle owns cfg, so it isn't read back from storage under it: the
+  // options page asking for the status between a push and the end of the
+  // round replaced the version just pushed with the stored one, and the next
+  // poll downloaded the whole list instead of getting a 304.
   async function loadCfg() {
+    if (running && cfg) return cfg;
     const res = await chrome.storage.local.get(STORAGE.SYNC_KEY);
     cfg = Object.assign(
       {
@@ -260,8 +266,14 @@
     return stableStringify((al && al.list) || {});
   }
 
+  // The keywords and the never-block list are in chrome.storage.local, the
+  // settings in chrome.storage.sync (see KEYWORDS_KEY in shared/constants.js).
   async function readLocalRecords() {
-    const r = await chrome.storage.sync.get([KEYWORDS_KEY, ALLOWLIST_KEY, SETTINGS_KEY]);
+    const [lists, synced] = await Promise.all([
+      chrome.storage.local.get([KEYWORDS_KEY, ALLOWLIST_KEY]),
+      chrome.storage.sync.get(SETTINGS_KEY)
+    ]);
+    const r = { ...lists, ...synced };
     return {
       keywords: readKeywords(r[KEYWORDS_KEY]),
       allowlist: readAllowlist(r[ALLOWLIST_KEY]),
@@ -297,11 +309,31 @@
     const res = await chrome.storage.local.get(STORAGE.SYNC_BASE_KEY);
     return res[STORAGE.SYNC_BASE_KEY] || null;
   }
+  const kwBase = (keywords) => {
+    const kw = { items: keywords.list.map(kwId) };
+    for (const f of KW_FIELDS) if (keywords[f] !== undefined) kw[f] = keywords[f];
+    return kw;
+  };
   async function saveBase(merged) {
-    const kw = { items: merged.keywords.list.map(kwId) };
-    for (const f of KW_FIELDS) if (merged.keywords[f] !== undefined) kw[f] = merged.keywords[f];
     await chrome.storage.local.set({
-      [STORAGE.SYNC_BASE_KEY]: { kw, allow: Object.keys(merged.allowlist.list), settings: merged.settings }
+      [STORAGE.SYNC_BASE_KEY]: { kw: kwBase(merged.keywords), allow: Object.keys(merged.allowlist.list), settings: merged.settings }
+    });
+  }
+  // What this device and the server agree on once the merge is stored here
+  // and before it is pushed: the server's copy as pulled. A push that then
+  // fails (a 412: another device wrote meanwhile) leaves this as the base, so
+  // the rerun tells "deleted over there since" from "added here". With the
+  // older base kept, an item pulled and stored here, then deleted by the other
+  // device before this push landed, read as added here and was pushed back. A
+  // record the server's copy doesn't carry keeps the older base's part.
+  async function savePulledBase(remote, base) {
+    const b = base || {};
+    await chrome.storage.local.set({
+      [STORAGE.SYNC_BASE_KEY]: {
+        kw: remote.keywords ? kwBase(readKeywords(remote.keywords)) : b.kw,
+        allow: remote.allowlist ? Object.keys(readAllowlist(remote.allowlist).list) : b.allow,
+        settings: remote.settings ? readSettings(remote.settings) : b.settings
+      }
     });
   }
 
@@ -486,6 +518,8 @@
       return { ok: true, deferred: true };
     }
     running = true;
+    let done;
+    cycleDone = new Promise((resolve) => (done = resolve));
     try {
       const local = await host.read(); // { channels, videos, tombstones: { "kind:id": ts } }
       const rec = await readLocalRecords();
@@ -534,21 +568,26 @@
       const writes = {};
       if (kwFingerprint(merged.keywords) !== kwFingerprint(fresh.keywords)) writes[KEYWORDS_KEY] = merged.keywords;
       if (allowFingerprint(merged.allowlist) !== allowFingerprint(fresh.allowlist)) writes[ALLOWLIST_KEY] = merged.allowlist;
-      if (stableStringify(merged.settings) !== stableStringify(fresh.settings)) writes[SETTINGS_KEY] = merged.settings;
+      const settingsChanged = stableStringify(merged.settings) !== stableStringify(fresh.settings);
+      if (settingsChanged) writes[SETTINGS_KEY] = merged.settings;
       if (Object.keys(writes).length) {
         try {
-          await chrome.storage.sync.set(writes);
+          // The settings first: synced storage is the one with limits, and
+          // a refusal there then leaves nothing half written.
+          if (settingsChanged) await chrome.storage.sync.set({ [SETTINGS_KEY]: merged.settings });
+          const lists = { ...writes };
+          delete lists[SETTINGS_KEY];
+          if (Object.keys(lists).length) await chrome.storage.local.set(lists);
         } catch (err) {
           // Pushing this merge, or keeping it as the base, would say this
           // device holds what it couldn't save, and the next round would read
           // every item missing here as deleted here — and delete it on every
           // device. So the round ends before anything is changed or sent.
-          const over = oversizeSyncItems(writes);
+          const over = settingsChanged ? oversizeSyncItems({ [SETTINGS_KEY]: merged.settings }) : [];
           throw new Error(
             over.length
-              ? `merged with the server's, the ${over.join(" and the ")} won't fit in this browser's synced storage ` +
-                  "(8 KB an item: about 150 never-block channels). Nothing was changed or sent; remove some entries and sync again"
-              : `this device couldn't save what it merged (${String((err && err.message) || err)}). Nothing was changed or sent, and the next sync tries again`
+              ? "merged with the server's, the settings won't fit in this browser's synced storage (8 KB an item). Nothing was sent"
+              : `this device couldn't save what it merged (${String((err && err.message) || err)}). Nothing was sent, and the next sync tries again`
           );
         }
       }
@@ -564,6 +603,7 @@
 
       let pushed = false;
       if (!sameBlocklist(remote, merged)) {
+        await savePulledBase(remote, base);
         await pushRemote(merged, version);
         pushed = true;
       } else {
@@ -593,6 +633,7 @@
       return { ok: false, reason: "error", error: cfg.lastError, status: err && err.status };
     } finally {
       running = false;
+      done();
       if (rerunQueued) {
         rerunQueued = false;
         cycle();
@@ -602,13 +643,18 @@
 
   // ---- public API (consumed by background.js) --------------------------
   self.XrnTube.serverSync = {
-    // Called once, at background.js top level (every worker wake).
+    // Called once, at background.js top level (every worker wake). The
+    // worker wakes for any message, so on every page load; a round there
+    // fingerprinted the whole list and asked the server each time. Like a
+    // poll, it runs only when the last pull isn't fresh: a change made here
+    // pushes on its own (onLocalChange), and the poll alarm is the backstop
+    // for one whose debounce the sleeping worker lost.
     async init(hostImpl) {
       host = hostImpl;
       ready = loadCfg();
       await ready;
       host.setClockOffset(cfg.clockOffset || 0);
-      if (enabled()) cycle();
+      if (enabled() && host.now() - (cfg.lastPulledAt || 0) >= SYNC.POLL_FRESH_MS) cycle();
     },
 
     // From broadcastUpdate() after any local write — schedule a debounced push.
@@ -631,6 +677,10 @@
     // options page: connect with { url, user, password }, or pass null to
     // disconnect this device.
     async configure(conn) {
+      // A round under way against the old connection finishes first: changed
+      // under it, it pushed the old server's merge to the new address with the
+      // old version as If-Match, and a disconnect left it an error to record.
+      while (running) await cycleDone;
       await loadCfg();
       const url = conn && conn.url ? String(conn.url).trim().replace(/\/+$/, "") : null;
       const user = url ? String(conn.user || "").trim() : null;

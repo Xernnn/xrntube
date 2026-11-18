@@ -43,8 +43,8 @@ function area(data) {
 // One device that agreed with the server on two keywords and one never-block
 // entry at version 6, and a server now at version 7 answering with `reply()`.
 async function device(reply) {
-  const local = area({});
-  const sync = area({ bt_keywords: structuredClone(KEYWORDS), bt_allowlist: structuredClone(ALLOWLIST) });
+  const local = area({ bt_keywords: structuredClone(KEYWORDS), bt_allowlist: structuredClone(ALLOWLIST) });
+  const sync = area({});
   const requests = [];
   const fetch = async (url, init = {}) => {
     const method = init.method || "GET";
@@ -72,7 +72,7 @@ async function device(reply) {
 }
 
 const kept = (d) =>
-  d.sync.bt_keywords && d.sync.bt_keywords.list.length === 2 && d.sync.bt_allowlist && "UCkeep" in d.sync.bt_allowlist.list;
+  d.local.bt_keywords && d.local.bt_keywords.list.length === 2 && d.local.bt_allowlist && "UCkeep" in d.local.bt_allowlist.list;
 
 {
   const enc = new TextEncoder().encode(WHOLE.slice(0, 40));

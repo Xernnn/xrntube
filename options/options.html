@@ -43,10 +43,6 @@
             <span class="nav-count" id="nav-data"></span>
           </button>
         </nav>
-        <div class="sidenav-foot">
-          <div><kbd>/</kbd> search · <kbd>Esc</kbd> close</div>
-          <div>Font: MiSans by Xiaomi</div>
-        </div>
       </aside>
 
       <!-- ============ MAIN ============ -->
@@ -64,19 +60,19 @@
             <!-- At-a-glance numbers. The channel/video tiles double as
                  shortcuts into the matching filter. -->
             <div class="stat-grid">
-              <button class="stat" type="button" data-show="all" title="Show every channel and video">
+              <button class="stat" type="button" data-show="all">
                 <span class="stat-num" id="stat-channels">0</span>
                 <span class="stat-label">channels</span>
               </button>
-              <button class="stat" type="button" data-show="videos" title="Show blocked videos">
+              <button class="stat" type="button" data-show="videos">
                 <span class="stat-num" id="stat-videos">0</span>
                 <span class="stat-label">videos</span>
               </button>
-              <div class="stat" title="Channels whose subscriber count is known">
+              <div class="stat">
                 <span class="stat-num" id="stat-subs">0</span>
                 <span class="stat-label">sub counts known</span>
               </div>
-              <div class="stat" title="Total subscribers across blocked channels">
+              <div class="stat">
                 <span class="stat-num" id="stat-reach">—</span>
                 <span class="stat-label">combined subscribers</span>
               </div>
@@ -85,9 +81,9 @@
             <!-- Block without leaving the page. Takes one or many things at
                  once, separated by spaces, commas or new lines. -->
             <form id="quick-add" class="quick-add" autocomplete="off">
-              <input id="quick-add-input" type="text" spellcheck="false"
-                placeholder="Block something — paste a channel (@handle, UC… or link) or a video link. Several at once is fine." />
-              <select id="quick-add-mode" title="How a channel is blocked">
+              <input id="quick-add-input" type="text" spellcheck="false" aria-label="Block"
+                placeholder="@handle · UC… · channel or video link" />
+              <select id="quick-add-mode" title="Block mode">
                 <option value="full" selected>Full block</option>
                 <option value="exceptWhitelist">Video-only</option>
               </select>
@@ -96,7 +92,7 @@
 
             <!-- One row of chrome, stuck to the top while you scroll. -->
             <div class="bl-bar">
-              <input id="search" type="search" placeholder="Search names, @handles, IDs, titles…  ( / )" />
+              <input id="search" type="search" aria-label="Search" placeholder="Search  ( / )" />
               <select id="filter-by" title="Show">
                 <option value="all" selected>All</option>
                 <option value="full">Full-blocked</option>
@@ -114,7 +110,7 @@
                 <option value="name">A–Z</option>
               </select>
               <div class="spacer"></div>
-              <button id="select-mode-btn" class="btn" type="button" title="Pick several rows and act on them at once">Select</button>
+              <button id="select-mode-btn" class="btn" type="button">Select</button>
               <div class="menu-wrap">
                 <button id="bl-menu-btn" class="btn icon-btn" type="button" aria-haspopup="true" aria-expanded="false" title="More">⋯</button>
                 <div id="bl-menu" class="menu" hidden>
@@ -129,10 +125,6 @@
                   <div class="menu-sep"></div>
                   <button id="menu-export-btn" class="menu-item" type="button">Download backup</button>
                   <button id="menu-import-btn" class="menu-item" type="button">Import / restore…</button>
-                  <div class="menu-sep"></div>
-                  <button id="clear-videos-btn" class="menu-item danger" type="button">Clear all blocked videos</button>
-                  <button id="clean-failed-btn" class="menu-item danger" type="button">Delete channels that can't be looked up…</button>
-                  <button id="clear-channels-btn" class="menu-item danger" type="button">Delete all channels</button>
                 </div>
               </div>
             </div>
@@ -150,7 +142,7 @@
               <button id="bulk-select-all" class="btn" type="button">Select all shown</button>
               <button id="bulk-clear-sel" class="btn" type="button">Clear</button>
               <span class="spacer"></span>
-              <button id="bulk-hide" class="btn" type="button" title="Keep blocked, but stop listing them here">Hide from list</button>
+              <button id="bulk-hide" class="btn" type="button">Hide from list</button>
               <button id="bulk-videoonly" class="btn" type="button">Video-only</button>
               <button id="bulk-full" class="btn" type="button">Full block</button>
               <button id="bulk-allow" class="btn" type="button">Never block</button>
@@ -164,7 +156,7 @@
               </header>
               <p id="small-note" class="more-note" hidden></p>
               <ul id="channel-list" class="list"></ul>
-              <p id="channel-empty" class="empty" hidden>Nothing here.</p>
+              <p id="channel-empty" class="empty" hidden>Nothing here</p>
               <p id="channel-more" class="more-note" hidden></p>
             </section>
 
@@ -174,12 +166,12 @@
                 <button id="delete-all-videos-btn" class="linklike danger-link" type="button">Delete all</button>
               </header>
               <ul id="video-list" class="list"></ul>
-              <p id="video-empty" class="empty" hidden>Nothing here.</p>
+              <p id="video-empty" class="empty" hidden>Nothing here</p>
               <p id="video-more" class="more-note" hidden></p>
             </section>
 
             <details id="recent-unblocks" class="recent list-card" hidden>
-              <summary>Recently removed (<span id="recent-count">0</span>) — undo a deletion</summary>
+              <summary>Recently removed (<span id="recent-count">0</span>)</summary>
               <ul id="recent-list" class="list"></ul>
               <button id="recent-clear" class="btn" type="button">Forget these</button>
             </details>
@@ -199,12 +191,12 @@
                 <button id="kw-clear" class="linklike danger-link" type="button" hidden>Remove all</button>
               </div>
               <div class="kw-add">
-                <input id="kw-input" type="text" placeholder="e.g. tier list · reaction · \bLIVE\b" />
+                <input id="kw-input" type="text" aria-label="Keyword" placeholder="Keyword or regex" />
                 <label class="kw-regex"><input type="checkbox" id="kw-regex" /> regex</label>
                 <button id="kw-add-btn" class="btn primary">Add</button>
               </div>
               <ul id="kw-list" class="list"></ul>
-              <p id="kw-empty" class="empty" hidden>No title keywords yet.</p>
+              <p id="kw-empty" class="empty" hidden>No keywords</p>
             </section>
 
             <section class="card">
@@ -235,9 +227,9 @@
                 <button id="subs-age-save" class="btn primary">Apply</button>
               </div>
               <label class="subs-check"><input type="checkbox" id="subs-watched" />
-                <span>Hide videos you've watched — 90% or more of the way through. One you left half-way stays.</span></label>
+                <span>Hide watched videos</span></label>
               <label class="subs-check"><input type="checkbox" id="subs-upcoming" />
-                <span>Hide premieres and scheduled streams that haven't started yet. Live streams stay.</span></label>
+                <span>Hide upcoming premieres and streams</span></label>
             </section>
           </div>
 
@@ -254,11 +246,11 @@
                 <button id="allow-clear" class="linklike danger-link" type="button" hidden>Remove all</button>
               </div>
               <div class="kw-add">
-                <input id="allow-input" type="text" placeholder="@handle · UC… · https://youtube.com/@handle" />
+                <input id="allow-input" type="text" aria-label="Channel" placeholder="@handle · UC… · https://youtube.com/@handle" />
                 <button id="allow-add-btn" class="btn primary">Add</button>
               </div>
               <ul id="allow-list" class="list"></ul>
-              <p id="allow-empty" class="empty" hidden>Nothing here yet.</p>
+              <p id="allow-empty" class="empty" hidden>No channels</p>
             </section>
           </div>
 
@@ -269,7 +261,7 @@
                 <h1>What gets hidden</h1>
               </div>
               <div class="head-actions">
-                <input id="settings-search" type="search" placeholder="Find a setting…" />
+                <input id="settings-search" type="search" aria-label="Find a setting" placeholder="Find a setting…" />
                 <button id="settings-reset" class="btn">Reset to defaults</button>
               </div>
             </div>
@@ -288,9 +280,9 @@
             <section class="card sync-card" id="sync-card">
               <h2>Sync through your server</h2>
               <div class="sync-form">
-                <input id="sync-url" type="url" placeholder="https://your-server.example/xrntube" autocomplete="off" spellcheck="false" />
-                <input id="sync-user" type="text" placeholder="User name" autocomplete="username" spellcheck="false" />
-                <input id="sync-password" type="password" placeholder="Password" autocomplete="current-password" />
+                <input id="sync-url" type="url" aria-label="Server address" placeholder="https://your-server.example/xrntube" autocomplete="off" spellcheck="false" />
+                <input id="sync-user" type="text" aria-label="User name" placeholder="User name" autocomplete="username" spellcheck="false" />
+                <input id="sync-password" type="password" aria-label="Password" placeholder="Password" autocomplete="current-password" />
                 <button id="sync-save" class="btn primary">Connect</button>
               </div>
               <div class="sync-status" id="sync-status" hidden></div>
@@ -336,11 +328,7 @@
 
             <section class="card danger-card">
               <h2>Danger zone</h2>
-              <p class="blurb">
-                Deletions sync to your other devices. Each one can be undone from
-                <strong>Recently removed</strong> on the Blocklist page — but a
-                backup first never hurts.
-              </p>
+              <p class="blurb">Deletions sync to every device.</p>
               <ul class="danger-list">
                 <li>
                   <div><div class="setting-label">Delete all channels</div>
@@ -369,7 +357,7 @@
                 </li>
                 <li>
                   <div><div class="setting-label">Delete everything</div>
-                    <div class="setting-desc">Channels, videos, keywords and the never-block list. Your switches and sync connection stay.</div></div>
+                    <div class="setting-desc">Channels, videos, keywords, never-block list</div></div>
                   <button id="danger-all" class="btn danger-btn solid" type="button">Delete everything</button>
                 </li>
               </ul>

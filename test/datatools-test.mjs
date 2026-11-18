@@ -110,16 +110,16 @@ await msg({ type: "RESTORE_UNBLOCK", ts: d2.undoTs });
 
 // keywords + never-block go in the same undo record
 await p.evaluate(() =>
-  chrome.storage.sync.set({ bt_keywords: { list: [{ p: "foo", re: false }, { p: "ba+r", re: true }], ts: Date.now(), durMinSec: 30, durMaxSec: 0, commentLimit: 20, subsMaxAgeDays: 5 } })
+  chrome.storage.local.set({ bt_keywords: { list: [{ p: "foo", re: false }, { p: "ba+r", re: true }], ts: Date.now(), durMinSec: 30, durMaxSec: 0, commentLimit: 20, subsMaxAgeDays: 5 } })
 );
 const d3 = await msg({ type: "DELETE_DATA", keywords: true, allowlist: true });
-let kw = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+let kw = (await p.evaluate(() => chrome.storage.local.get("bt_keywords"))).bt_keywords;
 bl = await blocklist();
 kw.list.length === 0 && kw.durMinSec === 30 && kw.subsMaxAgeDays === 5 && Object.keys(bl.allowlist).length === 0
   ? ok("DELETE_DATA clears keywords (length rule and Subscriptions limit kept) and the never-block list")
   : fail("keyword/allow delete: " + JSON.stringify({ kw, allow: bl.allowlist }));
 await msg({ type: "RESTORE_UNBLOCK", ts: d3.undoTs });
-kw = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+kw = (await p.evaluate(() => chrome.storage.local.get("bt_keywords"))).bt_keywords;
 bl = await blocklist();
 kw.list.length === 2 && bl.allowlist["@allowx"]
   ? ok("…and the undo brings both back")
@@ -155,10 +155,10 @@ await p.waitForTimeout(800);
 await p.evaluate(() => chrome.storage.sync.set({ bt_settings: {} }));
 // the wipe keeps the limits, so take one away to see the import bring it back
 await p.evaluate(() =>
-  chrome.storage.sync.get("bt_keywords").then((r) => chrome.storage.sync.set({ bt_keywords: { ...r.bt_keywords, subsMaxAgeDays: 0 } }))
+  chrome.storage.local.get("bt_keywords").then((r) => chrome.storage.local.set({ bt_keywords: { ...r.bt_keywords, subsMaxAgeDays: 0 } }))
 );
 bl = await blocklist();
-kw = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+kw = (await p.evaluate(() => chrome.storage.local.get("bt_keywords"))).bt_keywords;
 Object.keys(bl.channels).length === 0 && Object.keys(bl.videos).length === 0 && kw.list.length === 0 && Object.keys(bl.allowlist).length === 0
   ? ok("Delete everything empties channels, videos, keywords and never-block")
   : fail("wipe left things behind");
@@ -173,7 +173,7 @@ planRows >= 5
 await p.click("#modal-confirm");
 await p.waitForTimeout(1500);
 bl = await blocklist();
-kw = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+kw = (await p.evaluate(() => chrome.storage.local.get("bt_keywords"))).bt_keywords;
 const settings = (await p.evaluate(() => chrome.storage.sync.get("bt_settings"))).bt_settings;
 Object.keys(bl.channels).length === Object.keys(before.channels).length &&
 Object.keys(bl.videos).length === Object.keys(before.videos).length &&
@@ -192,21 +192,21 @@ await p.locator('.page-tab[data-page="keywords"]').click();
 await p.fill("#subs-age", "3");
 await p.click("#subs-age-save");
 await p.waitForTimeout(400);
-const subsSet = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+const subsSet = (await p.evaluate(() => chrome.storage.local.get("bt_keywords"))).bt_keywords;
 await p.fill("#subs-age", "");
 await p.click("#subs-age-save");
 await p.waitForTimeout(400);
-const subsOff = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+const subsOff = (await p.evaluate(() => chrome.storage.local.get("bt_keywords"))).bt_keywords;
 subsSet.subsMaxAgeDays === 3 && subsOff.subsMaxAgeDays === 0 && subsOff.list.length === 2 && subsOff.commentLimit === 20
   ? ok("the Subscriptions age limit saves from its own field (3 days, then blank = off), leaving the rest of the record alone")
   : fail(`Subscriptions limit field: set=${JSON.stringify(subsSet)} off=${JSON.stringify(subsOff)}`);
 await p.check("#subs-watched");
 await p.check("#subs-upcoming");
 await p.waitForTimeout(400);
-const subsBoxes = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+const subsBoxes = (await p.evaluate(() => chrome.storage.local.get("bt_keywords"))).bt_keywords;
 await p.uncheck("#subs-upcoming");
 await p.waitForTimeout(400);
-const subsBoxOff = (await p.evaluate(() => chrome.storage.sync.get("bt_keywords"))).bt_keywords;
+const subsBoxOff = (await p.evaluate(() => chrome.storage.local.get("bt_keywords"))).bt_keywords;
 await p.reload();
 await p.locator('.page-tab[data-page="keywords"]').click();
 const shown = await p.evaluate(() => [document.getElementById("subs-watched").checked, document.getElementById("subs-upcoming").checked]);
@@ -214,6 +214,51 @@ subsBoxes.subsHideWatched === true && subsBoxes.subsHideUpcoming === true && sub
 subsBoxOff.subsHideWatched === true && JSON.stringify(shown) === "[true,false]" && subsBoxOff.list.length === 2
   ? ok("hide watched / hide upcoming save as they're ticked, untick on their own, and show as saved after a reload")
   : fail(`Subscriptions boxes: on=${JSON.stringify(subsBoxes)} off=${JSON.stringify(subsBoxOff)} shown=${JSON.stringify(shown)}`);
+
+// ---- 4c. a keyword save the browser refuses ----
+// The write was never caught: a paste still toasted "Added 2 keywords", the
+// page kept the unsaved items, and every later save of the length, comment or
+// Subscriptions rules carried them into the same refusal until a reload.
+await p.locator('.page-tab[data-page="keywords"]').click();
+await p.evaluate(() => {
+  for (const area of [chrome.storage.local, chrome.storage.sync]) {
+    const real = area.set.bind(area);
+    area.__realSet = real;
+    area.set = (items, ...rest) => (items && "bt_keywords" in items ? Promise.reject(new Error("QUOTA_BYTES quota exceeded")) : real(items, ...rest));
+  }
+});
+const toastTexts = () => p.locator(".toast span").allTextContents();
+await p.evaluate(() => {
+  const dt = new DataTransfer();
+  dt.setData("text", "unsaved one\nunsaved two");
+  document.getElementById("kw-input").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+});
+await p.waitForTimeout(400);
+const afterPaste = await toastTexts();
+const rowsShown = await p.locator("#kw-list > li").count();
+await p.fill("#dur-min", "45");
+await p.click("#dur-save");
+await p.waitForTimeout(400);
+const afterLength = await toastTexts();
+await p.evaluate(() => {
+  for (const area of [chrome.storage.local, chrome.storage.sync]) area.set = area.__realSet;
+});
+await p.fill("#dur-min", "45");
+await p.click("#dur-save");
+await p.waitForTimeout(400);
+const savedAfter = (await p.evaluate(() => chrome.storage.local.get("bt_keywords"))).bt_keywords;
+afterPaste.some((t) => t.startsWith("Not saved")) && !afterPaste.some((t) => /^Added/.test(t)) && rowsShown === 2
+  ? ok("a paste the browser refuses says it wasn't saved, not \"Added\", and the list shows what's stored")
+  : fail("refused paste: " + JSON.stringify({ afterPaste, rowsShown }));
+afterLength.filter((t) => t.startsWith("Not saved")).length >= 2 && !afterLength.includes("Length rule saved.")
+  ? ok("…a length save refused the same way says so too")
+  : fail("refused length save: " + JSON.stringify(afterLength));
+savedAfter.durMinSec === 45 && savedAfter.list.length === 2 && !savedAfter.list.some((k) => /unsaved/.test(k.p))
+  ? ok("…and once the browser takes writes again, the next save stores the length alone, without the refused keywords")
+  : fail("save after the refusals: " + JSON.stringify(savedAfter));
+await p.fill("#dur-min", "30");
+await p.click("#dur-save");
+await p.waitForTimeout(300);
 
 // ---- 5. per-row Delete + Undo toast ----
 await p.locator('.page-tab[data-page="blocklist"]').click();
@@ -285,8 +330,8 @@ await msg({
   videos: {}
 });
 await p.waitForTimeout(600);
-await p.click("#bl-menu-btn");
-await p.click("#clean-failed-btn");
+await p.locator('.page-tab[data-page="data"]').click();
+await p.click("#danger-failed");
 await p.waitForSelector("#modal:not([hidden])");
 const offered = await p.evaluate(() =>
   [...document.querySelectorAll("#modal-body .plan > li")].map((li) => ({
@@ -319,6 +364,7 @@ await p.waitForTimeout(800);
 Object.keys((await blocklist()).channels).length === 6
   ? ok("…and Undo brings them back")
   : fail("undo after cleanup didn't restore");
+await p.locator('.page-tab[data-page="blocklist"]').click();
 
 // ---- 8b. a channel left with one identity is looked up again ----
 // YouTube is faked: every channel page this profile's worker asks for is a

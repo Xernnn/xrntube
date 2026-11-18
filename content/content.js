@@ -38,41 +38,19 @@
     chrome.storage.sync.get({ [SETTINGS_KEY]: null }, (sres) => {
       if (chrome.runtime.lastError) return;
       if (!resolveSettings(sres[SETTINGS_KEY]).blockInEmbeds) return;
-      chrome.runtime.sendMessage({ type: MSG.GET_BLOCKLIST }, (bl) => {
-        if (chrome.runtime.lastError || !bl) return;
-        const allow = new Set(Object.keys(bl.allowlist || {}).map((k) => (k[0] === "@" ? k.toLowerCase() : k)));
-        const channels = bl.channels || {};
-        const byHandle = new Map();
-        const byUcid = new Map();
-        for (const [key, entry] of Object.entries(channels)) {
-          if (key.charAt(0) === "@") byHandle.set(key.toLowerCase(), entry);
-          else if (key.startsWith("UC")) byUcid.set(key, entry);
-          if (entry && entry.handle) byHandle.set(String(entry.handle).toLowerCase(), entry);
-          if (entry && entry.ucid) byUcid.set(String(entry.ucid), entry);
-        }
-        const lookup = (key) => {
-          if (!key || allow.has(key[0] === "@" ? key.toLowerCase() : key)) return undefined;
-          return channels[key] || byHandle.get(key.toLowerCase()) || byUcid.get(key);
-        };
-        const blank = () => {
-          document.documentElement.innerHTML =
-            '<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;' +
-            'background:#0f0f0f;color:#888;font:13px system-ui,-apple-system,sans-serif">Blocked by XrnTube</body>';
-          try {
-            document.querySelectorAll("video").forEach((v) => v.pause());
-          } catch {}
-        };
-        if ((bl.videos || {})[embedVideoId]) return blank();
-        // Nothing on an embed page names the uploader, so ask the background
-        // (oEmbed, cached) — the same lookup the top-level /embed/ guard uses.
-        chrome.runtime.sendMessage({ type: MSG.RESOLVE_VIDEO_CHANNEL, videoId: embedVideoId }, (res) => {
-          if (chrome.runtime.lastError || !res || !res.channelKey) return;
-          const entry = lookup(res.channelKey);
-          // A whitelisted video of a video-only channel still plays.
-          if (!entry) return;
-          if (entry.mode === CHANNEL_MODE.EXCEPT_WHITELIST && entry.whitelist && entry.whitelist[embedVideoId]) return;
-          blank();
-        });
+      // One question for the background, which has the list: the video, or
+      // its channel (nothing on an embed page names the uploader, so oEmbed,
+      // cached — the same lookup the top-level /embed/ guard uses), with the
+      // never-block list and a video-only channel's exceptions applied. Each
+      // embed asked for the whole list instead, once per player.
+      chrome.runtime.sendMessage({ type: MSG.EMBED_BLOCKED, videoId: embedVideoId }, (res) => {
+        if (chrome.runtime.lastError || !res || !res.blocked) return;
+        document.documentElement.innerHTML =
+          '<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;' +
+          'background:#0f0f0f;color:#888;font:13px system-ui,-apple-system,sans-serif">Blocked by XrnTube</body>';
+        try {
+          document.querySelectorAll("video").forEach((v) => v.pause());
+        } catch {}
       });
     });
     return;
@@ -1255,9 +1233,42 @@
       recheckHydratingTiles(document.documentElement);
     }, 400);
   }
-  // Heartbeat: guarantees these eventually run even on the rare page that
-  // doesn't trigger a childList mutation our observer catches.
-  setInterval(scheduleExtrasScrub, 2000);
+  // Heartbeat: the scrubs again every 2s, for what changes without adding an
+  // element the observer sees (a tile's date arriving as text, an href set on
+  // a link already there). Only while there's reason to: for a few beats after
+  // the page last grew or navigated, and while a tile or a shelf still waits
+  // for its title, length, date or byline (each has its own bound on tries).
+  // Never on a hidden tab. It used to beat for as long as a YouTube tab stayed
+  // open, some 16 whole-document passes every 2s, a video playing for an hour
+  // or a background tab playing music included: steady CPU and battery on the
+  // phone. The observer, a navigation, and the tab coming back into view
+  // start it again.
+  const HEARTBEAT_MS = 2000;
+  const HEARTBEAT_QUIET_BEATS = 5;
+  const HEARTBEAT_WAITING_SEL = "[data-bt-pending], [data-bt-shelf-try]:not([data-bt-shelf])";
+  let heartbeat = null;
+  let quietBeats = 0;
+  function wakeHeartbeat() {
+    quietBeats = 0;
+    if (heartbeat || document.hidden) return;
+    heartbeat = setInterval(heartbeatBeat, HEARTBEAT_MS);
+  }
+  function heartbeatBeat() {
+    if (document.querySelector(HEARTBEAT_WAITING_SEL)) quietBeats = 0;
+    else quietBeats++;
+    if (document.hidden || quietBeats > HEARTBEAT_QUIET_BEATS) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+      return;
+    }
+    scheduleExtrasScrub();
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    wakeHeartbeat();
+    scheduleExtrasScrub();
+  });
+  wakeHeartbeat();
 
   // A channel page whose URL names NEITHER identity format. CHANNEL_HREF_RE
   // returns null for these, so anything that keys off the path alone silently
@@ -3077,7 +3088,7 @@
   //
   // Size it off the SLOW path, not the fast one. The throttle is ~400ms, but
   // it only fires on DOM mutation; once a page goes quiet the 2s heartbeat is
-  // what drives it. At 8 tries that was ~16s, and a late-hydrating tile on a
+  // what drives it (and keeps beating while such a tile waits). At 8 tries that was ~16s, and a late-hydrating tile on a
   // settled page was still being locked in before its badge arrived (one
   // 2½-hour video survived a length bound in exactly that way). 25 gives ~50s
   // on the heartbeat, and the cost of being wrong the other way is only a few
@@ -3151,6 +3162,7 @@
     if (pending.size) {
       scheduleFlush();
       scheduleExtrasScrub();
+      wakeHeartbeat();
     }
     if (activeShortChanged) checkCurrentPageAndRedirect();
   });
@@ -3202,7 +3214,7 @@
     postHookConfig();
     if (settingsLoaded) runExtras(); // a live toggle change — re-apply now
   }
-  // ---------- title-keyword filters (chrome.storage.sync: bt_keywords) ----------
+  // ---------- title-keyword filters (chrome.storage.local: bt_keywords) ----------
   // A video whose title matches any pattern is scrubbed. JS-scrub only — CSS
   // can't match text — so there's a one-frame window vs. the :has() layer.
   function applyKeywords(rec) {
@@ -3236,17 +3248,27 @@
     return false;
   }
 
-  chrome.storage.sync.get({ [SETTINGS_KEY]: null, [KEYWORDS_KEY]: null }, (res) => {
-    // A failed read still has to start the scrubs, on the defaults.
-    if (chrome.runtime.lastError || !res) res = {};
-    applyKeywords(res[KEYWORDS_KEY]);
-    applySettings(res[SETTINGS_KEY]);
-    settingsLoaded = true;
-    runExtras();
-  });
+  // The switches are in synced storage, the keywords in local storage; the
+  // scrubs start once both are read. A failed read still has to start them,
+  // on the defaults.
+  {
+    const got = {};
+    let pending = 2;
+    const read = (area, key) =>
+      chrome.storage[area].get({ [key]: null }, (res) => {
+        got[key] = chrome.runtime.lastError || !res ? null : res[key];
+        if (--pending) return;
+        applyKeywords(got[KEYWORDS_KEY]);
+        applySettings(got[SETTINGS_KEY]);
+        settingsLoaded = true;
+        runExtras();
+      });
+    read("sync", SETTINGS_KEY);
+    read("local", KEYWORDS_KEY);
+  }
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "sync") return;
-    if (changes[SETTINGS_KEY]) applySettings(changes[SETTINGS_KEY].newValue);
+    if (area === "sync" && changes[SETTINGS_KEY]) applySettings(changes[SETTINGS_KEY].newValue);
+    if (area !== "local") return;
     if (changes[KEYWORDS_KEY]) {
       applyKeywords(changes[KEYWORDS_KEY].newValue);
       // re-scan already-checked tiles against the new patterns
@@ -3784,6 +3806,7 @@
     bounced = false;
     pageViewRendered();
     runExtras(); // the scrub batch + checkCurrentPageAndRedirect()
+    wakeHeartbeat();
   });
 
   // m.youtube.com announces its navigations as state-navigatestart /
@@ -3794,6 +3817,7 @@
   window.addEventListener("state-navigateend", () => {
     pageViewRendered();
     scheduleExtrasScrub();
+    wakeHeartbeat();
   });
 
   // Back/Forward. A page restored from the back/forward cache does NOT re-run
@@ -3804,6 +3828,7 @@
     if (e.persisted) {
       bounced = false;
       checkCurrentPageAndRedirect();
+      wakeHeartbeat();
     }
   });
   window.addEventListener("popstate", () => {
@@ -3811,6 +3836,7 @@
     startPageView();
     pageViewRendered();
     scheduleExtrasScrub();
+    wakeHeartbeat();
     checkCurrentPageAndRedirect();
   });
 

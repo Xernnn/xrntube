@@ -52,7 +52,7 @@ await send({ type: "DELETE_DATA", videos: "all" });
 await send({ type: "CLEAR_RECENT_UNBLOCKS" });
 
 // ================= 2. keyword title blocking =================
-await ext.evaluate((k) => chrome.storage.sync.set({ [k]: { list: [{ p: "iphone", re: false }], ts: Date.now() } }), "bt_keywords");
+await ext.evaluate((k) => chrome.storage.local.set({ [k]: { list: [{ p: "iphone", re: false }], ts: Date.now() } }), "bt_keywords");
 await ext.waitForTimeout(300);
 const kwPage = await ctx.newPage();
 await kwPage.goto("https://www.youtube.com/results?search_query=iphone+16+review", { waitUntil: "domcontentloaded" });
@@ -62,7 +62,7 @@ const kwLeft = await kwPage.evaluate(() =>
 );
 console.log("   video tiles with 'iphone' after keyword filter:", kwLeft);
 kwLeft === 0 ? ok("keyword 'iphone' removed every iphone-titled video tile") : fail(`${kwLeft} iphone tiles survived`);
-await ext.evaluate((k) => chrome.storage.sync.set({ [k]: { list: [], ts: Date.now() } }), "bt_keywords");
+await ext.evaluate((k) => chrome.storage.local.set({ [k]: { list: [], ts: Date.now() } }), "bt_keywords");
 await kwPage.reload({ waitUntil: "domcontentloaded" });
 await kwPage.waitForTimeout(6000);
 const kwBack = await kwPage.evaluate(() =>

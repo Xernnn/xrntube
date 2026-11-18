@@ -19,7 +19,6 @@ const {
   subsAttempted,
   knowsOneIdentity,
   resolveRetryDue,
-  oversizeSyncItems,
   cutHandleOf
 } = self.XrnTube;
 
@@ -59,9 +58,17 @@ const entryStamp = (e) => (e ? e.updated_at || e.ts || 0 : 0);
 // records its removal, or the other way round.
 const BLOCKLIST_KEY = STORAGE.BLOCKLIST_KEY;
 let migrated = null;
+// Every earlier layout moved into this one, once per worker start, before
+// anything reads the list, the keywords or the never-block list.
+const ensureMigrated = () =>
+  migrated ||
+  (migrated = (async () => {
+    await migrateFromSyncChunks();
+    await migrateListsToLocal();
+  })());
 
 async function loadAll() {
-  await (migrated || (migrated = migrateFromSyncChunks()));
+  await ensureMigrated();
   const r = await chrome.storage.local.get(BLOCKLIST_KEY);
   const bl = r[BLOCKLIST_KEY] || {};
   return { channels: bl.channels || {}, videos: bl.videos || {} };
@@ -69,7 +76,7 @@ async function loadAll() {
 
 // The list and its tombstones, in one read.
 async function readStore() {
-  await (migrated || (migrated = migrateFromSyncChunks()));
+  await ensureMigrated();
   const r = await chrome.storage.local.get([BLOCKLIST_KEY, STORAGE.TOMBSTONE_KEY]);
   const bl = r[BLOCKLIST_KEY] || {};
   return { channels: bl.channels || {}, videos: bl.videos || {}, tombstones: r[STORAGE.TOMBSTONE_KEY] || {} };
@@ -78,8 +85,10 @@ async function readStore() {
 let storeQueue = Promise.resolve();
 // Runs `change(state)` on a fresh copy of the store — `state.channels`,
 // `state.videos`, `state.tombstones` — then saves all three in one write,
-// unless `change` returns false. Resolves to the state, with what `change`
-// returned as `.result`.
+// unless `change` returns false. Other local keys `change` puts in
+// `state.also` ({ key: value }, the keyword or never-block list) go in that
+// same write, so they are saved with the list or, if the browser refuses it,
+// not at all. Resolves to the state, with what `change` returned as `.result`.
 function updateStore(change) {
   const run = storeQueue.then(async () => {
     const state = await readStore();
@@ -87,7 +96,8 @@ function updateStore(change) {
     if (result !== false) {
       await chrome.storage.local.set({
         [BLOCKLIST_KEY]: { channels: state.channels, videos: state.videos },
-        [STORAGE.TOMBSTONE_KEY]: pruneTombstones({ ...state.tombstones })
+        [STORAGE.TOMBSTONE_KEY]: pruneTombstones({ ...state.tombstones }),
+        ...(state.also || {})
       });
     }
     state.result = result;
@@ -123,6 +133,24 @@ async function migrateFromSyncChunks() {
   await chrome.storage.local.set({ [BLOCKLIST_KEY]: bl });
   if (oldKeys.length) await chrome.storage.sync.remove(oldKeys);
   await chrome.storage.local.remove("bt_overflow");
+}
+
+// Up to 2.1.10, the keyword list and the never-block list were one
+// chrome.storage.sync item each, and the browser keeps at most 8 KB in one:
+// about 150 never-block channels, or a couple of hundred keywords. A write
+// past that was refused, and a sync round whose merge went past it failed on
+// that device every time. They travel through the sync server now, like the
+// blocklist, so they live in chrome.storage.local (see KEYWORDS_KEY). Copied
+// over once: a device that already has the local copy keeps it. The synced
+// copy is left where it is: another browser on the same account still on an
+// older version reads it, and removing it would look to that one like every
+// keyword deleted, which its next sync round would send everywhere.
+async function migrateListsToLocal() {
+  const keys = [KEYWORDS_KEY, ALLOWLIST_KEY];
+  const [sync, local] = await Promise.all([chrome.storage.sync.get(keys), chrome.storage.local.get(keys)]);
+  const move = {};
+  for (const k of keys) if (sync[k] !== undefined && local[k] === undefined) move[k] = sync[k];
+  if (Object.keys(move).length) await chrome.storage.local.set(move);
 }
 
 async function addEntry(kind, id, label, extra) {
@@ -168,6 +196,18 @@ const RECENT_UNBLOCK_MAX = 40;
 // record whole however big it is — that is the one an Undo toast points at.
 const RECENT_UNBLOCK_MAX_ENTRIES = 20000;
 
+// Every write of the log goes through here, one at a time, each reading the
+// log afresh: two unblocks landing together (the popup and the options page,
+// or two tabs) each read it, put their record in front and wrote it back, and
+// one record was lost; a restore wrote back the log as it had read it before
+// its own store write, dropping a record pushed meanwhile.
+let logQueue = Promise.resolve();
+function updateLog(change) {
+  const run = logQueue.then(change);
+  logQueue = run.catch(() => {});
+  return run;
+}
+
 async function getRecentUnblocks() {
   const res = await chrome.storage.local.get(RECENT_UNBLOCK_KEY);
   return Array.isArray(res[RECENT_UNBLOCK_KEY]) ? res[RECENT_UNBLOCK_KEY] : [];
@@ -186,7 +226,10 @@ function recordSize(rec) {
 
 // Returns the record's `ts`, which doubles as its id: strictly increasing, so
 // two removals in the same millisecond still get distinct handles.
-async function pushRecentUnblock(record) {
+function pushRecentUnblock(record) {
+  return updateLog(() => pushRecentUnblockNow(record));
+}
+async function pushRecentUnblockNow(record) {
   const log = await getRecentUnblocks();
   const ts = Math.max(syncedNow(), log.length ? (log[0].ts || 0) + 1 : 0);
   log.unshift({ ...record, ts });
@@ -247,14 +290,18 @@ async function restoreRecentUnblock(ref) {
       for (const k of rec.keywords) {
         if (!list.some((x) => x.p === k.p && !!x.re === !!k.re)) list.push(k);
       }
-      await saveSynced({ [KEYWORDS_KEY]: { ...cur, list, ts: Date.now() } });
+      await saveLists({ [KEYWORDS_KEY]: { ...cur, list, ts: Date.now() } });
     }
     if (rec.allowlist && Object.keys(rec.allowlist).length) {
       const cur = await getAllowlist();
-      await saveSynced({ [ALLOWLIST_KEY]: { list: { ...rec.allowlist, ...cur.list }, ts: Date.now() } });
+      await saveLists({ [ALLOWLIST_KEY]: { list: { ...rec.allowlist, ...cur.list }, ts: Date.now() } });
     }
-    log.splice(index, 1);
-    await chrome.storage.local.set({ [RECENT_UNBLOCK_KEY]: log });
+    await updateLog(async () => {
+      const cur = await getRecentUnblocks();
+      const at = rec.ts != null ? cur.findIndex((r) => r.ts === rec.ts) : cur.findIndex((r) => JSON.stringify(r) === JSON.stringify(rec));
+      if (at >= 0) cur.splice(at, 1);
+      await chrome.storage.local.set({ [RECENT_UNBLOCK_KEY]: cur });
+    });
   } catch (err) {
     error = String((err && err.message) || err);
   }
@@ -265,15 +312,18 @@ async function restoreRecentUnblock(ref) {
 
 // The title-keyword record, as the options page writes it (see KEYWORDS_KEY).
 async function getKeywordsRecord() {
-  const res = await chrome.storage.sync.get(KEYWORDS_KEY);
+  await ensureMigrated();
+  const res = await chrome.storage.local.get(KEYWORDS_KEY);
   const k = res[KEYWORDS_KEY];
   return k && Array.isArray(k.list) ? { ...k, list: k.list } : { list: [], ts: 0 };
 }
 
 // DELETE_DATA: remove a set of channels / videos (or all of either), and
 // optionally every title keyword and never-block entry, as ONE undo record.
-// One store write and one tombstone write whatever the size, and it still
-// propagates through sync like a single unblock does.
+// One write whatever the size, the two lists included, so a write the browser
+// refuses removes nothing (the keywords' clear used to be dropped silently,
+// and its undo record and count still claimed it); and it still propagates
+// through sync like a single unblock does.
 async function deleteData(req) {
   const pick = (map, ids) => {
     if (ids === "all") return Object.keys(map);
@@ -282,10 +332,30 @@ async function deleteData(req) {
   const record = { t: "bulk", kind: "mixed", channels: {}, videos: {}, count: 0 };
   let chIds = [];
   let vidIds = [];
-  await updateStore((s) => {
+  let keywordCount = 0;
+  let allowCount = 0;
+  await updateStore(async (s) => {
     chIds = pick(s.channels, req.channels);
     vidIds = pick(s.videos, req.videos);
-    if (!chIds.length && !vidIds.length) return false;
+    const also = {};
+    if (req.keywords) {
+      const cur = await getKeywordsRecord();
+      keywordCount = cur.list.length;
+      if (keywordCount) {
+        record.keywords = cur.list;
+        also[KEYWORDS_KEY] = { ...cur, list: [], ts: Date.now() };
+      }
+    }
+    if (req.allowlist) {
+      const cur = await getAllowlist();
+      allowCount = Object.keys(cur.list).length;
+      if (allowCount) {
+        record.allowlist = cur.list;
+        also[ALLOWLIST_KEY] = { list: {}, ts: Date.now() };
+      }
+    }
+    if (!chIds.length && !vidIds.length && !keywordCount && !allowCount) return false;
+    s.also = also;
     for (const id of chIds) {
       record.channels[id] = s.channels[id];
       delete s.channels[id];
@@ -297,25 +367,6 @@ async function deleteData(req) {
       s.tombstones["video:" + id] = stampAfter(entryStamp(record.videos[id]));
     }
   });
-
-  let keywordCount = 0;
-  if (req.keywords) {
-    const cur = await getKeywordsRecord();
-    keywordCount = cur.list.length;
-    if (keywordCount) {
-      record.keywords = cur.list;
-      await chrome.storage.sync.set({ [KEYWORDS_KEY]: { ...cur, list: [], ts: Date.now() } }).catch(() => {});
-    }
-  }
-  let allowCount = 0;
-  if (req.allowlist) {
-    const cur = await getAllowlist();
-    allowCount = Object.keys(cur.list).length;
-    if (allowCount) {
-      record.allowlist = cur.list;
-      await chrome.storage.sync.set({ [ALLOWLIST_KEY]: { list: {}, ts: Date.now() } }).catch(() => {});
-    }
-  }
 
   record.count = chIds.length + vidIds.length + keywordCount + allowCount;
   const undoTs = record.count ? await pushRecentUnblock(record) : null;
@@ -411,7 +462,8 @@ async function getSettings() {
 // blocked. `@handle` keys are stored lowercased so a DOM link and a stored
 // key compare regardless of case.
 async function getAllowlist() {
-  const res = await chrome.storage.sync.get(ALLOWLIST_KEY);
+  await ensureMigrated();
+  const res = await chrome.storage.local.get(ALLOWLIST_KEY);
   const a = res[ALLOWLIST_KEY];
   return a && a.list && typeof a.list === "object" ? { list: a.list, ts: Number(a.ts) || 0 } : { list: {}, ts: 0 };
 }
@@ -433,24 +485,19 @@ async function setAllowed(keys, on, note) {
     else delete list[norm];
   }
   const next = { list, ts: Date.now() };
-  await saveSynced({ [ALLOWLIST_KEY]: next });
+  await saveLists({ [ALLOWLIST_KEY]: next });
   return next;
 }
 
-// chrome.storage.sync.set() for the keyword and never-block lists, with a
-// refusal turned into an error that says which list and why. Never swallowed:
-// a bulk "Never block" of 150 rows, over the 8 KB the browser stores in one
-// item, answered "added" and kept none of them.
-async function saveSynced(items) {
+// chrome.storage.local.set() for the keyword and never-block lists, with a
+// refusal turned into an error that says so. Never swallowed: a bulk "Never
+// block" that the browser refused (when these lists were in synced storage,
+// 150 rows were over its 8 KB an item) answered "added" and kept none of them.
+async function saveLists(items) {
   try {
-    await chrome.storage.sync.set(items);
+    await chrome.storage.local.set(items);
   } catch (err) {
-    const over = oversizeSyncItems(items);
-    throw new Error(
-      over.length
-        ? `The ${over.join(" and the ")} would be too big: the browser keeps it in its synced storage, at most 8 KB an item (about 150 never-block channels).`
-        : `The browser didn't save it: ${String((err && err.message) || err)}`
-    );
+    throw new Error(`The browser didn't save it: ${String((err && err.message) || err)}`);
   }
 }
 
@@ -799,6 +846,31 @@ function parseChannelHtml(html) {
 // Bounded in-memory cache; a service-worker restart just re-fetches.
 const videoChannelCache = new Map(); // videoId -> "@handle" | "UC…" | null
 const VIDEO_CHANNEL_CACHE_MAX = 500;
+// Whether an embedded player's video is blocked: by its id, or by its channel
+// (oEmbed, cached), through either identity the entry knows, unless the
+// channel is on the never-block list or the video is a video-only channel's
+// exception. What an /embed/ frame worked out for itself from the whole list.
+async function embedBlocked(videoId) {
+  const state = await loadAll();
+  if (state.videos[videoId]) return true;
+  const key = await resolveVideoChannel(videoId);
+  if (!key) return false;
+  const norm = (k) => (String(k).startsWith("@") ? String(k).toLowerCase() : String(k));
+  const allow = new Set(Object.keys((await getAllowlist()).list).map(norm));
+  if (allow.has(norm(key))) return false;
+  let entry = state.channels[key];
+  if (!entry) {
+    for (const [k, e] of Object.entries(state.channels)) {
+      if (norm(k) === norm(key) || (e && ((e.handle && norm(e.handle) === norm(key)) || e.ucid === key))) {
+        entry = e;
+        break;
+      }
+    }
+  }
+  if (!entry) return false;
+  return !(entry.mode === CHANNEL_MODE.EXCEPT_WHITELIST && entry.whitelist && entry.whitelist[videoId]);
+}
+
 async function resolveVideoChannel(videoId) {
   if (!/^[\w-]{11}$/.test(videoId || "")) return null;
   if (videoChannelCache.has(videoId)) return videoChannelCache.get(videoId);
@@ -1191,6 +1263,7 @@ async function runSweep() {
 // from a web page.
 const FROM_WEB_PAGES = new Set([
   MSG.GET_BLOCKLIST,
+  MSG.EMBED_BLOCKED,
   MSG.BLOCK_CHANNEL,
   MSG.UNBLOCK_CHANNEL,
   MSG.BLOCK_VIDEO,
@@ -1200,6 +1273,22 @@ const FROM_WEB_PAGES = new Set([
 function fromExtensionPage(sender) {
   return !!(sender && sender.id === chrome.runtime.id && String(sender.url || "").startsWith(chrome.runtime.getURL("")));
 }
+// What a tab may name in those: a channel key or a video id of the shape a
+// tile gives (normalizeChannelKey(), a watch link's 11 characters). They were
+// taken as they came, so a content-script bug or a renderer taken over could
+// store "undefined" or a path as a channel, sync it to every device, and have
+// the identity lookup fetch youtube.com/channel/<it>. The extension's own
+// pages may name any key the list holds, an old one of another shape too.
+const WEB_ID_RE = {
+  [MSG.BLOCK_CHANNEL]: DNR_CHANNEL_KEY_RE,
+  [MSG.UNBLOCK_CHANNEL]: DNR_CHANNEL_KEY_RE,
+  [MSG.BLOCK_VIDEO]: DNR_VIDEO_ID_RE,
+  [MSG.UNBLOCK_VIDEO]: DNR_VIDEO_ID_RE
+};
+const webIdOk = (msg) =>
+  msg.type === MSG.EMBED_BLOCKED
+    ? typeof msg.videoId === "string" && DNR_VIDEO_ID_RE.test(msg.videoId)
+    : !WEB_ID_RE[msg.type] || (typeof msg.id === "string" && WEB_ID_RE[msg.type].test(msg.id));
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
@@ -1209,6 +1298,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try {
       if (!FROM_WEB_PAGES.has(msg.type) && !fromExtensionPage(sender)) {
         sendResponse({ ok: false, error: "only the extension's own pages may send " + msg.type });
+        return;
+      }
+      if (!webIdOk(msg) && !fromExtensionPage(sender)) {
+        sendResponse({ ok: false, error: "not a channel or video id: " + String(msg.id).slice(0, 40) });
         return;
       }
       switch (msg.type) {
@@ -1346,14 +1439,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case MSG.IMPORT_BLOCKLIST: {
           // Merge everything in one store update — not addEntry per entry,
           // which on a few-thousand-channel file is a few thousand writes.
+          // A file's keywords and never-block list go in that same write,
+          // and its switches just before it (they are in synced storage), so
+          // an import the browser won't store changes nothing: it used to
+          // bring the channels in, then stop at a keyword list that wouldn't
+          // save, with no word about it and the switches never applied.
           const now = syncedNow();
           const clearedTombs = [];
           const added = { channels: 0, videos: 0 };
           let enriched = 0;
           let duplicates = 0;
           let allowAdded = 0;
-          let allowError = null;
+          let keywordsAdded = 0;
           let folded = [];
+          let settingsBefore;
+          if (msg.settings && typeof msg.settings === "object") {
+            settingsBefore = (await chrome.storage.sync.get(SETTINGS_KEY))[SETTINGS_KEY];
+            await chrome.storage.sync.set({ [SETTINGS_KEY]: self.XrnTube.resolveSettings(msg.settings) }).catch((err) => {
+              throw new Error(`The browser didn't save it: ${String((err && err.message) || err)}`);
+            });
+          }
           await updateStore(async (state) => {
             const { channels, videos } = state;
 
@@ -1461,7 +1566,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               clearedTombs.push("video:" + id);
             }
 
-            // A backup's never-block list, merged in one write.
+            state.also = {};
+            // A backup's never-block list, merged with this one.
             if (msg.allowlist && typeof msg.allowlist === "object") {
               const cur = await getAllowlist();
               const list = { ...cur.list };
@@ -1471,18 +1577,49 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 list[norm] = { note: (v && v.note) || "", ts: Number(v && v.ts) || Date.now() };
                 allowAdded++;
               }
-              // A list that won't save doesn't stop the channels and videos,
-              // which are most of a backup; the answer says it wasn't added.
-              if (allowAdded) {
-                await saveSynced({ [ALLOWLIST_KEY]: { list, ts: Date.now() } }).catch((err) => {
-                  allowError = err.message;
-                  allowAdded = 0;
-                });
+              if (allowAdded) state.also[ALLOWLIST_KEY] = { list, ts: Date.now() };
+            }
+            // Its keywords added to these, and any of the bounds it carries
+            // (length, comment limit, the Subscriptions rules) in place of
+            // these.
+            if (msg.keywords && typeof msg.keywords === "object") {
+              const cur = await getKeywordsRecord();
+              const kwKey = (k) => (k.re ? "re:" : "") + k.p;
+              const have = new Set(cur.list.map(kwKey));
+              const next = { ...cur, list: cur.list.slice() };
+              for (const k of Array.isArray(msg.keywords.list) ? msg.keywords.list : []) {
+                if (!k || typeof k.p !== "string" || !k.p.trim()) continue;
+                const item = { p: k.p, re: !!k.re };
+                if (have.has(kwKey(item))) continue;
+                have.add(kwKey(item));
+                next.list.push(item);
+                keywordsAdded++;
               }
+              let changed = keywordsAdded > 0;
+              for (const f of ["durMinSec", "durMaxSec", "commentLimit", "subsMaxAgeDays"]) {
+                if (msg.keywords[f] === undefined) continue;
+                next[f] = Math.max(0, Math.floor(Number(msg.keywords[f]) || 0));
+                changed = true;
+              }
+              for (const f of ["subsHideWatched", "subsHideUpcoming"]) {
+                if (msg.keywords[f] === undefined) continue;
+                next[f] = !!msg.keywords[f];
+                changed = true;
+              }
+              if (changed) state.also[KEYWORDS_KEY] = { ...next, ts: Date.now() };
             }
             folded = foldDuplicateChannels(channels);
             tombstoneFolded(state.tombstones, folded);
             for (const k of clearedTombs) delete state.tombstones[k];
+          }).catch(async (err) => {
+            // Nothing of the file is in local storage; put the switches back.
+            if (msg.settings && typeof msg.settings === "object") {
+              await (settingsBefore === undefined
+                ? chrome.storage.sync.remove(SETTINGS_KEY)
+                : chrome.storage.sync.set({ [SETTINGS_KEY]: settingsBefore })
+              ).catch(() => {});
+            }
+            throw new Error(`The browser didn't save it: ${String((err && err.message) || err)}`);
           });
 
           const fresh = await loadAll();
@@ -1497,13 +1634,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             enriched,
             duplicates,
             allowAdded,
-            allowError,
+            keywordsAdded,
             folded: folded.length
           });
           break;
         }
         case MSG.RESOLVE_VIDEO_CHANNEL: {
           sendResponse({ ok: true, channelKey: await resolveVideoChannel(msg.videoId) });
+          break;
+        }
+        case MSG.GET_COUNTS: {
+          const state = await loadAll();
+          sendResponse({ ok: true, channels: Object.keys(state.channels).length, videos: Object.keys(state.videos).length });
+          break;
+        }
+        case MSG.EMBED_BLOCKED: {
+          sendResponse({ ok: true, blocked: await embedBlocked(msg.videoId) });
           break;
         }
         case MSG.REBROADCAST_BLOCKLIST: {
@@ -1522,7 +1668,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case MSG.CLEAR_RECENT_UNBLOCKS: {
-          await chrome.storage.local.set({ [RECENT_UNBLOCK_KEY]: [] });
+          await updateLog(() => chrome.storage.local.set({ [RECENT_UNBLOCK_KEY]: [] }));
           sendResponse({ ok: true });
           break;
         }
@@ -1690,10 +1836,14 @@ const syncHost = {
 
 self.XrnTube.serverSync.init(syncHost);
 
-// Periodic pull. Alarm registration is top-level and synchronous (MV3-safe);
-// the debounced push in server-sync.js can be lost if the worker sleeps, and
-// this is its backstop.
-chrome.alarms.create(SYNC.POLL_ALARM, { periodInMinutes: SYNC.POLL_PERIOD_MIN });
+// Periodic pull. The listener is registered at top level and synchronously
+// (MV3-safe); the debounced push in server-sync.js can be lost if the worker
+// sleeps, and this is its backstop. The alarm is created only when missing
+// (or set to another period): creating it again restarts its period, and the
+// worker wakes for every page load.
+chrome.alarms.get(SYNC.POLL_ALARM).then((a) => {
+  if (!a || a.periodInMinutes !== SYNC.POLL_PERIOD_MIN) chrome.alarms.create(SYNC.POLL_ALARM, { periodInMinutes: SYNC.POLL_PERIOD_MIN });
+});
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === SYNC.POLL_ALARM) self.XrnTube.serverSync.onPoll();
   if (alarm.name === SWEEP_ALARM) kickSweep();
@@ -1814,17 +1964,17 @@ loadSweep().then((s) => {
 // so a settings change has to rebuild the DNR rule set. (content.js watches
 // bt_settings itself for its own behaviours.)
 //
-// Settings, keywords and the never-block list are written straight to
-// chrome.storage.sync by whichever page edits them, never through
-// broadcastUpdate(), so this is where the server sync hears about them. A
-// change the sync cycle itself wrote lands here too; the cycle it schedules
-// finds nothing to push.
+// Settings (chrome.storage.sync), keywords and the never-block list
+// (chrome.storage.local) are written straight to storage by whichever page
+// edits them, never through broadcastUpdate(), so this is where the server
+// sync hears about them. A change the sync cycle itself wrote lands here too;
+// the cycle it schedules finds nothing to push.
 chrome.storage.onChanged.addListener(async (changes, area) => {
-  if (area !== "sync") return;
-  if (changes[SETTINGS_KEY] || changes[KEYWORDS_KEY] || changes[ALLOWLIST_KEY]) {
+  const settings = area === "sync" && changes[SETTINGS_KEY];
+  if (settings || (area === "local" && (changes[KEYWORDS_KEY] || changes[ALLOWLIST_KEY]))) {
     self.XrnTube.serverSync.onLocalChange();
   }
-  if (changes[SETTINGS_KEY]) {
+  if (settings) {
     await rebuildDnrRules(await loadAll());
   }
 });

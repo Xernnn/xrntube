@@ -116,7 +116,7 @@ it names.
   counts as evidence. Measured: no note with the rule table healthy, one with
   it neutered. The same counts reach the popup's health line
   (`GET_PAGE_HEALTH`), because a phone has no console to read the note in:
-  "⚠ N tiles got past the early filter" there is this check firing. And
+  "⚠ N removed late" there is this check firing. And
   `npm run test:canary` (a weekly systemd timer once installed) runs
   `datalayer-live-test` and four other selector-heavy files on this machine,
   with a desktop notification when they fail.

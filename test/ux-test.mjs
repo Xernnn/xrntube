@@ -75,13 +75,12 @@ for (const v of ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"]) await send({ type
 await opt.waitForTimeout(200);
 await opt.selectOption("#filter-by", "videos");
 await opt.waitForTimeout(200);
-await opt.click("#bl-menu-btn"); // the destructive bulk action lives in the ⋯ menu
-await opt.waitForTimeout(150);
-const clearBtn = opt.locator("#clear-videos-btn");
-const clearTxt = await clearBtn.textContent();
-(!(await clearBtn.isHidden()) && /\b3 blocked videos\b/.test(clearTxt))
-  ? ok(`clear button shown: "${clearTxt.trim()}"`)
-  : fail(`clear button wrong: hidden=${await clearBtn.isHidden()} text="${clearTxt}"`);
+// The destructive bulk action is the Videos list's own "Delete all" (and the
+// Danger zone's); the ⋯ menu no longer carries a third copy.
+const clearBtn = opt.locator("#delete-all-videos-btn");
+!(await clearBtn.isHidden()) && !(await opt.locator("#bl-menu #clear-videos-btn").count())
+  ? ok("the Videos list's Delete all is shown, and the ⋯ menu has no copy of it")
+  : fail(`clear button: hidden=${await clearBtn.isHidden()}`);
 
 await clearBtn.click();
 // Destructive actions confirm in the page's own dialog now, not confirm().
@@ -101,7 +100,7 @@ const tombs = await opt.evaluate(() => chrome.storage.local.get("bt_tombstones")
 const vidTombs = Object.keys(tombs.bt_tombstones || {}).filter((k) => k.startsWith("video:"));
 vidTombs.length >= 3 ? ok(`${vidTombs.length} video tombstones written`) : fail("no video tombstones: " + JSON.stringify(tombs));
 
-const rerender = await opt.locator("#clear-videos-btn").isHidden();
+const rerender = await opt.locator("#delete-all-videos-btn").isHidden();
 rerender ? ok("clear button hides once there are no videos") : fail("clear button still shown");
 
 await opt.waitForTimeout(300);

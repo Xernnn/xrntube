@@ -89,6 +89,19 @@ await p.click('.page-tab[data-page="data"]');
 check(await p.locator(".danger-card .blurb").isVisible(), "the Danger zone keeps its warning");
 check(await p.locator("#danger-channels-desc").isVisible(), "each delete still says what it would remove");
 
+// ---- 4b. every field has a name ----
+// A placeholder is all some had (the list search, the three Sync fields): a
+// screen reader has nothing to read out once text is typed.
+const unnamed = await p.evaluate(() =>
+  [...document.querySelectorAll('input:not([type="checkbox"]):not([type="file"]):not([type="hidden"]), select, textarea')]
+    .filter((el) => !el.getAttribute("aria-label") && !el.getAttribute("aria-labelledby") && !el.title && !el.closest("label") && !(el.id && document.querySelector(`label[for="${el.id}"]`)))
+    .map((el) => el.id || el.outerHTML.slice(0, 60))
+);
+check(!unnamed.length, "every field on the options page has a name, not only a placeholder" + (unnamed.length ? ": " + unnamed.join(", ") : ""));
+// The ⋯ menu carried a third copy of each delete: the list heads and the
+// Danger zone keep theirs.
+check(!(await p.locator("#bl-menu .danger").count()), "the ⋯ menu has no delete of its own");
+
 // ---- 5. Sync, and a phone ----
 await p.click('.page-tab[data-page="sync"]');
 check(!(await p.locator("#sync-actions").isVisible()), "Sync's buttons stay hidden with nothing connected");
@@ -102,7 +115,7 @@ await p.setViewportSize({ width: 412, height: 880 });
 await p.click('.page-tab[data-page="blocklist"]');
 await p.evaluate(() => {
   document.querySelector("#bulk-progress").hidden = false;
-  document.querySelector("#bulk-progress-text").textContent = "Fetching sub counts and @handles… 0 / 240 · keeps going if you close this page";
+  document.querySelector("#bulk-progress-text").textContent = "Sub counts 1,240 / 5,240 · throttled, resumes 10:45 PM";
 });
 await p.waitForTimeout(100);
 const slide = () => p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);

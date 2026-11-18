@@ -115,7 +115,7 @@ partial.reqs > 0
 // is the cheapest way to make "nothing survives" true of a real search.
 await send({ type: "UNBLOCK_CHANNEL", id: HANDLE });
 await ext.evaluate(() =>
-  chrome.storage.sync.set({ bt_keywords: { list: [{ p: ".", re: true }], ts: Date.now(), durMinSec: 0, durMaxSec: 0 } })
+  chrome.storage.local.set({ bt_keywords: { list: [{ p: ".", re: true }], ts: Date.now(), durMinSec: 0, durMaxSec: 0 } })
 );
 await ext.waitForTimeout(2500);
 
@@ -166,7 +166,7 @@ console.log(
 );
 
 const setKeywords = (list) =>
-  ext.evaluate((l) => chrome.storage.sync.set({ bt_keywords: { list: l, ts: Date.now(), durMinSec: 0, durMaxSec: 0 } }), list);
+  ext.evaluate((l) => chrome.storage.local.set({ bt_keywords: { list: l, ts: Date.now(), durMinSec: 0, durMaxSec: 0 } }), list);
 // Where the notice is, and whether anyone can see it.
 const noticeState = (page, pageTag) =>
   page.evaluate((tag) => {
@@ -274,7 +274,7 @@ const psw = phone.serviceWorkers()[0] || (await phone.waitForEvent("serviceworke
 const pext = await phone.newPage();
 await pext.goto(`chrome-extension://${psw.url().split("/")[2]}/options/options.html`);
 await pext.evaluate(() =>
-  chrome.storage.sync.set({ bt_keywords: { list: [{ p: ".", re: true }], ts: Date.now(), durMinSec: 0, durMaxSec: 0 } })
+  chrome.storage.local.set({ bt_keywords: { list: [{ p: ".", re: true }], ts: Date.now(), durMinSec: 0, durMaxSec: 0 } })
 );
 await pext.waitForTimeout(2000);
 const mob = await phone.newPage();
