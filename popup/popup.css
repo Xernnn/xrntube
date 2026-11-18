@@ -20,7 +20,6 @@
   --hatch-b: #fff5f3;
   --gone: #a32414;
   --gone-line: #c8321f;
-  --logo: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath stroke='%2315233F' d='M8 5.5v13L18.5 12 8 5.5Z'/%3E%3Cpath stroke='%23C8321F' d='M4 4l16 16'/%3E%3C/svg%3E");
 }
 
 @media (prefers-color-scheme: dark) {
@@ -39,7 +38,6 @@
     --hatch-b: #2a1618;
     --gone: #ffa394;
     --gone-line: #ff8a78;
-    --logo: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath stroke='%23E6ECF7' d='M8 5.5v13L18.5 12 8 5.5Z'/%3E%3Cpath stroke='%23FF8A78' d='M4 4l16 16'/%3E%3C/svg%3E");
   }
 }
 
@@ -72,18 +70,16 @@ header {
   margin-bottom: 10px;
 }
 
+/* The family tile is the title: no wordmark beside it. */
 header h1 {
-  font-size: 16px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
+  display: flex;
   margin: 0;
 }
 
 .logo {
-  display: inline-block;
-  width: 24px;
-  height: 24px;
-  background: var(--logo) center / contain no-repeat;
+  display: block;
+  width: 28px;
+  height: 28px;
 }
 
 .card {
