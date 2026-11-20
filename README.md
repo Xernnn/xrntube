@@ -30,6 +30,13 @@ Plus an optional site cleanup — Shorts, the home feed, the related-videos
 column, end-screen suggestions, sidebar clutter and more — as 39 individual
 switches you can turn off one by one.
 
+<p align="center">
+  <img src="docs/screenshots/popup.png" width="300" alt="The toolbar popup on a video page: the video with a Block video button, two collaborating channels, one with Block channel and Block videos only, the other already blocked with an Unblock button, then 23 removed and the blocklist counts">
+  &nbsp;
+  <img src="docs/screenshots/blocklist.png" width="520" alt="The options page's Blocklist tab: counts, the Block something box, search, filter and sort, and the channel list with sub counts and block modes; one video-only channel's drawer is open with its age rule and one allowed video">
+</p>
+<p align="center"><sub>The popup on a video page, and the blocklist with a video-only channel's exceptions open. All names are made up.</sub></p>
+
 ---
 
 ## Contents
@@ -48,6 +55,7 @@ switches you can turn off one by one.
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
 - [For developers](#for-developers)
+- [Licence](#licence)
 
 ---
 
@@ -71,24 +79,31 @@ afterwards.
 1. Open `chrome://extensions` (or `edge://extensions`, `brave://extensions`).
 2. Turn on **Developer mode** (top-right).
 3. Click **Load unpacked** and select the folder you just unpacked.
-4. Pin the xrntube icon (red, with a play button) to your toolbar if you want the quick-block popup handy.
+4. Pin the XrnTube icon (a red tile with a play button) to your toolbar if you want the quick-block popup handy.
 
 **2b. Zen / Firefox (140 or newer)**
 
-1. Open `about:debugging` → **This Firefox** → **Load Temporary Add-on…** and
-   choose `manifest.json` in the folder (or the `.zip` from `npm run package`,
-   which Firefox takes as an `.xpi`).
-2. If the popup says **No access to YouTube**, click **Allow on
-   YouTube** (Firefox can withhold an extension's site access, and it can be
-   switched off in `about:addons` → XrnTube → **Permissions**), then reload
-   YouTube.
+To keep it installed, in Zen or a Firefox build that allows unsigned
+add-ons (Developer Edition, Nightly, unbranded builds):
 
-Firefox removes a temporary add-on when it closes. To keep it, sign the zip
-with an unlisted upload to addons.mozilla.org, or, in a build that allows
-unsigned add-ons, set `xpinstall.signatures.required` to `false` in
-`about:config` and install the file. The `.crx` self-update below is
-Chromium-only: a temporary add-on still reloads itself when its folder's
-version changes, and an installed `.xpi` updates by installing a newer one.
+1. In `about:config`, set `xpinstall.signatures.required` to `false`.
+2. Run `npm run package` (it needs no `npm install`) and rename
+   `dist/xrntube-<version>.zip` to `xrntube-<version>.xpi`.
+3. `about:addons` → ⚙ → **Install Add-on From File…** → that file.
+
+An installed `.xpi` doesn't update itself: install the next version's file
+the same way. Release Firefox refuses unsigned files; sign the zip with an
+unlisted upload to addons.mozilla.org instead.
+
+To try it without installing: `about:debugging` → **This Firefox** →
+**Load Temporary Add-on…** → `manifest.json` in the folder. Firefox drops a
+temporary add-on when it closes; until then it reloads itself when the
+folder's version changes.
+
+If the popup says **No access to YouTube**, click **Allow on YouTube**
+(Firefox can withhold an extension's site access, and it can be switched off
+in `about:addons` → XrnTube → **Permissions**), then reload YouTube. The
+`.crx` self-update below is Chromium-only.
 
 **2c. On your phone (Quetta or another Chromium browser with extensions)**
 
@@ -151,7 +166,8 @@ updating:
 
 **Updating** happens by itself. A copy loaded unpacked from a folder reloads
 itself when that folder's `manifest.json` names a new version (after a
-`git pull`, or `npm run release`, which bumps it), the next time anything
+`git pull`, or after `npm run release` bumped a version the server already
+had), the next time anything
 wakes it or within the hour — also when the browser was closed at the time.
 The phone's `.crx` takes each version `npm run release` publishes. Either
 way, refresh any YouTube tab you already had open — content scripts only
@@ -164,7 +180,7 @@ once, since that one has nothing to update itself with.
 
 ## Blocking your first channel
 
-Three ways, all equivalent:
+Four ways, all equivalent:
 
 | where | how |
 |---|---|
@@ -228,9 +244,9 @@ from any channel:
   regular expression (a malformed one is ignored rather than breaking the
   page). Paste several lines to add them all at once; **Remove all** clears
   the list (undoable).
-- **By length** — a minimum and/or maximum duration. Anything outside the
-  range goes. Handy for cutting Shorts-length clips or three-hour streams.
-  Leave a field blank for "no limit".
+- **By length** — *shorter than N seconds* and/or *longer than N minutes*.
+  Anything outside the range goes. Handy for cutting Shorts-length clips or
+  three-hour streams. Leave a field blank for "no limit".
 - **Comment cap** — *Show at most N comments* stops a video's comment
   section scrolling forever. It keeps the first N top-level threads, then
   removes the sentinel YouTube uses to page in more, and says so at the
@@ -256,6 +272,11 @@ from any channel:
 These sync alongside the blocklist. They are applied by script rather than by
 CSS (a title has to be read before it can be matched), so a matching tile can
 be visible for a frame longer than a blocked channel's would be.
+
+<p align="center">
+  <img src="docs/screenshots/keywords.png" width="760" alt="The Keywords and length tab: four title keywords, two of them regexes, then shorter than 90 seconds, longer than 180 minutes, at most 50 comments, and the Subscriptions page rules">
+</p>
+<p align="center"><sub>Keywords & length: two plain keywords and two regexes, a length range, the comment cap and the Subscriptions rules.</sub></p>
 
 ---
 
@@ -301,9 +322,11 @@ which stays at the top as you scroll:
   restore*. The deletes are each section's own **Delete all** and the Danger
   zone (Backup & data).
 
-Each channel row shows a coloured initial, the name, and a quiet second line
-with the `@handle` (click to copy), the subscriber count, the block mode, when
-you added it, and a **gone** tag if the channel no longer exists. **Delete**
+Each channel row shows an initial, the name (struck through for a full
+block), and a quiet second line with the subscriber count, the block mode,
+when you added it, and a **gone** tag if the channel no longer exists. A
+channel saved under its `UC…` ID also shows its `@handle` there once known
+(click to copy); one saved under its `@handle` has it as the name's tooltip. **Delete**
 sits on the right and comes with an **Undo** toast; **⋯** opens a drawer with
 the mode switch, **Hide from list** (keeps it blocked, just stops listing it —
 the *Hidden* filter brings it back), **Copy link**, and for a soft-blocked
@@ -357,6 +380,11 @@ The **Backup & data** tab:
   Every deletion syncs to your other devices and can be undone from
   **Recently removed**; each dialog offers a backup first.
 
+<p align="center">
+  <img src="docs/screenshots/import.png" width="760" alt="The import preview over the Backup and data tab: channels 12, 12 new, 12 carry a sub count; videos 3; title keywords 4; the length rule; the comment limit; the Subscriptions page rules; the never-block list; each with a checkbox, then Cancel and Import">
+</p>
+<p align="center"><sub>Restoring a backup: every part of the file, what's new in it, and a checkbox each.</sub></p>
+
 ---
 
 ## Importing from the original BlockTube
@@ -395,6 +423,16 @@ YouTube itself — 39 switches in 8 groups, each one a single thing removed. All
 are on by default except *Block embedded videos too*. A group's master switch
 flips its whole row.
 
+The page opens with a map of YouTube: click a part to hide it or bring it
+back. Hatched red is gone, solid is changed, and plain is kept. The full list
+of switches is under the map and stays in step with it; **Find a setting…**
+searches both, and **Reset to defaults** puts every switch back.
+
+<p align="center">
+  <img src="docs/screenshots/what-gets-hidden.png" width="760" alt="The What gets hidden tab: a map of YouTube's home, watch and channel pages, each part a hatched red Gone box, a solid Changed box such as Logo to Subs, PIP and Comments in two columns, or a plain Kept box for Embeds on other sites">
+</p>
+<p align="center"><sub>What gets hidden, with the defaults: everything gone but embeds on other sites.</sub></p>
+
 | group | switches |
 |---|---|
 | **Shorts** | shelves and tiles · the full-screen player · the Shorts tab on channels |
@@ -417,10 +455,6 @@ extension. Some changes need a page refresh.
 
 ---
 
-The page opens with a map of YouTube: click a part to hide it or bring it back.
-Hatched red is gone, solid is changed, and plain is kept. The full list of switches
-is under the map and stays in step with it.
-
 ## Sync between browsers
 
 Your blocklist lives in the browser. To keep several browsers on one list —
@@ -436,7 +470,12 @@ it:
 2. On each device: options → **Sync** → the server's address (including its
    path, e.g. `https://your-server.example/xrntube`), your user name and
    password → **Connect**. The first device pushes its list; the others pull
-   it.
+   it. The address must be `https://`, or `http://` to `localhost`.
+
+<p align="center">
+  <img src="docs/screenshots/sync.png" width="760" alt="The Sync tab connected to a test server on localhost: the address, user name and saved password with Reconnect, a status line with the host, user, 12 channels, 3 videos, pushed just now, pulled just now, the Sync now, Restore an earlier copy and Disconnect this device buttons, and an Updates card reading Version 2.1.12, loaded unpacked, with Check now">
+</p>
+<p align="center"><sub>Sync, connected to a throwaway copy of the server on this machine, and the Updates card.</sub></p>
 
 After that it's automatic: a change pushes within seconds and other devices
 pull every few minutes. Merging is per entry with deletions remembered (for a
@@ -466,18 +505,18 @@ since is removed.
 | `storage`, `unlimitedStorage` | your blocklist, settings and keywords (a few thousand channels is about 1 MB) |
 | `declarativeNetRequest` | redirecting a blocked video/channel URL at the network layer, before the page renders |
 | `contextMenus` | the right-click "block this channel / video" items |
-| `alarms` | the periodic sync poll, and resuming a paused sub-count lookup |
-| `*://*.youtube.com/*` | the content script, and fetching a channel page to read its subscriber count and `@handle` |
+| `alarms` | the sync poll every 3 minutes, the hourly update check, and resuming a paused sub-count lookup |
+| `*://*.youtube.com/*` | the content scripts (also inside YouTube players embedded on other sites, which only act when *Block embedded videos too* is on), fetching a channel page to read its subscriber count and `@handle`, and YouTube's public oEmbed lookup for an embedded video's channel |
 
 Nothing is sent anywhere else. There is no analytics, no account, and no
 remote config. The only outbound requests are to youtube.com (pages you were
 visiting anyway, plus the channel-info scrape) and, if you set it up, to your
 own sync server, which is also where a browser that installed the `.crx`
-looks for new versions.
+looks for new versions. The font ships with the extension, so no font is
+fetched from anywhere either.
 
-The extension's own pages use [MiSans](https://hyperos.mi.com/font) by Xiaomi,
-free for commercial use and embedded here under its terms. The file ships with
-the extension, so no font is fetched from anywhere.
+Your sync password is kept in the browser's local extension storage on that
+device only: never in `chrome.storage.sync`, a backup file or the package.
 
 ---
 
@@ -569,6 +608,7 @@ background/server-sync.js   sync with your own server
 server/xrntube-sync.py      that server (one Python file)
 scripts/package.mjs         builds the zip; `--release` signs the .crx and publishes it for self-updates
 scripts/crx.mjs             the zip and CRX3 writers, the extension ID, updates.xml
+scripts/release-guard.mjs   what stops a release: wrong branch, uncommitted work, a missing or different key
 scripts/canary.mjs          the weekly live-YouTube check (and its timer)
 content/page-hook.js        runs in the page itself: filters YouTube's data before it renders
 content/content.js          pre-paint CSS, DOM scrubbing, the ⋮ menu rows, nav guards
@@ -578,7 +618,9 @@ options/                    blocklist manager, filters, settings, sync setup
 shared/constants.js         message types + storage config shared everywhere
 shared/block-logic.js       the one blocking verdict, used by the DOM scrub and the data filter
 test/                       end-to-end suite — real Chromium against live YouTube
-docs/                       architecture, blocking rules, known fragility
+docs/                       architecture, blocking rules, known fragility, the sync server
+docs/screenshots/           the pictures in this README
+.github/workflows/ci.yml    CI: npm run check and the offline tests on every push and PR
 package.json                dev tooling only (Playwright); no build step
 ```
 
@@ -594,4 +636,27 @@ node scripts/canary.mjs --install      # …weekly, as a systemd user timer (--u
 
 Start at [docs/architecture.md](docs/architecture.md) for how the five
 contexts fit together; the rest of [docs/](docs/) has the detail, and
-[test/README.md](test/README.md) covers the suite.
+[test/README.md](test/README.md) covers the suite. The sync server's own
+tests are in `test/serversync-test.mjs` (part of `test:fast`); they run the
+real `server/xrntube-sync.py`, so they need Python 3.14.7+ with `bcrypt`.
+
+The screenshots above were taken in headless Chromium with the unpacked
+extension, offline, after importing a backup file of made-up channels, and
+with the sync tab pointed at a throwaway copy of the server on `localhost`.
+The popup's page data (the video and its channels) was stubbed, since a real
+YouTube page would show real people's videos.
+
+---
+
+## Licence
+
+[MIT](LICENSE).
+
+The extension's own pages use [MiSans](https://hyperos.mi.com/font) by
+Xiaomi, free for commercial use and included here under its terms.
+
+XrnTube is an independent project, not affiliated with or endorsed by
+YouTube or Google. YouTube is a trademark of Google LLC; the name is used
+only to say which site the extension works on, and no YouTube logo or artwork
+is included. It is also unrelated to the BlockTube extension, whose export
+file it can import.
