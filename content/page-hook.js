@@ -69,7 +69,7 @@
   const stats = { responses: 0, candidates: 0, removed: 0, initialData: "untouched" };
   if (DEBUG) window.__btDataLayer = stats;
   const dbg = (...a) => {
-    if (DEBUG) console.debug("%c[XrnTube/data]", "color:#07c;font-weight:bold", ...a);
+    if (DEBUG) console.debug("%c[xrntube/data]", "color:#07c;font-weight:bold", ...a);
   };
 
   // Set by content.js: false while the blocklist is empty and no filters are

@@ -1,6 +1,6 @@
 import { chromium } from "playwright";
 
-// XrnTube's block options, inside YouTube's own ⋮ menu on the desktop.
+// xrntube's block options, inside YouTube's own ⋮ menu on the desktop.
 // (mobile-test covers the phone's bottom sheet.) A tile used to carry a 🚫
 // button of ours beside YouTube's ⋮; now a click on the ⋮ adds our rows to
 // the popup YouTube opens. What can go wrong with that, each checked here:
@@ -137,7 +137,7 @@ if (!own) {
   await p.click('[data-bt-test="own"]');
   await p.waitForTimeout(1200);
   (await menusOpen()) && (await rowGroups()) === 0
-    ? ok("the video's own … menu opens without any XrnTube rows in it")
+    ? ok("the video's own … menu opens without any xrntube rows in it")
     : fail(`own menu: open=${await menusOpen()} rows=${await rowGroups()}`);
   await p.keyboard.press("Escape");
   await p.waitForTimeout(500);

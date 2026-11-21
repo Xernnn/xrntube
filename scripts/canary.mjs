@@ -34,7 +34,7 @@ else await run();
 
 function notify(summary, body, urgency = "normal") {
   try {
-    execFileSync("notify-send", ["-a", "XrnTube", "-u", urgency, summary, body]);
+    execFileSync("notify-send", ["-a", "xrntube", "-u", urgency, summary, body]);
   } catch {
     // no notification daemon (or no notify-send): the log still has it
   }
@@ -85,7 +85,7 @@ async function run() {
   }
   const what = names.length ? names.join(", ") : `the run itself (exit ${r.status ?? r.signal})`;
   notify(
-    "XrnTube: live tests failed",
+    "xrntube: live tests failed",
     `${what}. YouTube may have changed something blocking relies on. Log: ${logFile}`,
     "critical"
   );
@@ -110,7 +110,7 @@ function install() {
   writeFileSync(
     join(UNIT_DIR, `${UNIT}.service`),
     `[Unit]
-Description=XrnTube weekly live-YouTube canary
+Description=xrntube weekly live-YouTube canary
 Wants=network-online.target
 After=network-online.target
 
@@ -128,7 +128,7 @@ Nice=10
   writeFileSync(
     join(UNIT_DIR, `${UNIT}.timer`),
     `[Unit]
-Description=Run the XrnTube canary weekly
+Description=Run the xrntube canary weekly
 
 [Timer]
 OnCalendar=Mon *-*-* 10:00

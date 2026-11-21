@@ -1,4 +1,4 @@
-/* XrnTube options. Light and dark, driven entirely by the tokens below —
+/* xrntube options. Light and dark, driven entirely by the tokens below —
    every colour in this file goes through a var so the dark block only has to
    redefine the palette, never the rules. Removed things are hatched red
    everywhere, on the map, on a blocked name and on the Block button, so one

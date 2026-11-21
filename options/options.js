@@ -1487,7 +1487,7 @@ $("export-btn").addEventListener("click", () => exportBackup());
 const CHANNEL_KEY_RE = /^(UC[\w-]{22}|@[\w.\-%]+)$/;
 const VIDEO_ID_RE = /^[\w-]{11}$/;
 
-// The original BlockTube extension's export → what XrnTube can take from it.
+// The original BlockTube extension's export → what xrntube can take from it.
 //
 // Its filterData fields are text lists, one rule per line (an array of lines,
 // or one newline-joined string, depending on the version that wrote it):
@@ -1495,7 +1495,7 @@ const VIDEO_ID_RE = /^[\w-]{11}$/;
 //   videoId    — the same shape, keyed by video id
 //   title      — title keywords, `/regex/flags` or plain text
 //   vidLength  — [minSeconds, maxSeconds]
-//   channelName, comment, javascript — rules XrnTube has no equivalent for
+//   channelName, comment, javascript — rules xrntube has no equivalent for
 // Everything that can't come across is listed in `skipped` with the reason,
 // so an import can be checked line by line rather than trusted blindly.
 function convertOldBlockTube(raw) {
@@ -1671,7 +1671,7 @@ function buildImportPlan(data) {
 
   if (data.channels || data.videos) {
     const when = data.exportedAt ? ` from ${new Date(data.exportedAt).toLocaleString()}` : "";
-    const plan = emptyPlan(data.format === "xrntube-backup" ? `an XrnTube backup${when}` : "an XrnTube blocklist export");
+    const plan = emptyPlan(data.format === "xrntube-backup" ? `an xrntube backup${when}` : "an xrntube blocklist export");
     for (const [id, e] of Object.entries(data.channels || {})) {
       if (CHANNEL_KEY_RE.test(id) && e && typeof e === "object") plan.channels[id] = e;
       else plan.skipped.push({ field: "channels", value: id, why: "not a channel ID or @handle" });

@@ -637,7 +637,7 @@ async function rebuildDnrRules(state) {
     // Never let a DNR failure abort a blocklist write — content.js still
     // enforces everything. Fall back to clearing rules so at least the ones
     // that would apply aren't stale.
-    console.warn("XrnTube: updateDynamicRules failed, clearing dynamic rules", err);
+    console.warn("xrntube: updateDynamicRules failed, clearing dynamic rules", err);
     await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds }).catch(() => {});
   }
 }
@@ -757,7 +757,7 @@ function verifyChannelInfo(key, info) {
     ? info.handle && info.handle.toLowerCase() !== asked.toLowerCase()
     : info.ucid && info.ucid !== asked;
   if (mismatch) {
-    console.debug("[XrnTube] identity mismatch for", asked, "— discarding scraped handle/ucid");
+    console.debug("[xrntube] identity mismatch for", asked, "— discarding scraped handle/ucid");
     return { ...info, handle: null, ucid: null };
   }
   return info;
@@ -914,7 +914,7 @@ async function enrichChannelIdentity(key) {
     await broadcastUpdate(await loadAll());
   } catch (e) {
     // Offline / blocked fetch — the entry still blocks by the key it has.
-    console.debug("[XrnTube] identity enrich failed", e);
+    console.debug("[xrntube] identity enrich failed", e);
   }
 }
 
@@ -1751,8 +1751,8 @@ function setUpContextMenus() {
     chrome.contextMenus.removeAll(() => {
       settle();
       const common = { contexts: ["link", "page", "video"], documentUrlPatterns: ["*://*.youtube.com/*"] };
-      chrome.contextMenus.create({ id: CTX_BLOCK_CHANNEL, title: "XrnTube: block this channel", ...common }, settle);
-      chrome.contextMenus.create({ id: CTX_BLOCK_VIDEO, title: "XrnTube: block this video", ...common }, settle);
+      chrome.contextMenus.create({ id: CTX_BLOCK_CHANNEL, title: "xrntube: block this channel", ...common }, settle);
+      chrome.contextMenus.create({ id: CTX_BLOCK_VIDEO, title: "xrntube: block this video", ...common }, settle);
     });
   } catch {}
 }
@@ -1786,7 +1786,7 @@ if (chrome.contextMenus) {
     const { videoId, channelKey } = ctxTargetFrom(info);
 
     if (info.menuItemId === CTX_BLOCK_VIDEO) {
-      if (!videoId) return toast(tabId, "XrnTube: no video in that link.");
+      if (!videoId) return toast(tabId, "xrntube: no video in that link.");
       const state = await addEntry("video", videoId, "");
       await broadcastUpdate(state);
       return toast(tabId, "Video blocked.");
@@ -1797,7 +1797,7 @@ if (chrome.contextMenus) {
     // back to the same oEmbed lookup the /embed/ guard uses.
     let key = channelKey;
     if (!key && videoId) key = await resolveVideoChannel(videoId);
-    if (!key) return toast(tabId, "XrnTube: couldn't work out which channel that is.");
+    if (!key) return toast(tabId, "xrntube: couldn't work out which channel that is.");
     const state = await addEntry("channel", key, "", { mode: CHANNEL_MODE.FULL, whitelist: {} });
     await broadcastUpdate(state);
     // Fills in the real name and the other identity format, as a popup block does.

@@ -88,7 +88,7 @@ out *what* was clicked.
 
 ## ⋮-menu Undo
 
-A block from XrnTube's rows in a tile's ⋮ menu (`addTileMenuRows()` →
+A block from xrntube's rows in a tile's ⋮ menu (`addTileMenuRows()` →
 `blockAndRemove()`) removes the tile at once and then calls
 `showToast(label, { label: "Undo", run })` — the same `<bt-toast>` banner the
 right-click block uses, which stays click-through except for its one button.

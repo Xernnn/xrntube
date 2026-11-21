@@ -325,8 +325,8 @@ it names.
   in the sidebar, check the network panel for which endpoint carries the rail
   now, that it is in `HOOKED`, and that `lockupViewModel`'s byline paths still
   resolve, before looking anywhere in the DOM layer.
-- **XrnTube's ⋮ rows ride on YouTube's popup markup.** They need three
-  things to hold (content.js, "XrnTube's options, inside YouTube's own ⋮
+- **xrntube's ⋮ rows ride on YouTube's popup markup.** They need three
+  things to hold (content.js, "xrntube's options, inside YouTube's own ⋮
   menu"): `MENU_TRIGGER_SEL` recognising the tile's ⋮ (`ytd-menu-renderer
   #button`, the lockup's `.ytLockupMetadataViewModelMenuButton`, the phone's
   `ytm-bottom-sheet-renderer`); `openTileMenuHost()` finding the open popup

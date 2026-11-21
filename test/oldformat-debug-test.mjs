@@ -140,10 +140,10 @@ dbg.on("console", (m) => logs.push(m.text()));
 await send({ type: "BLOCK_CHANNEL", id: "@MrBeast", name: "MrBeast", mode: "full" });
 await dbg.goto("https://www.youtube.com/results?search_query=mrbeast&bt-debug=1", { waitUntil: "domcontentloaded" });
 await dbg.waitForTimeout(8000);
-logs.some((l) => /\[XrnTube\] debug mode on/.test(l))
+logs.some((l) => /\[xrntube\] debug mode on/.test(l))
   ? ok("?bt-debug logs the 'debug mode on' banner to the page console")
   : fail("no debug banner in console logs");
-logs.some((l) => /\[XrnTube\].*removed .*—/.test(l))
+logs.some((l) => /\[xrntube\].*removed .*—/.test(l))
   ? ok("removals are logged with a reason")
   : console.log("   (no removal logged — MrBeast may be absent from that search right now)");
 
