@@ -59,6 +59,9 @@ from urllib.parse import parse_qs, urlsplit
 import bcrypt
 
 MAX_BODY = 32 * 1024 * 1024
+# How many lists and objects deep a document may go. The extension's own nest a handful; json.dump
+# gives up near a thousand (the recursion limit), while json.loads takes thousands, more on 3.14.
+MAX_DEPTH = 64
 FAIL_DELAY_S = 2  # after a wrong password, as Radicale does
 MAX_HELD = 8  # wrong logins held for FAIL_DELAY_S at once; any more are answered at once
 FAIL_LIMIT = 10  # wrong logins from one address within FAIL_WINDOW_S, then 429 until they age out
@@ -284,6 +287,20 @@ def read_state(user):
             return json.load(f)
     except (OSError, ValueError):
         return {"version": 0, "data": {}}
+
+
+def nested_within(value, limit):
+    """Whether no list or object in [value] sits more than [limit] deep, the outermost being 1.
+    Walked with a list of its own, not by recursion, so any depth is measured without a stack."""
+    todo = [(value, 1)] if isinstance(value, (dict, list)) else []
+    while todo:
+        value, depth = todo.pop()
+        if depth > limit:
+            return False
+        for v in value.values() if isinstance(value, dict) else value:
+            if isinstance(v, (dict, list)):
+                todo.append((v, depth + 1))
+    return True
 
 
 def write_state(user, doc):
@@ -603,8 +620,12 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(raw)
             if not isinstance(data, dict):
                 raise ValueError
-        except ValueError:
+        except (ValueError, RecursionError):  # nested past the parser's depth: no traceback, a 400
             return self.send(400, "body must be a JSON object")
+        if not nested_within(data, MAX_DEPTH):
+            # Parsed, but past what json.dump can write back: it raised RecursionError after the
+            # copy before was kept, and the device got no answer. Refused before anything is written.
+            return self.send(400, f"body nested deeper than {MAX_DEPTH} levels")
         want = (self.headers.get("If-Match") or "").strip()
         if not want:
             return self.send(428, "If-Match required")

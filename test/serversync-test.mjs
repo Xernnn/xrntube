@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from "child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createServer } from "http";
@@ -40,6 +40,8 @@ import { chromium } from "playwright";
 //   - the log shows a caller's control characters escaped
 //   - no answer names the Python version
 //   - a Content-Length that isn't a number gets a 400
+//   - a document nested too deep to write back gets a 400, before anything is
+//     written; one nested up to the limit is taken
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -57,17 +59,21 @@ const PASS = "pässword-123"; // non-ASCII on purpose: Basic auth must survive i
 const SLOW_USER = "slowhash";
 // A third, for two right logins being checked at the same time.
 const THIRD_USER = "third";
+// A fourth, whose state only the over-deep documents touch.
+const DEEP_USER = "deep";
 writeFileSync(
   join(dir, "users"),
   execFileSync("python3", [
     "-c",
-    "import bcrypt,sys\nfor u, pw, cost in ((sys.argv[1], sys.argv[2], 4), (sys.argv[3], sys.argv[4], 10), (sys.argv[5], sys.argv[6], 10)):\n    print(u + ':' + bcrypt.hashpw(pw.encode(), bcrypt.gensalt(cost)).decode())",
+    "import bcrypt,sys\nfor u, pw, cost in ((sys.argv[1], sys.argv[2], 4), (sys.argv[3], sys.argv[4], 10), (sys.argv[5], sys.argv[6], 10), (sys.argv[7], sys.argv[8], 4)):\n    print(u + ':' + bcrypt.hashpw(pw.encode(), bcrypt.gensalt(cost)).decode())",
     USER,
     PASS,
     SLOW_USER,
     "slow-pass",
     THIRD_USER,
-    "third-pass"
+    "third-pass",
+    DEEP_USER,
+    "deep-pass"
   ])
 );
 const PORT = 5300 + Math.floor(Math.random() * 500);
@@ -682,6 +688,55 @@ try {
   /^HTTP\/1\.[01] 400/.test(badLength)
     ? ok("a Content-Length that isn't a number is answered 400")
     : fail(`a Content-Length that isn't a number: ${JSON.stringify(badLength.slice(0, 80))} (want a 400)`);
+
+  // ---- a document nested too deep to write back gets a 400 ----
+  // json.loads takes a few thousand levels (tens of thousands on Python 3.14),
+  // json.dump only about a thousand. A document in between was taken, the
+  // copy it replaced was kept in history/, and then writing it raised
+  // RecursionError: the connection closed with no answer, after a write that
+  // never happened. One deeper than json.loads takes raised RecursionError
+  // from the parse, which isn't a ValueError: no answer either. Its own user,
+  // so the devices' state and the logins counted below are left alone.
+  {
+    const putDeep = (body, version) =>
+      fetch(`${URL_}/state`, {
+        method: "PUT",
+        headers: { Authorization: "Basic " + Buffer.from(`${DEEP_USER}:deep-pass`).toString("base64"), "If-Match": `"${version}"` },
+        body
+      }).then(
+        async (r) => [r.status, await r.text()],
+        (e) => ["no reply: " + ((e.cause && e.cause.code) || e.message), ""]
+      );
+    // {"channels": {"x": {"tags": [[...]]}}}: the outermost object is level 1
+    const nested = (depth) => `{"channels":{"x":{"tags":${"[".repeat(depth - 3)}${"]".repeat(depth - 3)}}}}`;
+    const first = await putDeep('{"channels":{}}', 0);
+    const [deepStatus, deepText] = await putDeep(nested(2000), 1);
+    const [deeperStatus] = await putDeep(`{"channels":${"[".repeat(100000)}${"]".repeat(100000)}}`, 1);
+    const etag = (
+      await fetch(`${URL_}/state`, { headers: { Authorization: "Basic " + Buffer.from(`${DEEP_USER}:deep-pass`).toString("base64") } })
+    ).headers.get("etag");
+    const files = readdirSync(join(dir, "data", "users", DEEP_USER));
+    first[0] === 200 && deepStatus === 400 && /nested/.test(deepText) && deeperStatus === 400 && etag === '"1"' && files.join() === "state.json"
+      ? ok("a document nested 2,000 or 100,000 deep is answered 400; the version stays, and no earlier copy or half-written file is left")
+      : fail(
+          `over-deep documents: first ${first[0]}, 2,000 deep ${deepStatus} ${JSON.stringify(deepText)}, 100,000 deep ${deeperStatus} (want 400s); ` +
+            `then ETag ${etag} (want "1"), files ${files} (want state.json)`
+        );
+
+    const maxDepth = Number(
+      execFileSync("python3", [
+        "-B",
+        "-c",
+        "import importlib.util as u, sys\ns = u.spec_from_file_location('s', sys.argv[1])\nm = u.module_from_spec(s)\ns.loader.exec_module(m)\nprint(m.MAX_DEPTH)",
+        join(EXT_PATH, "server/xrntube-sync.py")
+      ]).toString()
+    );
+    const [atLimit] = await putDeep(nested(maxDepth), 1);
+    const [pastLimit] = await putDeep(nested(maxDepth + 1), 2);
+    atLimit === 200 && pastLimit === 400
+      ? ok(`a document nested ${maxDepth} deep is taken, and one level more is refused`)
+      : fail(`nested to the limit (${maxDepth}): ${atLimit} (want 200), one more: ${pastLimit} (want 400)`);
+  }
 
   // ---- HEAD is a GET without its body ----
   // curl -I and monitors got http.server's 501 "Unsupported method", which a
