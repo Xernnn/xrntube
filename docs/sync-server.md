@@ -56,6 +56,14 @@ matter whether the proxy in front strips it.
   stops such a page at the preflight and the login is never sent. It isn't
   one fixed ID: Firefox gives every install its own uuid, and an unpacked
   copy has an ID of its own.
+- **Connections**: a thread each, closed once answered, and at most 64 open
+  at once (`MAX_CONNECTIONS`); one more is answered 503 straight away and
+  closed, with a `warning:` line in the log at most once a minute. A caller
+  that goes quiet is let go after 2 minutes. Without the cap, a flood of
+  connections started threads until the phone ran out of memory. The devices
+  never wait on the server (there is no long-poll), so 64 leaves room for the
+  largest burst the server answers itself — thirty logins at once from one
+  address — beside them.
 - **gzip** both ways: the extension compresses its PUT (`CompressionStream`);
   the server compresses responses when asked. A few thousand channels is ~1MB
   of JSON.

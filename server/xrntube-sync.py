@@ -64,6 +64,14 @@ MAX_HELD = 8  # wrong logins held for FAIL_DELAY_S at once; any more are answere
 FAIL_LIMIT = 10  # wrong logins from one address within FAIL_WINDOW_S, then 429 until they age out
 FAIL_WINDOW_S = 15 * 60
 AUTH_CACHE_S = 600  # a bcrypt check costs ~0.3s on a phone; don't pay it per request
+# Connections served at once; one more is answered 503 (Server). Each is a thread, and with no cap
+# a flood of connections, each kept up to Handler.timeout by a caller that goes quiet, started a
+# thread apiece until the phone ran out of memory, for every service on it. A device makes one
+# request at a time, closed when answered (HTTP/1.0), and none waits on the server: there is no
+# long-poll (?since= answers at once). The busiest legitimate moment is a burst this server
+# answers itself: thirty logins sent at once from one address stay open while ten are checked
+# (reserve_attempt), which this leaves room for, with the devices beside it.
+MAX_CONNECTIONS = 64
 PREFIX = "/xrntube"
 # What the extension may read off a reply. Its requests are CORS (it holds no host permission for
 # this server), so any other header is hidden from it: ETag is the version it merges against, and
@@ -613,6 +621,55 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, '{"ok":true}', "application/json", {"ETag": f'"{version}"'})
 
 
+class Server(ThreadingHTTPServer):
+    """A thread per connection, as ThreadingHTTPServer, but at most MAX_CONNECTIONS of them at
+    once. One more is answered 503 and closed by the thread that accepts connections, which starts
+    no thread for it."""
+
+    BUSY_TEXT = b"too many connections at once; try again shortly"
+    BUSY = (
+        "HTTP/1.0 503 Service Unavailable\r\n"
+        f"Server: {Handler.server_version}\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        f"Content-Length: {len(BUSY_TEXT)}\r\n"
+        "Retry-After: 10\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+    ).encode() + BUSY_TEXT
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        # Connections turned away, said in the log at most once a minute: a flood is one line, not
+        # one per connection. Only the accepting thread uses these.
+        self.turned_away, self.said_at = 0, None
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            self.turned_away += 1
+            now = time.monotonic()
+            if self.said_at is None or now - self.said_at >= 60:
+                sys.stderr.write(
+                    f"warning: all {MAX_CONNECTIONS} connections in use; {self.turned_away} turned away (503) since the last such line\n"
+                )
+                self.turned_away, self.said_at = 0, now
+            try:
+                request.sendall(self.BUSY)  # a few bytes into a new socket's empty buffer: doesn't block
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.slots.release()  # no thread started, so none will give it back
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
+
 def main():
     global args
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -627,7 +684,7 @@ def main():
     args.users = os.path.expanduser(args.users)
     os.makedirs(os.path.join(args.data, "downloads"), exist_ok=True)
     os.makedirs(os.path.join(args.data, "update"), exist_ok=True)
-    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    srv = Server((args.host, args.port), Handler)
     sys.stderr.write(f"xrntube-sync on http://{args.host}:{args.port}, data in {args.data}\n")
     srv.serve_forever()
 

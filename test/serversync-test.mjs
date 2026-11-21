@@ -32,6 +32,8 @@ import { chromium } from "playwright";
 //   - CORS headers go to an extension's origin only: a web page's preflight
 //     allows nothing, and a login it tries never reaches the server
 //   - a connection that goes quiet is let go
+//   - only so many connections at once: one more is answered 503, and the
+//     server serves again when one ends
 //   - a request with no password isn't held for the 2 s a wrong one is
 //   - a user name that isn't there costs a bcrypt check like a wrong password
 //   - a request line that doesn't parse gets its 400
@@ -103,6 +105,57 @@ const stamped = (name) => ({ name, mode: "full", subsAt: Date.now(), subsV: 9 })
 let A;
 let B;
 try {
+  // ---- only so many connections at once ----
+  // Each connection is a thread, kept up to two minutes by a caller that goes
+  // quiet, and nothing capped them: a flood of connections started threads
+  // until the phone ran out of memory. First, before any device talks to the
+  // server, so these are the only connections open.
+  {
+    const cap = Number(
+      execFileSync("python3", [
+        "-B",
+        "-c",
+        "import importlib.util as u, sys\ns = u.spec_from_file_location('s', sys.argv[1])\nm = u.module_from_spec(s)\ns.loader.exec_module(m)\nprint(m.MAX_CONNECTIONS)",
+        join(EXT_PATH, "server/xrntube-sync.py")
+      ]).toString()
+    );
+    const quietConn = () =>
+      new Promise((resolve) => {
+        const sock = connect(PORT, "127.0.0.1");
+        sock.got = "";
+        sock.on("data", (d) => (sock.got += d));
+        sock.on("error", () => {});
+        sock.ended = new Promise((r) => sock.on("close", r));
+        sock.on("connect", () => resolve(sock));
+      });
+    const healthy = async () => {
+      for (let i = 0; i < 40; i++) {
+        if (await fetch(`http://127.0.0.1:${PORT}/health`).then((r) => r.ok, () => false)) return true;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return false;
+    };
+    const quiet = [];
+    try {
+      const from = serverLog.length;
+      // One at a time, so the server takes them in this order.
+      for (let i = 0; i < cap; i++) quiet.push(await quietConn());
+      const extra = await quietConn();
+      await Promise.race([extra.ended, new Promise((r) => setTimeout(r, 5000))]);
+      const heldQuietly = quiet.every((s) => s.got === "" && !s.destroyed);
+      quiet.pop().destroy();
+      const servesAgain = await healthy();
+      /^HTTP\/1\.0 503 /.test(extra.got) && extra.destroyed && heldQuietly && servesAgain && /warning: all \d+ connections in use/.test(serverLog.slice(from))
+        ? ok(`${cap} connections open at once: one more is answered 503 and closed, and when one of them ends the server serves again`)
+        : fail(`${cap} quiet connections, then one more: ${JSON.stringify(extra.got.slice(0, 60)) || "nothing"} (closed: ${extra.destroyed}); the ${cap} untouched: ${heldQuietly}; serves after one ends: ${servesAgain}`);
+      extra.destroy();
+    } finally {
+      for (const s of quiet) s.destroy();
+      await healthy();
+      await new Promise((r) => setTimeout(r, 300)); // the rest of the threads see their callers gone
+    }
+  }
+
   A = await device("A");
   B = await device("B");
 
