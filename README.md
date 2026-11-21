@@ -2,7 +2,7 @@
   <img src="icons/icon128.png" width="72" height="72" alt="">
 </p>
 
-<h1 align="center">XrnTube</h1>
+<h1 align="center">xrntube</h1>
 
 A browser extension that **deletes** blocked YouTube channels and videos from
 your feed, search results and recommendations. Not a greyed-out "this channel
@@ -79,7 +79,7 @@ afterwards.
 1. Open `chrome://extensions` (or `edge://extensions`, `brave://extensions`).
 2. Turn on **Developer mode** (top-right).
 3. Click **Load unpacked** and select the folder you just unpacked.
-4. Pin the XrnTube icon (a red tile with a play button) to your toolbar if you want the quick-block popup handy.
+4. Pin the xrntube icon (a red tile with a play button) to your toolbar if you want the quick-block popup handy.
 
 **2b. Zen / Firefox (140 or newer)**
 
@@ -102,7 +102,7 @@ folder's version changes.
 
 If the popup says **No access to YouTube**, click **Allow on YouTube**
 (Firefox can withhold an extension's site access, and it can be switched off
-in `about:addons` → XrnTube → **Permissions**), then reload YouTube. The
+in `about:addons` → xrntube → **Permissions**), then reload YouTube. The
 `.crx` self-update below is Chromium-only.
 
 **2c. On your phone (Quetta or another Chromium browser with extensions)**
@@ -134,7 +134,7 @@ on fetches every new version from there by itself.
 
 Options → **Sync** → **Updates** shows the version and where it updates
 from; **Check now** looks straight away instead of waiting the few hours the
-browser takes on its own. XrnTube also checks hourly by itself, reading your
+browser takes on its own. xrntube also checks hourly by itself, reading your
 server's update file first and asking the browser only when there's a newer
 version, so a release usually reaches a phone within the hour. A copy loaded from a `.zip` (`npm run package`) also
 works, but is unpacked and never updates.
@@ -144,7 +144,7 @@ Store as **Unlisted** (one-time $5 developer fee): only someone with the link
 can find it, and updates arrive automatically. Your server's address and
 password are never in the package — you type them into the Sync page.
 
-On the phone, tap a tile's ⋮: XrnTube's block options are at the bottom of
+On the phone, tap a tile's ⋮: xrntube's block options are at the bottom of
 the sheet YouTube opens, under its own.
 
 **Checking it on the phone.** The test suite runs the mobile site in
@@ -184,8 +184,8 @@ Four ways, all equivalent:
 
 | where | how |
 |---|---|
-| **On a tile** | Click the tile's ⋮ (YouTube's own menu) → XrnTube's options are at the bottom, under YouTube's: *Block this video*, *Block channel: X*, *Block all videos from X*. A banner confirms it, with an **Undo**. A tile with no ⋮ (a channel card in search) is blocked from the popup or by right-click |
-| **Right-click** | Right-click a video or channel link (or anywhere on a watch page) → **XrnTube: block this channel** / **block this video** |
+| **On a tile** | Click the tile's ⋮ (YouTube's own menu) → xrntube's options are at the bottom, under YouTube's: *Block this video*, *Block channel: X*, *Block all videos from X*. A banner confirms it, with an **Undo**. A tile with no ⋮ (a channel card in search) is blocked from the popup or by right-click |
+| **Right-click** | Right-click a video or channel link (or anywhere on a watch page) → **xrntube: block this channel** / **block this video** |
 | **Toolbar popup** | On a video or channel page, click the xrntube toolbar icon — it lists the video and every channel it found, with both block modes per channel (and an **Unblock** button for anything already blocked) |
 | **Options page** | Paste into the **Block something** box at the top of the Blocklist tab — `@handles`, `UC…` IDs, channel links, video links, several at once |
 
@@ -263,7 +263,7 @@ from any channel:
     the way through. One you left half-way stays.
   - *Hide premieres and scheduled streams* drops what hasn't aired yet. Live
     streams stay. (In a UI language other than English, the newest desktop
-    tiles mark these only in words XrnTube doesn't read, so some may stay.)
+    tiles mark these only in words xrntube doesn't read, so some may stay.)
 
   Shorts are left alone by all three (they carry no date or progress bar, and
   the Shorts switches cover them), and so are channels on your Never-block
@@ -357,7 +357,7 @@ The **Backup & data** tab:
   channels and videos (with sub counts, both identities, modes, whitelists and
   age rules), title keywords, the length and comment limits, the never-block
   list, and your *What gets hidden* switches. Your sync password is never in it.
-- **Import or restore** — choose or drop a file. It takes an XrnTube backup of
+- **Import or restore** — choose or drop a file. It takes an xrntube backup of
   any age or an export from the original BlockTube, and **shows you what it
   will do before it does it**: each part (channels, videos, keywords, length
   rule, never-block, switches) with a checkbox and how much of it is new, plus
@@ -374,7 +374,7 @@ The **Backup & data** tab:
   *gone* (YouTube says the channel no longer exists) is pre-selected. The
   rest still block, so they're offered but not ticked: *only one ID found*
   (the lookup never found its `@handle` or `UC…` ID; usually a lookup YouTube
-  was throttling, and XrnTube looks these up again a few times, days apart,
+  was throttling, and xrntube looks these up again a few times, days apart,
   until they pair up), *no sub count*, and *hides its sub count*. A channel
   not looked up yet is never in any group.
   Every deletion syncs to your other devices and can be undone from
@@ -399,7 +399,7 @@ across:
 | `videoId` (IDs, video links) | blocked videos, with their titles |
 | `title` (text or `/regex/`) | title keywords |
 | `vidLength` | the length rule |
-| `channelName` | **not imported** — XrnTube never blocks by display name, since two channels can share one. Block those from YouTube instead |
+| `channelName` | **not imported** — xrntube never blocks by display name, since two channels can share one. Block those from YouTube instead |
 | `comment`, custom `javascript`, `percentWatchedHide` | **not imported** — no equivalent |
 
 Everything in the right-hand "not imported" rows is listed in the preview,
@@ -533,14 +533,14 @@ channel's age rule and whitelist in its options-page panel.
 **Why isn't *this* blocked?** Add `?bt-debug` to any YouTube URL (or run
 `localStorage.setItem("bt_debug", "1")` once). The console then logs every
 removal with its reason, and `window.__xrnTube` — reachable by switching the
-console's JavaScript-context dropdown to **XrnTube** — gives you `state()`
+console's JavaScript-context dropdown to **xrntube** — gives you `state()`
 and `why("<CSS selector>")`, which explains a tile: the channel keys it
 carries, how each resolves against the blocklist, and the verdict.
 
 **"A search stopped loading more results."** If several pages of results in a
 row are entirely blocked — or entirely Shorts, with the Shorts switch on —
-XrnTube stops the page asking for more and says so
-in a line where the next batch would have gone ("XrnTube stopped loading
+xrntube stops the page asking for more and says so
+in a line where the next batch would have gone ("xrntube stopped loading
 more…"). Without that, YouTube keeps fetching page after page looking for
 something to show — which is what pins a CPU core and makes the tab crawl.
 Reload the search to start it over, or narrow the query. When YouTube itself
@@ -612,7 +612,7 @@ scripts/release-guard.mjs   what stops a release: wrong branch, uncommitted work
 scripts/canary.mjs          the weekly live-YouTube check (and its timer)
 content/page-hook.js        runs in the page itself: filters YouTube's data before it renders
 content/content.js          pre-paint CSS, DOM scrubbing, the ⋮ menu rows, nav guards
-content/content.css         XrnTube's rows in YouTube's ⋮ menu
+content/content.css         xrntube's rows in YouTube's ⋮ menu
 popup/                      quick-block UI for the current page
 options/                    blocklist manager, filters, settings, sync setup
 shared/constants.js         message types + storage config shared everywhere
@@ -655,7 +655,7 @@ YouTube page would show real people's videos.
 The extension's own pages use [MiSans](https://hyperos.mi.com/font) by
 Xiaomi, free for commercial use and included here under its terms.
 
-XrnTube is an independent project, not affiliated with or endorsed by
+xrntube is an independent project, not affiliated with or endorsed by
 YouTube or Google. YouTube is a trademark of Google LLC; the name is used
 only to say which site the extension works on, and no YouTube logo or artwork
 is included. It is also unrelated to the BlockTube extension, whose export
