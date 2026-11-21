@@ -31,10 +31,12 @@ last --keep-days days. A "Delete everything" on one device reaches all of
 them within a sync, so this is what gets the list back.
 
 Any path may carry the mount prefix (/xrntube/state), so it works whether or
-not the proxy strips it. Responses allow any origin (CORS): the browser
-extension calls it with an Authorization header and no cookies, so it needs
-no host permission for the server's address. A write from any other site's
-page is refused all the same (from_another_site).
+not the proxy strips it. The browser extension calls it with an Authorization
+header and no cookies, as CORS requests from its own origin, so it needs no
+host permission for the server's address. The CORS headers go to extension
+origins only (EXTENSION_ORIGIN): a web page gets none, so it can't have its
+visitors' browsers send logins here. A write from any other site's page is
+refused all the same (from_another_site).
 
     python3 xrntube-sync.py --data ~/xrntube-sync --users ~/.config/radicale/users
 """
@@ -62,12 +64,31 @@ MAX_HELD = 8  # wrong logins held for FAIL_DELAY_S at once; any more are answere
 FAIL_LIMIT = 10  # wrong logins from one address within FAIL_WINDOW_S, then 429 until they age out
 FAIL_WINDOW_S = 15 * 60
 AUTH_CACHE_S = 600  # a bcrypt check costs ~0.3s on a phone; don't pay it per request
+# Connections served at once; one more is answered 503 (Server). Each is a thread, and with no cap
+# a flood of connections, each kept up to Handler.timeout by a caller that goes quiet, started a
+# thread apiece until the phone ran out of memory, for every service on it. A device makes one
+# request at a time, closed when answered (HTTP/1.0), and none waits on the server: there is no
+# long-poll (?since= answers at once). The busiest legitimate moment is a burst this server
+# answers itself: thirty logins sent at once from one address stay open while ten are checked
+# (reserve_attempt), which this leaves room for, with the devices beside it.
+MAX_CONNECTIONS = 64
 PREFIX = "/xrntube"
 # What the extension may read off a reply. Its requests are CORS (it holds no host permission for
 # this server), so any other header is hidden from it: ETag is the version it merges against, and
 # Date the clock its merges stamp with — unexposed, it read no Date at all, and each device's own
 # clock decided which copy of an entry was the newer.
 EXPOSE_HEADERS = "ETag, Date"
+# Who gets the CORS headers: an extension's pages and worker, chrome-extension://<32 letters a-p>
+# in Chromium and moz-extension://<uuid> in Firefox. Not one fixed ID: Firefox gives each install
+# its own uuid, and an unpacked copy (the tests, a working copy) has an ID of its own; another
+# extension in the same browser could be given a host permission for this server anyway. They
+# went to every origin ("*"), and the preflight let any origin send Authorization, so any web page
+# could have its visitors' browsers try logins here and read which were right (200 or 401): a
+# password guesser spread over every visitor, each one a new address to the lockout. A page now
+# fails the preflight, and the login is never sent.
+EXTENSION_ORIGIN = re.compile(
+    r"chrome-extension://[a-p]{32}|moz-extension://[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
 
 args = None
 lock = threading.Lock()
@@ -405,11 +426,21 @@ class Handler(BaseHTTPRequestHandler):
             path = path[len(PREFIX):] or "/"
         return path
 
+    def send_cors(self):
+        """Vary: Origin, and the CORS headers if the request came from an extension
+        (EXTENSION_ORIGIN), naming that origin. True if they were sent."""
+        self.send_header("Vary", "Origin")
+        origin = self.headers.get("Origin") or ""
+        if not EXTENSION_ORIGIN.fullmatch(origin):
+            return False
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Expose-Headers", EXPOSE_HEADERS)
+        return True
+
     def send(self, code, body=b"", ctype="text/plain; charset=utf-8", headers=None):
         if code == 304:  # no body, so neither a type nor a length for one
             self.send_response(304)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Expose-Headers", EXPOSE_HEADERS)
+            self.send_cors()
             self.send_header("Cache-Control", "no-store")
             for k, v in (headers or {}).items():
                 self.send_header(k, v)
@@ -421,8 +452,7 @@ class Handler(BaseHTTPRequestHandler):
             body = gzip.compress(body, 6)
             headers = {**(headers or {}), "Content-Encoding": "gzip"}
         self.send_response(code)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Expose-Headers", EXPOSE_HEADERS)
+        self.send_cors()
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -461,12 +491,12 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return user
 
-    def do_OPTIONS(self):  # CORS preflight: no login
+    def do_OPTIONS(self):  # CORS preflight: no login, and nothing allowed but to an extension
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Authorization, If-Match, Content-Type, Content-Encoding")
-        self.send_header("Access-Control-Max-Age", "86400")
+        if self.send_cors():
+            self.send_header("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Authorization, If-Match, Content-Type, Content-Encoding")
+            self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()
 
     def do_GET(self):
@@ -591,6 +621,55 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, '{"ok":true}', "application/json", {"ETag": f'"{version}"'})
 
 
+class Server(ThreadingHTTPServer):
+    """A thread per connection, as ThreadingHTTPServer, but at most MAX_CONNECTIONS of them at
+    once. One more is answered 503 and closed by the thread that accepts connections, which starts
+    no thread for it."""
+
+    BUSY_TEXT = b"too many connections at once; try again shortly"
+    BUSY = (
+        "HTTP/1.0 503 Service Unavailable\r\n"
+        f"Server: {Handler.server_version}\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        f"Content-Length: {len(BUSY_TEXT)}\r\n"
+        "Retry-After: 10\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+    ).encode() + BUSY_TEXT
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        # Connections turned away, said in the log at most once a minute: a flood is one line, not
+        # one per connection. Only the accepting thread uses these.
+        self.turned_away, self.said_at = 0, None
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            self.turned_away += 1
+            now = time.monotonic()
+            if self.said_at is None or now - self.said_at >= 60:
+                sys.stderr.write(
+                    f"warning: all {MAX_CONNECTIONS} connections in use; {self.turned_away} turned away (503) since the last such line\n"
+                )
+                self.turned_away, self.said_at = 0, now
+            try:
+                request.sendall(self.BUSY)  # a few bytes into a new socket's empty buffer: doesn't block
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.slots.release()  # no thread started, so none will give it back
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
+
 def main():
     global args
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -605,7 +684,7 @@ def main():
     args.users = os.path.expanduser(args.users)
     os.makedirs(os.path.join(args.data, "downloads"), exist_ok=True)
     os.makedirs(os.path.join(args.data, "update"), exist_ok=True)
-    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    srv = Server((args.host, args.port), Handler)
     sys.stderr.write(f"xrntube-sync on http://{args.host}:{args.port}, data in {args.data}\n")
     srv.serve_forever()
 

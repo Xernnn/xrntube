@@ -41,12 +41,29 @@ matter whether the proxy in front strips it.
   bcrypt, on this one-thread-per-request server, 18 of 30 got through), and
   a login that finds no place waits for the checks in flight rather than
   getting 429.
-- **CORS**: any origin, `Authorization` / `If-Match` allowed, `ETag` and
+- **CORS**: for extension origins only — `chrome-extension://<ID>` and
+  `moz-extension://<uuid>`, each named back in `Access-Control-Allow-Origin`
+  (with `Vary: Origin`); `Authorization` / `If-Match` allowed, `ETag` and
   `Date` exposed — the version the merge reads, and the clock it stamps with.
   An unexposed header can't be read by the extension at all: before `Date`
   was listed, no device ever took the server's clock.
   The extension sends no cookies, so it needs no host permission for the
   server's address — which therefore never appears in the manifest or the repo.
+  Any other origin gets no CORS headers, and its preflight allows nothing.
+  They used to go to every origin (`*`), so any web page could have its
+  visitors' browsers try logins and read which were right, a guesser spread
+  over every visitor and so past the per-address lockout; now the browser
+  stops such a page at the preflight and the login is never sent. It isn't
+  one fixed ID: Firefox gives every install its own uuid, and an unpacked
+  copy has an ID of its own.
+- **Connections**: a thread each, closed once answered, and at most 64 open
+  at once (`MAX_CONNECTIONS`); one more is answered 503 straight away and
+  closed, with a `warning:` line in the log at most once a minute. A caller
+  that goes quiet is let go after 2 minutes. Without the cap, a flood of
+  connections started threads until the phone ran out of memory. The devices
+  never wait on the server (there is no long-poll), so 64 leaves room for the
+  largest burst the server answers itself — thirty logins at once from one
+  address — beside them.
 - **gzip** both ways: the extension compresses its PUT (`CompressionStream`);
   the server compresses responses when asked. A few thousand channels is ~1MB
   of JSON.
