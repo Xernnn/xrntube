@@ -2,6 +2,7 @@ import { spawn, execFileSync } from "child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { createServer } from "http";
 import { connect } from "net";
 import { gzipSync } from "zlib";
 import { chromium } from "playwright";
@@ -28,6 +29,8 @@ import { chromium } from "playwright";
 //     held their 2 s at a time
 //   - the address counted is the proxy's own hop, and an IPv6 line is its /64
 //   - a write sent from another site's page is refused; the extension's go on
+//   - CORS headers go to an extension's origin only: a web page's preflight
+//     allows nothing, and a login it tries never reaches the server
 //   - a connection that goes quiet is let go
 //   - a request with no password isn't held for the 2 s a wrong one is
 //   - a user name that isn't there costs a bcrypt check like a wrong password
@@ -404,6 +407,92 @@ try {
   fromElsewhere.every((s) => s === 403) && fromOurs.every((s) => s === 412)
     ? ok("a PUT from another site's page is refused (403); the extensions', this host's and an app's go on")
     : fail(`cross-site PUT: from elsewhere ${fromElsewhere} (want 403s), from ours ${fromOurs} (want 412s)`);
+
+  // ---- CORS goes to the extension's origins only ----
+  // Every answer said Access-Control-Allow-Origin: *, and the preflight let any
+  // origin send Authorization: any web page could have its visitors' browsers
+  // try logins here and read which were right (200 or 401), a password guesser
+  // spread over every visitor, each a new address to the lockout. The devices
+  // above synced from chrome-extension:// all along, and still may.
+  {
+    const login = { Authorization: "Basic " + Buffer.from(`${USER}:${PASS}`).toString("base64") };
+    const ours = ["chrome-extension://abcdefghijklmnopabcdefghijklmnop", "moz-extension://8c2f5e7a-1b2c-4d3e-8f9a-0123456789ab"];
+    const notOurs = [
+      "https://evil.example",
+      "null", // a sandboxed frame or a file:// page
+      `http://127.0.0.1:${PORT}`,
+      "chrome-extension://abcdefghijklmnop", // not an extension ID's shape
+      "chrome-extension://abcdefghijklmnopabcdefghijklmnop.evil.example",
+      "https://chrome-extension.evil.example"
+    ];
+    const cors = async (origin) => {
+      const o = origin ? { Origin: origin } : {};
+      const got = await fetch(`${URL_}/state`, { headers: { ...login, ...o } });
+      const unchanged = await fetch(`${URL_}/state?since=${versionOnDisk()}`, { headers: { ...login, ...o } });
+      const preflight = await fetch(`${URL_}/state`, {
+        method: "OPTIONS",
+        headers: { ...o, "Access-Control-Request-Method": "PUT", "Access-Control-Request-Headers": "authorization, if-match" }
+      });
+      const h = (r, name) => r.headers.get(name);
+      return {
+        statuses: [got.status, unchanged.status, preflight.status].join(),
+        allowed: [got, unchanged, preflight].map((r) => h(r, "access-control-allow-origin")),
+        varies: [got, unchanged, preflight].every((r) => /\borigin\b/i.test(h(r, "vary") || "")),
+        exposed: h(got, "access-control-expose-headers"),
+        preflight: [h(preflight, "access-control-allow-methods"), h(preflight, "access-control-allow-headers")]
+      };
+    };
+    const wrong = [];
+    for (const origin of ours) {
+      const c = await cors(origin);
+      if (
+        c.statuses !== "200,304,204" ||
+        !c.allowed.every((a) => a === origin) ||
+        !c.varies ||
+        !/ETag/.test(c.exposed || "") ||
+        !/PUT/.test(c.preflight[0] || "") ||
+        !/Authorization/.test(c.preflight[1] || "")
+      )
+        wrong.push(`${origin}: ${JSON.stringify(c)}`);
+    }
+    for (const origin of [...notOurs, null]) {
+      const c = await cors(origin);
+      if (c.statuses !== "200,304,204" || c.allowed.some((a) => a !== null) || !c.varies || c.exposed || c.preflight.some((p) => p !== null))
+        wrong.push(`${origin || "no Origin"}: ${JSON.stringify(c)}`);
+    }
+    !wrong.length
+      ? ok("CORS headers go to an extension's origin only, named, with Vary: Origin; a web page's origin, a lookalike, null or none get none, and its preflight allows nothing")
+      : fail(`CORS: ${wrong.join("; ")}`);
+
+    // In a browser: a page on another origin that tries a login here fails its
+    // preflight, and the login is never sent.
+    const elsewhere = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end("<!doctype html><title>elsewhere</title>");
+    });
+    await new Promise((r) => elsewhere.listen(0, "127.0.0.1", r));
+    const page = await A.ctx.newPage();
+    try {
+      await page.goto(`http://127.0.0.1:${elsewhere.address().port}/`);
+      mark = serverLog.length;
+      const tried = await page.evaluate(
+        ([url, auth]) =>
+          fetch(url, { headers: { Authorization: auth } }).then(
+            (r) => `read ${r.status}`,
+            () => "blocked"
+          ),
+        [`${URL_}/state?from=elsewhere`, login.Authorization]
+      );
+      await logSettles();
+      const asked = serverLog.slice(mark);
+      tried === "blocked" && /"OPTIONS \/xrntube\/state\?from=elsewhere /.test(asked) && !/"GET \/xrntube\/state\?from=elsewhere /.test(asked)
+        ? ok("a web page that tries a login here is stopped at the preflight: the login never reaches the server")
+        : fail(`a page elsewhere sending a login: ${tried}; the server saw ${JSON.stringify(asked.slice(0, 300))}`);
+    } finally {
+      await page.close();
+      elsewhere.close();
+    }
+  }
 
   // ---- a connection that goes quiet is let go ----
   // With no socket timeout, a client that stopped half way through its request

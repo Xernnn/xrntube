@@ -31,10 +31,12 @@ last --keep-days days. A "Delete everything" on one device reaches all of
 them within a sync, so this is what gets the list back.
 
 Any path may carry the mount prefix (/xrntube/state), so it works whether or
-not the proxy strips it. Responses allow any origin (CORS): the browser
-extension calls it with an Authorization header and no cookies, so it needs
-no host permission for the server's address. A write from any other site's
-page is refused all the same (from_another_site).
+not the proxy strips it. The browser extension calls it with an Authorization
+header and no cookies, as CORS requests from its own origin, so it needs no
+host permission for the server's address. The CORS headers go to extension
+origins only (EXTENSION_ORIGIN): a web page gets none, so it can't have its
+visitors' browsers send logins here. A write from any other site's page is
+refused all the same (from_another_site).
 
     python3 xrntube-sync.py --data ~/xrntube-sync --users ~/.config/radicale/users
 """
@@ -68,6 +70,17 @@ PREFIX = "/xrntube"
 # Date the clock its merges stamp with — unexposed, it read no Date at all, and each device's own
 # clock decided which copy of an entry was the newer.
 EXPOSE_HEADERS = "ETag, Date"
+# Who gets the CORS headers: an extension's pages and worker, chrome-extension://<32 letters a-p>
+# in Chromium and moz-extension://<uuid> in Firefox. Not one fixed ID: Firefox gives each install
+# its own uuid, and an unpacked copy (the tests, a working copy) has an ID of its own; another
+# extension in the same browser could be given a host permission for this server anyway. They
+# went to every origin ("*"), and the preflight let any origin send Authorization, so any web page
+# could have its visitors' browsers try logins here and read which were right (200 or 401): a
+# password guesser spread over every visitor, each one a new address to the lockout. A page now
+# fails the preflight, and the login is never sent.
+EXTENSION_ORIGIN = re.compile(
+    r"chrome-extension://[a-p]{32}|moz-extension://[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
 
 args = None
 lock = threading.Lock()
@@ -405,11 +418,21 @@ class Handler(BaseHTTPRequestHandler):
             path = path[len(PREFIX):] or "/"
         return path
 
+    def send_cors(self):
+        """Vary: Origin, and the CORS headers if the request came from an extension
+        (EXTENSION_ORIGIN), naming that origin. True if they were sent."""
+        self.send_header("Vary", "Origin")
+        origin = self.headers.get("Origin") or ""
+        if not EXTENSION_ORIGIN.fullmatch(origin):
+            return False
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Expose-Headers", EXPOSE_HEADERS)
+        return True
+
     def send(self, code, body=b"", ctype="text/plain; charset=utf-8", headers=None):
         if code == 304:  # no body, so neither a type nor a length for one
             self.send_response(304)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Expose-Headers", EXPOSE_HEADERS)
+            self.send_cors()
             self.send_header("Cache-Control", "no-store")
             for k, v in (headers or {}).items():
                 self.send_header(k, v)
@@ -421,8 +444,7 @@ class Handler(BaseHTTPRequestHandler):
             body = gzip.compress(body, 6)
             headers = {**(headers or {}), "Content-Encoding": "gzip"}
         self.send_response(code)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Expose-Headers", EXPOSE_HEADERS)
+        self.send_cors()
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -461,12 +483,12 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return user
 
-    def do_OPTIONS(self):  # CORS preflight: no login
+    def do_OPTIONS(self):  # CORS preflight: no login, and nothing allowed but to an extension
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Authorization, If-Match, Content-Type, Content-Encoding")
-        self.send_header("Access-Control-Max-Age", "86400")
+        if self.send_cors():
+            self.send_header("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Authorization, If-Match, Content-Type, Content-Encoding")
+            self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()
 
     def do_GET(self):
