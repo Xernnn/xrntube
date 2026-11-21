@@ -47,7 +47,7 @@
         if (chrome.runtime.lastError || !res || !res.blocked) return;
         document.documentElement.innerHTML =
           '<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;' +
-          'background:#0f0f0f;color:#888;font:13px system-ui,-apple-system,sans-serif">Blocked by XrnTube</body>';
+          'background:#0f0f0f;color:#888;font:13px system-ui,-apple-system,sans-serif">Blocked by xrntube</body>';
         try {
           document.querySelectorAll("video").forEach((v) => v.pause());
         } catch {}
@@ -91,7 +91,7 @@
     }
   })();
   function dbg(...a) {
-    if (DEBUG) console.debug("%c[XrnTube]", "color:#c00;font-weight:bold", ...a);
+    if (DEBUG) console.debug("%c[xrntube]", "color:#c00;font-weight:bold", ...a);
   }
 
   // ---------- UI-language labels ----------
@@ -1710,7 +1710,7 @@
     }
     return reason;
   }
-  // ---------- XrnTube's options, inside YouTube's own ⋮ menu ----------
+  // ---------- xrntube's options, inside YouTube's own ⋮ menu ----------
   // A tile used to carry a second button of ours, a 🚫 in its corner beside
   // YouTube's ⋮ — two menus per video, and on a phone (no hover) both always
   // showing. Now the block options are rows in YouTube's menu: a tap on a
@@ -1815,7 +1815,7 @@
   function blockAndRemove(tile, blockMsg, unblockMsg, label) {
     const sent = askBackground(blockMsg);
     sent.then((res) => {
-      if (!res || res.ok === false) showToast("XrnTube couldn't save that block. Reload the page and try again.");
+      if (!res || res.ok === false) showToast("xrntube couldn't save that block. Reload the page and try again.");
     });
     const shelf = findShelfAncestor(tile);
     tile.remove();
@@ -1953,7 +1953,7 @@
         // A block from here would go nowhere, and the tile coming back on the
         // next load would be the first anyone heard of it.
         if (!extensionAlive()) {
-          showToast("XrnTube was updated since this page loaded. Reload the page to block from it.");
+          showToast("xrntube was updated since this page loaded. Reload the page to block from it.");
           return;
         }
         blockAndRemove(tile, r.block, r.unblock, r.done);
@@ -2254,7 +2254,7 @@
         "color:#888",
         "font:500 13px/1.5 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif"
       ].join(";");
-      note.textContent = `Comments limited to ${limit} by XrnTube.`;
+      note.textContent = `Comments limited to ${limit} by xrntube.`;
       contents.appendChild(note);
     }
     dbg("comments capped at", limit);
@@ -2674,7 +2674,7 @@
   function goneWhat() {
     const kinds = [...hiddenKinds].join(" or ");
     if (!kinds) return "blocked";
-    return blockedOnPage ? `blocked or ${kinds}` : `${kinds}, which XrnTube's switches hide`;
+    return blockedOnPage ? `blocked or ${kinds}` : `${kinds}, which xrntube's switches hide`;
   }
   // ---------- is layer 0 still doing its job? ----------
   // The JSON filter failing is invisible from the outside: the DOM scrub
@@ -2715,7 +2715,7 @@
     // the extensions page, and nothing here is broken — the DOM scrub caught
     // every one. The popup's health line is where this shows on a phone.
     console.info(
-      "[XrnTube] The JSON filter let " + layer0Misses + " tiles through on " + location.pathname +
+      "[xrntube] The JSON filter let " + layer0Misses + " tiles through on " + location.pathname +
         " — the DOM scrub caught them, so nothing is unblocked, but layer 0 looks degraded. " +
         "Reload with ?bt-debug and check window.__btDataLayer: candidates at 0 means the rule table " +
         "matches no renderers; candidates climbing with removed at 0 means their byline paths moved. " +
@@ -2883,15 +2883,15 @@
       feedNotice(
         "stop",
         subsDays
-          ? `XrnTube stopped loading more: everything further down is blocked or older than ${subsDays} ` +
+          ? `xrntube stopped loading more: everything further down is blocked or older than ${subsDays} ` +
               `day${subsDays === 1 ? "" : "s"}, the Subscriptions limit set in Keywords & length.`
           : feedExhausted
-            ? "XrnTube stopped loading more: the last " +
+            ? "xrntube stopped loading more: the last " +
                 EXHAUST_ROUNDS +
                 ` pages of results were all ${goneWhat()}, so nothing else is coming. Reload to look further.`
             : anythingLeft
-              ? `XrnTube stopped loading more: everything further down is ${goneWhat()}, so nothing else is coming.`
-              : `XrnTube stopped loading more: everything here is ${goneWhat()}.`
+              ? `xrntube stopped loading more: everything further down is ${goneWhat()}, so nothing else is coming.`
+              : `xrntube stopped loading more: everything here is ${goneWhat()}.`
       )
     );
     dbg(
@@ -2925,7 +2925,7 @@
     const host = activeFeedList();
     if (!host) return;
     const n = blockedOnPage;
-    host.appendChild(feedNotice("end", `Nothing more to load. XrnTube blocked ${n} result${n === 1 ? "" : "s"} on this page.`));
+    host.appendChild(feedNotice("end", `Nothing more to load. xrntube blocked ${n} result${n === 1 ? "" : "s"} on this page.`));
     dbg("feed ended with", n, "suppressed — said so");
   }
 
@@ -3843,9 +3843,9 @@
   // ---------- debug surface (only when DEBUG) ----------
   if (DEBUG) {
     console.debug(
-      "%c[XrnTube] debug mode on%c — every removal is logged below with its reason. " +
+      "%c[xrntube] debug mode on%c — every removal is logged below with its reason. " +
         "For __xrnTube.state() / __xrnTube.why('<selector>'), switch the console's " +
-        "JavaScript context (top-left dropdown) to “XrnTube”.",
+        "JavaScript context (top-left dropdown) to “xrntube”.",
       "color:#c00;font-weight:bold",
       "color:inherit;font-weight:normal"
     );

@@ -348,7 +348,7 @@ pipeline has to feed that counter too.
 
 Tiles a **switch** takes away — Shorts (`scrubShorts()`), members-only —
 are counted apart, in `hiddenOnPage` (`noteSwitchHidden()`), and never in
-`blockedOnPage`, so the "XrnTube blocked N results" line stays true. They
+`blockedOnPage`, so the "xrntube blocked N results" line stays true. They
 weigh in on the curb only once the page has stopped growing: two batches in
 a row that arrived (each brings a new sentinel — measured on search, a
 channel grid and the phone) and left the page less than a screen taller,
@@ -677,7 +677,7 @@ true once `constants.js` was loaded by both.
 
 ## `content/content.css` and the ⋮ menu rows
 
-The manifest's only stylesheet, and it covers **just XrnTube's rows in
+The manifest's only stylesheet, and it covers **just xrntube's rows in
 YouTube's ⋮ menu** (`<bt-tile-menu>` and its `.bt-menu-row`s). Everything
 else that was once here — the `#secondary` removal, the `#primary` reflow —
 lives in content.js's `<style id="bt-instant-hide">`, because it is
@@ -814,7 +814,7 @@ confirm stays disabled until `delete` is typed.
 keywords: { list, durMinSec, durMaxSec, commentLimit }, settings }` — the
 blocklist from `GET_BLOCKLIST`, the rest read fresh from storage, `localOnly`
 stripped, never the sync token. Import goes `importFile()` →
-`buildImportPlan()` (an XrnTube backup of any version, a bare array of ids,
+`buildImportPlan()` (an xrntube backup of any version, a bare array of ids,
 or the original BlockTube's `filterData` via `convertOldBlockTube()`) →
 `previewAndImport()`, which shows a checkbox per part with its "new" count
 (`countNewChannels()` uses the background's identity matching) and every
