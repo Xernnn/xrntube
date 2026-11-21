@@ -193,7 +193,7 @@ await host.goto("https://embedhost.example/");
 await host.waitForTimeout(3000);
 const frameText = (id) => host.frameLocator("#" + id).locator("body").textContent();
 const [embedA, embedB] = [await frameText("a"), await frameText("b")];
-/Blocked by XrnTube/.test(embedA) && /player embedvideo2/.test(embedB)
+/Blocked by xrntube/.test(embedA) && /player embedvideo2/.test(embedB)
   ? ok("on another site, the embedded player of a blocked channel's video is blanked, and another channel's plays")
   : fail("embeds: " + JSON.stringify({ embedA: embedA.slice(0, 120), embedB: embedB.slice(0, 120) }));
 

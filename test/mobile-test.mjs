@@ -80,11 +80,11 @@ target.videoId === "adQyLViK_ZU" && target.videoTitle && target.videoTitle !== "
   ? ok(`popup target on a mobile watch page: "${target.videoTitle.slice(0, 40)}…" by ${target.channels[0].key}`)
   : fail("mobile popup target: " + JSON.stringify(target));
 
-// ---- 3. XrnTube's rows live in YouTube's ⋮ sheet, once ----
+// ---- 3. xrntube's rows live in YouTube's ⋮ sheet, once ----
 // There is no button of ours on a tile any more: a tap on YouTube's own ⋮
 // adds the block rows to the bottom sheet it opens. A channel's Videos tab
 // is a rich grid, every cell `ytm-rich-item-renderer > ytm-compact-video-
-// renderer` (both tiles), which once got two XrnTube menus per video.
+// renderer` (both tiles), which once got two xrntube menus per video.
 const tapMenu = async (nth) => {
   const found = await p.evaluate((n) => {
     document.querySelectorAll("[data-bt-test]").forEach((e) => e.removeAttribute("data-bt-test"));
@@ -122,7 +122,7 @@ const oldButtons = await p.evaluate(() => document.querySelectorAll(".bt-block-b
 oldButtons === 0 ? ok("no button of ours on the tiles — YouTube's ⋮ is the only one") : fail(`${oldButtons} 🚫 buttons still on the page`);
 const grid = await tapMenu(2);
 grid && grid.menus === 1 && grid.inSheet && grid.rows.some((r) => r.text === "Block this video") && grid.rows.every((r) => r.reachable)
-  ? ok(`rich grid: one set of XrnTube rows in YouTube's sheet (${grid.rows.map((r) => r.text).join(" / ")})`)
+  ? ok(`rich grid: one set of xrntube rows in YouTube's sheet (${grid.rows.map((r) => r.text).join(" / ")})`)
   : fail("rich grid ⋮ sheet: " + JSON.stringify(grid));
 await closeSheet();
 await p.waitForTimeout(800);
