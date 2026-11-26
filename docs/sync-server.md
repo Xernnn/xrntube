@@ -68,6 +68,11 @@ matter whether the proxy in front strips it.
   the server compresses responses when asked. A few thousand channels is ~1MB
   of JSON.
 - **Writes** are atomic (temp file + rename), one at a time under a lock.
+- **A `state.json` that can't be read** (a damaged disk) is moved aside as
+  `state.json.damaged-<time>`, said in the log, and the newest copy in
+  `history/` put in its place. It used to read as "version 0, empty", and the
+  next device to sync wrote over the damaged file. The stand-in is older than
+  what the devices hold, so each merges with it as a first sync.
 - **History**: every write first keeps the copy it replaces, gzipped, as
   `<data>/users/<user>/history/<written-at>-v<version>.json.gz`, with the
   counts in `index.json` beside them so listing decompresses nothing. Kept:

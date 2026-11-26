@@ -42,6 +42,8 @@ import { chromium } from "playwright";
 //   - a Content-Length that isn't a number gets a 400
 //   - a document nested too deep to write back gets a 400, before anything is
 //     written; one nested up to the limit is taken
+//   - a state.json that can't be read is kept aside, and the newest earlier
+//     copy stands in for it, never an empty document
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -61,11 +63,13 @@ const SLOW_USER = "slowhash";
 const THIRD_USER = "third";
 // A fourth, whose state only the over-deep documents touch.
 const DEEP_USER = "deep";
+// A fifth, whose state.json is damaged on purpose.
+const DAMAGED_USER = "damaged";
 writeFileSync(
   join(dir, "users"),
   execFileSync("python3", [
     "-c",
-    "import bcrypt,sys\nfor u, pw, cost in ((sys.argv[1], sys.argv[2], 4), (sys.argv[3], sys.argv[4], 10), (sys.argv[5], sys.argv[6], 10), (sys.argv[7], sys.argv[8], 4)):\n    print(u + ':' + bcrypt.hashpw(pw.encode(), bcrypt.gensalt(cost)).decode())",
+    "import bcrypt,sys\nfor u, pw, cost in ((sys.argv[1], sys.argv[2], 4), (sys.argv[3], sys.argv[4], 10), (sys.argv[5], sys.argv[6], 10), (sys.argv[7], sys.argv[8], 4), (sys.argv[9], sys.argv[10], 4)):\n    print(u + ':' + bcrypt.hashpw(pw.encode(), bcrypt.gensalt(cost)).decode())",
     USER,
     PASS,
     SLOW_USER,
@@ -73,7 +77,9 @@ writeFileSync(
     THIRD_USER,
     "third-pass",
     DEEP_USER,
-    "deep-pass"
+    "deep-pass",
+    DAMAGED_USER,
+    "damaged-pass"
   ])
 );
 const PORT = 5300 + Math.floor(Math.random() * 500);
@@ -736,6 +742,45 @@ try {
     atLimit === 200 && pastLimit === 400
       ? ok(`a document nested ${maxDepth} deep is taken, and one level more is refused`)
       : fail(`nested to the limit (${maxDepth}): ${atLimit} (want 200), one more: ${pastLimit} (want 400)`);
+  }
+
+  // ---- a state.json that can't be read ----
+  // It read as "version 0, empty", so the next device to sync got an empty
+  // list at version 0, took it for a reset server and pushed with If-Match
+  // "0" over the damaged file: what it held was gone for good, and the
+  // version count started again. Now it is moved aside, the log says so,
+  // and the newest copy history/ keeps stands in, older than what the devices
+  // have, so they merge with it as with a restored server.
+  {
+    const auth = { Authorization: "Basic " + Buffer.from(`${DAMAGED_USER}:damaged-pass`).toString("base64") };
+    const put = (doc, version) =>
+      fetch(`${URL_}/state`, { method: "PUT", headers: { ...auth, "If-Match": `"${version}"` }, body: JSON.stringify(doc) }).then(
+        (r) => r.status
+      );
+    const puts = [];
+    for (let v = 0; v < 3; v++) puts.push(await put({ channels: { [`UCdamaged${v}`]: { name: `Channel ${v}` } } }, v));
+    const folder = join(dir, "data", "users", DAMAGED_USER);
+    writeFileSync(join(folder, "state.json"), '{"version": 3, "updated": "2026-11-20T10:00:00+00:00", "data": {"chan');
+    mark = serverLog.length;
+    const r = await fetch(`${URL_}/state`, { headers: auth });
+    const got = await r.json().catch(() => null);
+    await logSettles();
+    const aside = readdirSync(folder).filter((n) => n.startsWith("state.json.damaged-"));
+    const kept = aside.length === 1 && readFileSync(join(folder, aside[0]), "utf8").includes('"version": 3');
+    const after = await put({ channels: { UCagain: { name: "Again" } } }, 2);
+    puts.join() === "200,200,200" &&
+    r.status === 200 &&
+    r.headers.get("etag") === '"2"' &&
+    got &&
+    Object.keys(got.channels || {}).join() === "UCdamaged1" &&
+    kept &&
+    serverLog.slice(mark).includes("state.json can't be read") &&
+    after === 200
+      ? ok("a state.json that can't be read is kept aside, said in the log, and the newest earlier copy (v2) answers in its place")
+      : fail(
+          `damaged state.json: puts ${puts}, GET ${r.status} ETag ${r.headers.get("etag")} (want "2") ` +
+            `channels ${JSON.stringify(got && got.channels)}, aside ${aside} kept=${kept}, next PUT ${after}`
+        );
   }
 
   // ---- HEAD is a GET without its body ----

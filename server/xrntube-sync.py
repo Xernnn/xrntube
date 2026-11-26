@@ -281,12 +281,53 @@ def state_path(user):
     return os.path.join(args.data, "users", user, "state.json")
 
 
+def is_state(doc):
+    return isinstance(doc, dict) and type(doc.get("version")) is int
+
+
+def newest_kept(user):
+    """The newest copy history/ keeps that can be read, or None."""
+    d = history_dir(user)
+    names = [n for n in os.listdir(d) if HISTORY_NAME.fullmatch(n)] if os.path.isdir(d) else []
+    for n in sorted(names, reverse=True):
+        try:
+            with gzip.open(os.path.join(d, n), "rt", encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, EOFError, ValueError, zlib.error):  # a damaged copy: the one before it
+            continue
+        if is_state(doc):
+            return doc
+    return None
+
+
 def read_state(user):
+    """The user's copy: {"version", "updated", "data"}, version 0 while there is none. Under `lock`.
+    One that can't be read (a damaged disk, a write cut off) used to read as "version 0, empty":
+    the next device to sync took the empty list for a reset server and wrote over the damaged
+    file with If-Match "0", so what it held was gone for good, and the version count started
+    again. It is moved aside now, said in the log, and the newest kept copy put in its place,
+    older than what the devices have, so each merges with it as with a restored server."""
+    path = state_path(user)
     try:
-        with open(state_path(user), encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+    except FileNotFoundError:
         return {"version": 0, "data": {}}
+    except (OSError, ValueError):
+        doc = None
+    if is_state(doc):
+        return doc
+    aside = f"{path}.damaged-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')}"
+    try:
+        os.replace(path, aside)
+    except OSError:
+        aside = path
+    kept = newest_kept(user)
+    if kept and aside != path:  # never over the only copy of what couldn't be read
+        write_state(user, kept)
+    sys.stderr.write(f"{user}: state.json can't be read; kept as {os.path.basename(aside)}, "
+                     f"and version {kept['version'] if kept else 0} put in its place\n")
+    return kept or {"version": 0, "data": {}}
 
 
 def nested_within(value, limit):
