@@ -5,6 +5,7 @@ import { join } from "path";
 import { createServer } from "http";
 import { connect } from "net";
 import { gzipSync } from "zlib";
+import { createHash, randomBytes } from "crypto";
 import { chromium } from "playwright";
 
 // Sync through your own server, end to end and offline: the real
@@ -42,6 +43,12 @@ import { chromium } from "playwright";
 //   - a Content-Length that isn't a number gets a 400
 //   - a document nested too deep to write back gets a 400, before anything is
 //     written; one nested up to the limit is taken
+//   - a state.json that can't be read is kept aside, and the newest earlier
+//     copy stands in for it, never an empty document
+//   - a device token (Bearer xrndev_…) signs in as its user; one for other
+//     services gets 403 and isn't counted; wrong ones count like wrong
+//     passwords; a revoked one is refused at once; --device-users names the
+//     users file the tokens sit beside
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -61,11 +68,13 @@ const SLOW_USER = "slowhash";
 const THIRD_USER = "third";
 // A fourth, whose state only the over-deep documents touch.
 const DEEP_USER = "deep";
+// A fifth, whose state.json is damaged on purpose.
+const DAMAGED_USER = "damaged";
 writeFileSync(
   join(dir, "users"),
   execFileSync("python3", [
     "-c",
-    "import bcrypt,sys\nfor u, pw, cost in ((sys.argv[1], sys.argv[2], 4), (sys.argv[3], sys.argv[4], 10), (sys.argv[5], sys.argv[6], 10), (sys.argv[7], sys.argv[8], 4)):\n    print(u + ':' + bcrypt.hashpw(pw.encode(), bcrypt.gensalt(cost)).decode())",
+    "import bcrypt,sys\nfor u, pw, cost in ((sys.argv[1], sys.argv[2], 4), (sys.argv[3], sys.argv[4], 10), (sys.argv[5], sys.argv[6], 10), (sys.argv[7], sys.argv[8], 4), (sys.argv[9], sys.argv[10], 4)):\n    print(u + ':' + bcrypt.hashpw(pw.encode(), bcrypt.gensalt(cost)).decode())",
     USER,
     PASS,
     SLOW_USER,
@@ -73,7 +82,9 @@ writeFileSync(
     THIRD_USER,
     "third-pass",
     DEEP_USER,
-    "deep-pass"
+    "deep-pass",
+    DAMAGED_USER,
+    "damaged-pass"
   ])
 );
 const PORT = 5300 + Math.floor(Math.random() * 500);
@@ -167,7 +178,7 @@ try {
 
   // ---- wrong password ----
   const bad = await A.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_, user: USER, password: "nope" } });
-  bad && bad.ok === false && /refused/.test(bad.error || "")
+  bad && bad.ok === false && bad.error === "Sign in again"
     ? ok("a wrong password is refused with a readable error")
     : fail("wrong password: " + JSON.stringify(bad));
 
@@ -375,6 +386,14 @@ try {
   gets.length >= 8 && gets.every((c) => c === "304")
     ? ok(`an idle round is answered "not modified" — ${gets.length} pulls, no list sent`)
     : fail(`idle pulls answered: ${gets.join(" ") || "none"}`);
+  // Each pull is a CORS request with a login, so the browser asks first (OPTIONS) unless it has
+  // the answer cached (Access-Control-Max-Age). Sent with cache: "no-store", it never used the
+  // cache: every poll was two round trips, as many OPTIONS as GETs in the server's log. Now
+  // only a URL it hasn't asked about yet (a new ?since=) costs one, at most one a device here.
+  const preflights = [...serverLog.slice(mark).matchAll(/"OPTIONS \/xrntube\/state(?:\?\S*)? HTTP\/1\.1" 204/g)].length;
+  preflights <= 2
+    ? ok(`an idle round's ${gets.length} pulls cost ${preflights} preflights, not one each`)
+    : fail(`an idle round's ${gets.length} pulls cost ${preflights} preflights (want at most 2)`);
 
   // ---- a poll alongside a pull adds nothing ----
   // The poll alarm mostly finds the worker stopped, and starting it runs
@@ -738,6 +757,45 @@ try {
       : fail(`nested to the limit (${maxDepth}): ${atLimit} (want 200), one more: ${pastLimit} (want 400)`);
   }
 
+  // ---- a state.json that can't be read ----
+  // It read as "version 0, empty", so the next device to sync got an empty
+  // list at version 0, took it for a reset server and pushed with If-Match
+  // "0" over the damaged file: what it held was gone for good, and the
+  // version count started again. Now it is moved aside, the log says so,
+  // and the newest copy history/ keeps stands in, older than what the devices
+  // have, so they merge with it as with a restored server.
+  {
+    const auth = { Authorization: "Basic " + Buffer.from(`${DAMAGED_USER}:damaged-pass`).toString("base64") };
+    const put = (doc, version) =>
+      fetch(`${URL_}/state`, { method: "PUT", headers: { ...auth, "If-Match": `"${version}"` }, body: JSON.stringify(doc) }).then(
+        (r) => r.status
+      );
+    const puts = [];
+    for (let v = 0; v < 3; v++) puts.push(await put({ channels: { [`UCdamaged${v}`]: { name: `Channel ${v}` } } }, v));
+    const folder = join(dir, "data", "users", DAMAGED_USER);
+    writeFileSync(join(folder, "state.json"), '{"version": 3, "updated": "2026-11-20T10:00:00+00:00", "data": {"chan');
+    mark = serverLog.length;
+    const r = await fetch(`${URL_}/state`, { headers: auth });
+    const got = await r.json().catch(() => null);
+    await logSettles();
+    const aside = readdirSync(folder).filter((n) => n.startsWith("state.json.damaged-"));
+    const kept = aside.length === 1 && readFileSync(join(folder, aside[0]), "utf8").includes('"version": 3');
+    const after = await put({ channels: { UCagain: { name: "Again" } } }, 2);
+    puts.join() === "200,200,200" &&
+    r.status === 200 &&
+    r.headers.get("etag") === '"2"' &&
+    got &&
+    Object.keys(got.channels || {}).join() === "UCdamaged1" &&
+    kept &&
+    serverLog.slice(mark).includes("state.json can't be read") &&
+    after === 200
+      ? ok("a state.json that can't be read is kept aside, said in the log, and the newest earlier copy (v2) answers in its place")
+      : fail(
+          `damaged state.json: puts ${puts}, GET ${r.status} ETag ${r.headers.get("etag")} (want "2") ` +
+            `channels ${JSON.stringify(got && got.channels)}, aside ${aside} kept=${kept}, next PUT ${after}`
+        );
+  }
+
   // ---- HEAD is a GET without its body ----
   // curl -I and monitors got http.server's 501 "Unsupported method", which a
   // log reader that rates every 5xx as an error shows as one. The update and
@@ -852,6 +910,108 @@ try {
     times.every(([status]) => status === 401) && held === 8
       ? ok("twelve wrong logins at once from twelve addresses: eight are held 2 s, the rest answered at once")
       : fail(`held wrong logins: ${JSON.stringify(times)}`);
+  }
+
+  // ---- device logins (Bearer xrndev_…) ----
+  // The add-on held the calendar's password: the server signs in against
+  // Radicale's users file, so a leaked browser profile opened every calendar.
+  // A device token reaches this service and nothing else, and is revoked on
+  // its own. device-tokens.json sits beside the users file (--device-users
+  // names another, the shared one, on the home server).
+  {
+    const made = (services, user = USER) => {
+      const id = randomBytes(4).toString("hex");
+      const secret = randomBytes(32).toString("base64url");
+      return {
+        token: `xrndev_${id}_${secret}`,
+        entry: { id, user, device: `test ${id}`, services, sha256: createHash("sha256").update(secret).digest("hex"), created: 1 }
+      };
+    };
+    const tokensFile = (folder, ...ts) => writeFileSync(join(folder, "device-tokens.json"), JSON.stringify({ tokens: ts.map((t) => t.entry) }));
+    const bearer = (token, addr, base = URL_) =>
+      fetch(`${base}/state`, { headers: { Authorization: `Bearer ${token}`, "X-Forwarded-For": addr } });
+    const here = made(["xrntube"]);
+    const other = made(["xrnwal", "xrnloops"]);
+    tokensFile(dir, here, other);
+
+    const byToken = await bearer(here.token, "198.18.6.1");
+    const byPassword = await fetch(`${URL_}/state`, { headers: { Authorization: "Basic " + Buffer.from(`${USER}:${PASS}`).toString("base64") } });
+    const [tokenBody, passwordBody] = [await byToken.text(), await byPassword.text()];
+    byToken.status === 200 && tokenBody === passwordBody && byToken.headers.get("etag") === byPassword.headers.get("etag")
+      ? ok("a device token signs in as its user: the same document and version the password gets")
+      : fail(`device token: ${byToken.status} ${byToken.headers.get("etag")} vs password ${byPassword.status} ${byPassword.headers.get("etag")}`);
+
+    // Right, but for other services: 403, and never a wrong login.
+    const elsewhere = [];
+    for (let i = 0; i < 12; i++) elsewhere.push(await bearer(other.token, "198.18.6.2").then((r) => r.status));
+    elsewhere.every((s) => s === 403)
+      ? ok("a token for other services only gets 403, twelve times over: it guessed nothing, so the address isn't locked out")
+      : fail(`token for other services: ${elsewhere} (want twelve 403s)`);
+
+    // Wrong ones count like wrong passwords.
+    const wrong = await Promise.all(Array.from({ length: 10 }, () => bearer(made(["xrntube"]).token, "198.18.6.3").then((r) => r.status)));
+    const eleventh = await bearer(here.token, "198.18.6.3").then((r) => r.status);
+    wrong.every((s) => s === 401) && eleventh === 429
+      ? ok("ten wrong device tokens lock the address out like ten wrong passwords (429, the right token too)")
+      : fail(`wrong device tokens: ${wrong}, then the right one ${eleventh} (want ten 401s, then 429)`);
+
+    // Revoked: refused from the very next request, no restart.
+    const seen = JSON.parse(readFileSync(join(dir, "device-seen", "xrntube.json"), "utf8"));
+    tokensFile(dir, other);
+    const revoked = await bearer(here.token, "198.18.6.4").then((r) => r.status);
+    revoked === 401 && here.entry.id in seen
+      ? ok("a revoked token is refused on its next request (401), and when it was last here was written to device-seen/xrntube.json")
+      : fail(`revoked token: ${revoked} (want 401); device-seen: ${JSON.stringify(seen)}`);
+
+    // --device-users: the tokens and users of the shared users file, while the
+    // password stays the one in --users.
+    const shared = join(dir, "xrn-sync");
+    mkdirSync(shared);
+    writeFileSync(join(shared, "users"), readFileSync(join(dir, "users"), "utf8").split("\n")[0] + "\n");
+    const there = made(["xrntube"]);
+    tokensFile(shared, there);
+    const port2 = PORT + 600;
+    const second = spawn("python3", [join(EXT_PATH, "server/xrntube-sync.py"), "--port", String(port2), "--data", join(dir, "data"),
+      "--users", join(dir, "users"), "--device-users", join(shared, "users")], { stdio: ["ignore", "ignore", "ignore"] });
+    try {
+      for (let i = 0; i < 50; i++) {
+        if (await fetch(`http://127.0.0.1:${port2}/health`).then((r) => r.ok, () => false)) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const base2 = `http://127.0.0.1:${port2}/xrntube`;
+      const sharedToken = await bearer(there.token, "198.18.6.5", base2).then((r) => r.status);
+      const besideUsers = await bearer(other.token, "198.18.6.5", base2).then((r) => r.status);
+      const password2 = await fetch(`${base2}/state`, { headers: { Authorization: "Basic " + Buffer.from(`${USER}:${PASS}`).toString("base64") } }).then((r) => r.status);
+      sharedToken === 200 && besideUsers === 401 && password2 === 200
+        ? ok("with --device-users, the tokens beside that file sign in (not those beside --users), and the password is still --users'")
+        : fail(`--device-users: its token ${sharedToken} (want 200), one beside --users ${besideUsers} (want 401), password ${password2} (want 200)`);
+    } finally {
+      second.kill();
+    }
+
+    // The options page: a device login pasted into its own box replaces the
+    // saved password, and the device syncs with it.
+    const forA = made(["xrntube"]);
+    tokensFile(dir, other, forA);
+    await A.p.locator(".page-tab[data-page='sync']").click();
+    await A.p.locator("#sync-token").fill(forA.token);
+    await A.p.locator("#sync-save").click();
+    await A.p.waitForFunction(() => document.getElementById("sync-token").placeholder === "Device login (saved)", null, { timeout: 10000 }).catch(() => {});
+    const savedA = (await A.p.evaluate(() => chrome.storage.local.get("bt_sync"))).bt_sync;
+    const page = await A.p.evaluate(() => ({
+      token: document.getElementById("sync-token").value,
+      tokenHint: document.getElementById("sync-token").placeholder,
+      passwordHint: document.getElementById("sync-password").placeholder,
+      status: document.getElementById("sync-status").className
+    }));
+    mark = serverLog.length;
+    const roundA = await A.send({ type: "SYNC_NOW" });
+    await logSettles();
+    savedA.token === forA.token && !savedA.password && !savedA.lastError && roundA.ok &&
+    page.token === "" && page.tokenHint === "Device login (saved)" && page.passwordHint === "Password" && page.status === "sync-status ok" &&
+    /"GET \/xrntube\/state\S* HTTP\/1\.1" (200|304)/.test(serverLog.slice(mark))
+      ? ok("a device login pasted on the options page is kept instead of the password, and the device syncs with it")
+      : fail(`device login from the options page: saved ${JSON.stringify({ ...savedA, token: !!savedA.token, password: !!savedA.password })}, page ${JSON.stringify(page)}, round ${JSON.stringify(roundA)}`);
   }
 
   // Last, since it locks this address out: ten wrong passwords (sent at once, each held 2 s) and

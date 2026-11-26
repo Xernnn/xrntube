@@ -41,6 +41,16 @@ matter whether the proxy in front strips it.
   bcrypt, on this one-thread-per-request server, 18 of 30 got through), and
   a login that finds no place waits for the checks in flight rather than
   getting 429.
+- **Device logins**: `Authorization: Bearer xrndev_<id>_<secret>`, a login
+  for one device and the services it names, made and revoked by the server's
+  owner in `device-tokens.json` beside `--device-users` (the shared xrn-sync
+  users file on the home server; `--users` when not given). Only each
+  secret's SHA-256 is kept there. A token for service `xrntube` signs in as
+  its user; one for other services only gets 403, not counted; a wrong or
+  revoked one counts as a wrong password; the file is read again whenever it
+  changes, so a revoke counts from the next request. With a token in the
+  add-on, a leaked browser profile holds a login to this service alone,
+  not the calendar's password.
 - **CORS**: for extension origins only — `chrome-extension://<ID>` and
   `moz-extension://<uuid>`, each named back in `Access-Control-Allow-Origin`
   (with `Vary: Origin`); `Authorization` / `If-Match` allowed, `ETag` and
@@ -68,6 +78,11 @@ matter whether the proxy in front strips it.
   the server compresses responses when asked. A few thousand channels is ~1MB
   of JSON.
 - **Writes** are atomic (temp file + rename), one at a time under a lock.
+- **A `state.json` that can't be read** (a damaged disk) is moved aside as
+  `state.json.damaged-<time>`, said in the log, and the newest copy in
+  `history/` put in its place. It used to read as "version 0, empty", and the
+  next device to sync wrote over the damaged file. The stand-in is older than
+  what the devices hold, so each merges with it as a first sync.
 - **History**: every write first keeps the copy it replaces, gzipped, as
   `<data>/users/<user>/history/<written-at>-v<version>.json.gz`, with the
   counts in `index.json` beside them so listing decompresses nothing. Kept:

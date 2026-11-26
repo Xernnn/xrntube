@@ -470,7 +470,10 @@ it:
 2. On each device: options → **Sync** → the server's address (including its
    path, e.g. `https://your-server.example/xrntube`), your user name and
    password → **Connect**. The first device pushes its list; the others pull
-   it. The address must be `https://`, or `http://` to `localhost`.
+   it. The address must be `https://`, or `http://` to `localhost`. Instead of
+   the password, a **Device login** (`xrndev_…`, made by the server's owner
+   for this device; [docs/sync-server.md](docs/sync-server.md)) can go in its
+   own box: the device then keeps that and no password.
 
 <p align="center">
   <img src="docs/screenshots/sync.png" width="760" alt="The Sync tab connected to a test server on localhost: the address, user name and saved password with Reconnect, a status line with the host, user, 12 channels, 3 videos, pushed just now, pulled just now, the Sync now, Restore an earlier copy and Disconnect this device buttons, and an Updates card reading Version 2.1.12, loaded unpacked, with Check now">
@@ -515,8 +518,11 @@ own sync server, which is also where a browser that installed the `.crx`
 looks for new versions. The font ships with the extension, so no font is
 fetched from anywhere either.
 
-Your sync password is kept in the browser's local extension storage on that
-device only: never in `chrome.storage.sync`, a backup file or the package.
+Your sync password (or device login) is kept in the browser's local extension
+storage on that device only: never in `chrome.storage.sync`, a backup file or
+the package. After the server refuses it, no timer tries it again until you
+press **Sync now** or **Reconnect**, so a changed password doesn't lock the
+device's address out.
 
 ---
 
@@ -630,6 +636,7 @@ npm run test:fast  # the tests that need no YouTube (~20s)
 npm test           # full e2e suite (needs npm install once, and network)
 npm run package    # dist/xrntube-<version>.zip
 npm run release    # sign dist/xrntube-<version>.crx and publish it; installed copies update themselves
+sh scripts/icons.sh                    # icons/*.png, every size, from the tile's SVG (needs rsvg-convert)
 npm run test:canary                    # five live tests; notifies the desktop on failure
 node scripts/canary.mjs --install      # …weekly, as a systemd user timer (--uninstall removes it)
 ```

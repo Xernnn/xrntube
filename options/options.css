@@ -720,7 +720,7 @@ a.drawer-btn { text-decoration: none; display: inline-flex; align-items: center;
 }
 
 /* ---------------- sync ---------------- */
-.sync-form { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; margin-bottom: 12px; }
+.sync-form { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; margin-bottom: 12px; }
 @media (max-width: 860px) { .sync-form { grid-template-columns: 1fr; } }
 .sync-status {
   padding: 11px 13px;

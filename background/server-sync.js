@@ -64,7 +64,8 @@
     LEGACY_SETTING_MAP,
     resolveSettings,
     oversizeSyncItems,
-    safeSyncAddress
+    safeSyncAddress,
+    isDeviceLogin
   } = self.XrnTube;
 
   let host = null;
@@ -90,6 +91,8 @@
         url: null, // e.g. https://myserver.example/xrntube
         user: null,
         password: null,
+        token: null, // a device login (xrndev_…), kept instead of the password
+        refused: null, // { code, until } after a 401, 403 or 429: no timer calls the server (heldBack)
         lastVersion: null, // the server's ETag for what we last read or wrote
         agreedFp: null, // fingerprint() of what this device and lastVersion both hold
         lastFullPullAt: 0, // the last pull that fetched the whole document
@@ -114,10 +117,23 @@
   const UNSAFE_ADDRESS = "the server's address must start with https:// (plain http:// only for localhost): over plain http the password would cross the network readable";
 
   function authHeader() {
+    if (cfg.token) return "Bearer " + cfg.token;
     // btoa() takes Latin-1 only; encode first so any password works.
     const bytes = new TextEncoder().encode(`${cfg.user}:${cfg.password || ""}`);
     return "Basic " + btoa(String.fromCharCode(...bytes));
   }
+
+  // A login the server turned down isn't tried again by a timer (the poll
+  // alarm, a worker's wake, the push after an edit): every try is one more
+  // wrong login against the address, and ten lock it out, behind Funnel the
+  // whole household's. After a 401, or a 403 to a device login (it doesn't
+  // reach this service), it waits for the person: Sync now, or Reconnect.
+  // After a 429 it waits for the lockout to pass.
+  const refusalOf = (err) => {
+    const code = err && err.status;
+    return code === 401 || code === 403 || code === 429 ? { code, until: Date.now() + SYNC.LOCKOUT_MS } : null;
+  };
+  const heldBack = () => !!(cfg && cfg.refused) && (cfg.refused.code !== 429 || Date.now() < cfg.refused.until);
 
   async function request(method, body, ifMatch, path = "/state") {
     // configure() refuses such an address; this covers one saved before it did.
@@ -135,7 +151,11 @@
       }
     }
     const sent = Date.now();
-    const r = await fetch(cfg.url.replace(/\/+$/, "") + path, { method, headers, body: payload, cache: "no-store" });
+    // The default cache mode, not "no-store": the server answers every request
+    // Cache-Control: no-store, so nothing is ever kept or reused, and with
+    // "no-store" the browser also skipped its cache of CORS preflights, so
+    // every request was an OPTIONS and then the request, two round trips.
+    const r = await fetch(cfg.url.replace(/\/+$/, "") + path, { method, headers, body: payload });
 
     // Trust the server's clock over the device's for merge timestamps. Date is
     // in whole seconds, so it's read as the middle of its second at the middle
@@ -155,7 +175,11 @@
     }
     if (!r.ok && r.status !== 304) {
       const err = new Error(
-        r.status === 401 ? "the server refused the user name or password" : `server answered ${r.status} ${r.statusText}`
+        r.status === 401
+          ? "Sign in again"
+          : r.status === 403 && cfg.token
+            ? "Device login doesn't reach xrntube"
+            : `server answered ${r.status} ${r.statusText}`
       );
       err.status = r.status;
       throw err;
@@ -617,6 +641,7 @@
       cfg.lastFullPullAt = host.now();
       cfg.lastPulledAt = host.now();
       cfg.lastError = null;
+      cfg.refused = null;
       cfg.remoteChannels = Object.keys(merged.channels).length;
       cfg.remoteVideos = Object.keys(merged.videos).length;
       await persistCfg();
@@ -629,6 +654,7 @@
         return { ok: true, deferred: true };
       }
       cfg.lastError = String((err && err.message) || err);
+      cfg.refused = refusalOf(err) || cfg.refused;
       await persistCfg().catch(() => {});
       return { ok: false, reason: "error", error: cfg.lastError, status: err && err.status };
     } finally {
@@ -654,12 +680,12 @@
       ready = loadCfg();
       await ready;
       host.setClockOffset(cfg.clockOffset || 0);
-      if (enabled() && host.now() - (cfg.lastPulledAt || 0) >= SYNC.POLL_FRESH_MS) cycle();
+      if (enabled() && !heldBack() && host.now() - (cfg.lastPulledAt || 0) >= SYNC.POLL_FRESH_MS) cycle();
     },
 
     // From broadcastUpdate() after any local write — schedule a debounced push.
     onLocalChange() {
-      if (!enabled()) return;
+      if (!enabled() || heldBack()) return;
       clearTimeout(pushTimer);
       pushTimer = setTimeout(() => cycle(), SYNC.PUSH_DEBOUNCE_MS);
     },
@@ -670,11 +696,12 @@
     // poll that queued a rerun behind it fetched the whole list twice a poll.
     async onPoll() {
       if (ready) await ready;
-      if (!enabled() || running || host.now() - (cfg.lastPulledAt || 0) < SYNC.POLL_FRESH_MS) return;
+      if (!enabled() || heldBack() || running || host.now() - (cfg.lastPulledAt || 0) < SYNC.POLL_FRESH_MS) return;
       cycle();
     },
 
-    // options page: connect with { url, user, password }, or pass null to
+    // options page: connect with { url, user, password } or { url, user,
+    // token } (a device login, kept instead of the password), or pass null to
     // disconnect this device.
     async configure(conn) {
       // A round under way against the old connection finishes first: changed
@@ -685,13 +712,15 @@
       const url = conn && conn.url ? String(conn.url).trim().replace(/\/+$/, "") : null;
       const user = url ? String(conn.user || "").trim() : null;
       const same = !!url && url === cfg.url && user === cfg.user;
+      const token = url && conn.token !== undefined ? String(conn.token).trim() : undefined;
       // Refused before anything changes, so the connection already there stands.
       if (url && !safeSyncAddress(url)) return { ok: false, error: UNSAFE_ADDRESS, enabled: enabled() };
+      if (token !== undefined && !isDeviceLogin(token)) return { ok: false, error: "Not a device login", enabled: enabled() };
       // An empty password box reuses the saved password only where it was
       // saved: sent to any address typed with the box left empty, it was
-      // handed to whoever runs that one.
-      if (url && conn.password === undefined && !same) {
-        return { ok: false, error: "type the password: the saved one is only sent to the server and user it was saved for", enabled: enabled() };
+      // handed to whoever runs that one. The same goes for a device login.
+      if (url && conn.password === undefined && token === undefined && !same) {
+        return { ok: false, error: "type the password or device login: the saved one is only sent to the server and user it was saved for", enabled: enabled() };
       }
       clearTimeout(pushTimer);
       // The same server and user — a new password after a run of 401s, say —
@@ -705,15 +734,19 @@
         Object.assign(cfg, { lastVersion: null, agreedFp: null });
       }
       if (!url) {
-        Object.assign(cfg, { url: null, user: null, password: null, lastError: null });
+        Object.assign(cfg, { url: null, user: null, password: null, token: null, refused: null, lastError: null });
         await persistCfg();
         return { ok: true, enabled: false };
       }
       Object.assign(cfg, {
         url,
         user,
-        // No password given keeps the saved one (the same server and user: above).
-        password: conn.password !== undefined ? String(conn.password) : cfg.password || "",
+        // A device login replaces the password, which is then kept nowhere; a
+        // password typed again replaces the device login. Neither given keeps
+        // the saved one (the same server and user: above).
+        token: token !== undefined ? token : conn.password !== undefined ? null : cfg.token || null,
+        password: token !== undefined ? null : conn.password !== undefined ? String(conn.password) : cfg.password || "",
+        refused: null,
         lastError: null
       });
       await persistCfg();
@@ -723,6 +756,8 @@
 
     async syncNow() {
       await loadCfg();
+      // Asked for by the person: past a refusal (heldBack), which only stops the timers.
+      cfg.refused = null;
       return cycle();
     },
 
@@ -760,6 +795,7 @@
         enabled: enabled(),
         url: cfg.url || null,
         user: cfg.user || null,
+        login: cfg.token ? "device" : "password",
         lastPulledAt: cfg.lastPulledAt || 0,
         lastPushedAt: cfg.lastPushedAt || 0,
         remoteChannels: cfg.remoteChannels || 0,

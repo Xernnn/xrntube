@@ -441,6 +441,11 @@ self.XrnTube.safeSyncAddress = function (url) {
   return u.protocol === "https:" || (u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname));
 };
 
+// A device login: a token the sync server's owner makes for one device and
+// the services it names, sent as Bearer instead of the password, so the
+// browser holds no password (the calendar's) at all.
+self.XrnTube.isDeviceLogin = (text) => /^xrndev_[0-9a-f]{8}_[A-Za-z0-9_-]{43}$/.test(String(text || ""));
+
 // Sync through your own server (background/server-sync.js).
 self.XrnTube.SYNC = {
   SCHEMA_VERSION: 1,
@@ -449,5 +454,6 @@ self.XrnTube.SYNC = {
   POLL_FRESH_MS: 60 * 1000, // a poll this soon after a pull has nothing to add
   FULL_PULL_MS: 6 * 60 * 60 * 1000, // pull the whole document at least this often, changed or not
   PUSH_DEBOUNCE_MS: 4000, // coalesce a burst of local edits into one push
-  CLOCK_SLACK_MS: 2000 // the server's clock is taken over the device's only when they differ by more
+  CLOCK_SLACK_MS: 2000, // the server's clock is taken over the device's only when they differ by more
+  LOCKOUT_MS: 15 * 60 * 1000 // after a 429, how long no timer calls the server (its lockout window)
 };
