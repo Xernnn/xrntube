@@ -11,6 +11,7 @@ const {
   RESOLVE_MAX_TRIES,
   resolveSettings,
   safeSyncAddress,
+  isDeviceLogin,
   handleText,
   cutHandleOf
 } = self.XrnTube;
@@ -2337,6 +2338,7 @@ const sync = {
   url: $("sync-url"),
   user: $("sync-user"),
   password: $("sync-password"),
+  token: $("sync-token"),
   save: $("sync-save"),
   status: $("sync-status"),
   actions: $("sync-actions"),
@@ -2435,7 +2437,10 @@ async function renderSyncStatus() {
     if (document.activeElement !== sync.url) sync.url.value = s.url || "";
     if (document.activeElement !== sync.user) sync.user.value = s.user || "";
     sync.password.value = "";
-    sync.password.placeholder = "Password (saved)";
+    sync.token.value = "";
+    const device = s.login === "device";
+    sync.password.placeholder = device ? "Password" : "Password (saved)";
+    sync.token.placeholder = device ? "Device login (saved)" : "Device login";
   }
   if (!s.enabled) return;
   if (s.lastError) {
@@ -2468,15 +2473,21 @@ function initSync() {
     const url = sync.url.value.trim();
     const user = sync.user.value.trim();
     const password = sync.password.value;
-    // The worker refuses both of these too; this says so before asking it.
+    const token = sync.token.value.trim();
+    // The worker refuses these too; this says so before asking it.
     if (!/^https?:\/\/[^/]+/i.test(url) || !safeSyncAddress(url) || !user) {
       toast("Address (https://) and user name needed", { error: true });
+      return;
+    }
+    if (token && !isDeviceLogin(token)) {
+      toast("Not a device login", { error: true });
+      sync.token.focus();
       return;
     }
     const status = await send({ type: MSG.GET_SYNC_STATUS });
     // The saved password goes only to the server and user it was saved for.
     const sameLogin = status && status.enabled && status.url === url.replace(/\/+$/, "") && status.user === user;
-    if (!password && !sameLogin) {
+    if (!password && !token && !sameLogin) {
       toast("Password needed", { error: true });
       sync.password.focus();
       return;
@@ -2485,8 +2496,9 @@ function initSync() {
     sync.save.textContent = "Connecting…";
     const res = await send({
       type: MSG.SET_SYNC_CONFIG,
-      // An empty password field keeps the saved one (same server and user only).
-      conn: { url, user, password: password || undefined }
+      // Empty fields keep the saved login (same server and user only). A
+      // device login is kept instead of the password.
+      conn: token ? { url, user, token } : { url, user, password: password || undefined }
     });
     sync.save.disabled = false;
     if (!res || res.ok === false) toast("Couldn't connect: " + ((res && res.error) || "unknown error"), { error: true });
@@ -2495,7 +2507,7 @@ function initSync() {
     refresh();
   };
   sync.save.addEventListener("click", connect);
-  for (const el of [sync.url, sync.user, sync.password]) {
+  for (const el of [sync.url, sync.user, sync.password, sync.token]) {
     el.addEventListener("keydown", (e) => {
       if (e.key === "Enter") connect();
     });
@@ -2530,6 +2542,7 @@ function initSync() {
     if (!ok) return;
     await send({ type: MSG.SET_SYNC_CONFIG, conn: null });
     sync.password.placeholder = "Password";
+    sync.token.placeholder = "Device login";
     await renderSyncStatus();
   });
 }

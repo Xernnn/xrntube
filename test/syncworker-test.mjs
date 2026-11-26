@@ -19,6 +19,11 @@ import vm from "vm";
 //     server, or one that was reset, still merges as a first sync
 //   - the saved password goes only to the server and user it was saved for,
 //     and only over https (plain http just to this machine)
+//   - a device login (xrndev_…) is kept instead of the password and sent as
+//     Bearer; one that isn't the shape is refused before anything is sent
+//   - after a 401, or a 403 to a device login, no timer calls the server
+//     again until Sync now or Reconnect; after a 429, not until the lockout
+//     has passed
 //   - the server's clock is taken over the device's when they differ by more
 //     than a little, and doesn't wobble with each reply; and a change is
 //     never stamped before what it supersedes, so an unblock or a block made
@@ -93,8 +98,8 @@ function area(name, data, onChanged, perItem = 0, refused = new Set(), gates = n
 // The sync server: one document, versioned, behind one login. pause() holds
 // the next GET /state until release(). With `skew` (ms) set, every reply has a
 // Date header that far off this machine's clock, as a real server's would.
-function server({ doc = {}, version = 1, user = "me", password = "pw" } = {}) {
-  const s = { doc: structuredClone(doc), version, puts: [], gate: null, skew: null };
+function server({ doc = {}, version = 1, user = "me", password = "pw", token = null, elsewhere = null, status = null } = {}) {
+  const s = { doc: structuredClone(doc), version, puts: [], gate: null, skew: null, status };
   s.pause = () => {
     let arrived;
     let release;
@@ -115,7 +120,13 @@ function server({ doc = {}, version = 1, user = "me", password = "pw" } = {}) {
     const method = init.method || "GET";
     const path = u.pathname.replace(/^\/xrntube/, "");
     const headers = init.headers || {};
-    if (headers.Authorization !== "Basic " + Buffer.from(`${user}:${password}`).toString("base64")) {
+    if (s.status) return new Response("refused", { status: s.status });
+    // `token`: a device login for this service; `elsewhere`: a right one for other services only.
+    if (elsewhere && headers.Authorization === `Bearer ${elsewhere}`) {
+      return new Response("this device's login doesn't reach xrntube", { status: 403 });
+    }
+    if (headers.Authorization !== "Basic " + Buffer.from(`${user}:${password}`).toString("base64") &&
+        !(token && headers.Authorization === `Bearer ${token}`)) {
       return new Response("login required", { status: 401 });
     }
     const etag = { etag: `"${s.version}"` };
@@ -623,6 +634,90 @@ const agreedAB = { base: { kw: { items: ["a", "b"] }, allow: [], settings: null 
   !res.ok && /https/.test(res.error || "") && !d.requests.length
     ? ok(`a connection saved with http:// to another machine sends nothing: "${res.error}"`)
     : fail("saved http connection: " + JSON.stringify({ res, requests: d.requests }));
+}
+
+// ---- 4b. a device login instead of the password ----
+// The add-on kept the server's password, which is the calendar's, in each
+// browser's storage: a leaked profile opened every calendar. A device login
+// reaches this service alone, and is revoked on its own.
+const TOKEN = "xrndev_1a2b3c4d_" + "Ab3-_".repeat(8) + "xyz";
+const OTHER_TOKEN = "xrndev_5e6f7a8b_" + "Zq9_-".repeat(8) + "abc";
+{
+  const srv = server({ version: 7, doc: kwRecords(["a"]), token: TOKEN });
+  const d = await boot({ servers: { [ORIGIN]: srv }, local: { bt_keywords: { list: [{ p: "a" }], ts: 1000 } } });
+  await connect(d, agreedAB);
+  const res = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_, user: "me", token: " " + TOKEN + "\n" } });
+  const saved = d.local.bt_sync;
+  const st = await d.send({ type: "GET_SYNC_STATUS" });
+  res.ok && d.requests.length && d.requests.every((r) => r.auth === `Bearer ${TOKEN}`) && saved.token === TOKEN && !saved.password &&
+  st.login === "device" && !JSON.stringify(st).includes(TOKEN)
+    ? ok("a device login is kept instead of the password (none is left saved) and sent as Bearer; the status names it, never shows it")
+    : fail("connect with a device login: " + JSON.stringify({ res, requests: d.requests, saved, st }));
+
+  d.requests.length = 0;
+  const kept = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_, user: "me" } });
+  const bad = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_, user: "me", token: "xrndev_nothex!_short" } });
+  kept.ok && d.requests.length && d.requests.every((r) => r.auth === `Bearer ${TOKEN}`) && !bad.ok && d.local.bt_sync.token === TOKEN
+    ? ok("Reconnect with both boxes empty keeps the saved device login; one that isn't xrndev_<id>_<secret> is refused, the saved one stands")
+    : fail("keep or refuse a device login: " + JSON.stringify({ kept, bad, requests: d.requests, token: d.local.bt_sync.token }));
+
+  d.requests.length = 0;
+  const back = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_, user: "me", password: "pw" } });
+  back.ok && d.requests.every((r) => r.auth && r.auth.startsWith("Basic ")) && !d.local.bt_sync.token && d.local.bt_sync.password === "pw"
+    ? ok("a password typed again replaces the device login")
+    : fail("back to the password: " + JSON.stringify({ back, requests: d.requests, saved: d.local.bt_sync }));
+}
+// A refused login isn't tried again by a timer: each try is one more wrong
+// login against the address, and ten lock it out of the server (behind
+// Funnel, every device of the household's). The poll alarm and the debounced
+// push after an edit kept trying every 3 minutes.
+// What a timer does next: a poll here, then a worker woken later (by the
+// poll alarm) from what this one saved, with its last pull long ago.
+const timersAsk = async (d, srv, edit = (c) => c) => {
+  const before = d.requests.length;
+  await d.X.serverSync.onPoll();
+  await new Promise((r) => setTimeout(r, 30));
+  const woken = await boot({ servers: { [ORIGIN]: srv }, local: { bt_sync: edit({ ...structuredClone(d.local.bt_sync), lastPulledAt: 0 }) } });
+  await new Promise((r) => setTimeout(r, 50));
+  return [d.requests.length - before, woken.requests.length];
+};
+{
+  const srv = server({ version: 7, doc: kwRecords(["a"]), password: "new-pw", elsewhere: OTHER_TOKEN });
+  const d = await boot({ servers: { [ORIGIN]: srv } });
+  await connect(d);
+  const refused = await d.send({ type: "SYNC_NOW" });
+  const polled = await timersAsk(d, srv);
+  const st = await d.send({ type: "GET_SYNC_STATUS" });
+  refused.status === 401 && polled.join() === "0,0" && st.lastError === "Sign in again" && refused.error === "Sign in again"
+    ? ok(`after a 401 no poll calls the server again, nor a worker woken later; the status says "${st.lastError}"`)
+    : fail("polls after a 401: " + JSON.stringify({ refused, polled, st }));
+
+  d.requests.length = 0;
+  const now = await d.send({ type: "SYNC_NOW" });
+  const fixed = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_, user: "me", password: "new-pw" } });
+  const resumed = await timersAsk(d, srv);
+  now.status === 401 && d.requests[0].method === "GET" && fixed.ok && resumed[1] >= 1
+    ? ok("Sync now still asks (and is refused); after Reconnect with the new password, the timers go on")
+    : fail("after the login is typed again: " + JSON.stringify({ now, fixed, resumed }));
+
+  // A right device login for other services only.
+  const other = await d.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_, user: "me", token: OTHER_TOKEN } });
+  const after403 = await timersAsk(d, srv);
+  other.status === 403 && other.error === "Device login doesn't reach xrntube" && after403.join() === "0,0"
+    ? ok(`a device login for other services: "${other.error}", and no timer asks again`)
+    : fail("403 to a device login: " + JSON.stringify({ other, after403 }));
+}
+{
+  const srv = server({ version: 7, doc: kwRecords(["a"]), status: 429 });
+  const d = await boot({ servers: { [ORIGIN]: srv } });
+  await connect(d);
+  const locked = await d.send({ type: "SYNC_NOW" });
+  const held = await timersAsk(d, srv);
+  srv.status = null;
+  const passed = await timersAsk(d, srv, (c) => ({ ...c, refused: { ...c.refused, until: 0 } })); // the lockout has passed
+  locked.status === 429 && held.join() === "0,0" && passed[1] >= 1
+    ? ok("after a 429 the timers wait for the lockout to pass, then go on")
+    : fail("polls after a 429: " + JSON.stringify({ locked, held, passed }));
 }
 
 // ---- 5. whose clock ----

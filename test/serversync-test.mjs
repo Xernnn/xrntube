@@ -178,7 +178,7 @@ try {
 
   // ---- wrong password ----
   const bad = await A.send({ type: "SET_SYNC_CONFIG", conn: { url: URL_, user: USER, password: "nope" } });
-  bad && bad.ok === false && /refused/.test(bad.error || "")
+  bad && bad.ok === false && bad.error === "Sign in again"
     ? ok("a wrong password is refused with a readable error")
     : fail("wrong password: " + JSON.stringify(bad));
 
@@ -988,6 +988,30 @@ try {
     } finally {
       second.kill();
     }
+
+    // The options page: a device login pasted into its own box replaces the
+    // saved password, and the device syncs with it.
+    const forA = made(["xrntube"]);
+    tokensFile(dir, other, forA);
+    await A.p.locator(".page-tab[data-page='sync']").click();
+    await A.p.locator("#sync-token").fill(forA.token);
+    await A.p.locator("#sync-save").click();
+    await A.p.waitForFunction(() => document.getElementById("sync-token").placeholder === "Device login (saved)", null, { timeout: 10000 }).catch(() => {});
+    const savedA = (await A.p.evaluate(() => chrome.storage.local.get("bt_sync"))).bt_sync;
+    const page = await A.p.evaluate(() => ({
+      token: document.getElementById("sync-token").value,
+      tokenHint: document.getElementById("sync-token").placeholder,
+      passwordHint: document.getElementById("sync-password").placeholder,
+      status: document.getElementById("sync-status").className
+    }));
+    mark = serverLog.length;
+    const roundA = await A.send({ type: "SYNC_NOW" });
+    await logSettles();
+    savedA.token === forA.token && !savedA.password && !savedA.lastError && roundA.ok &&
+    page.token === "" && page.tokenHint === "Device login (saved)" && page.passwordHint === "Password" && page.status === "sync-status ok" &&
+    /"GET \/xrntube\/state\S* HTTP\/1\.1" (200|304)/.test(serverLog.slice(mark))
+      ? ok("a device login pasted on the options page is kept instead of the password, and the device syncs with it")
+      : fail(`device login from the options page: saved ${JSON.stringify({ ...savedA, token: !!savedA.token, password: !!savedA.password })}, page ${JSON.stringify(page)}, round ${JSON.stringify(roundA)}`);
   }
 
   // Last, since it locks this address out: ten wrong passwords (sent at once, each held 2 s) and
