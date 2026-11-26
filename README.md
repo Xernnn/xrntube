@@ -636,6 +636,7 @@ npm run test:fast  # the tests that need no YouTube (~20s)
 npm test           # full e2e suite (needs npm install once, and network)
 npm run package    # dist/xrntube-<version>.zip
 npm run release    # sign dist/xrntube-<version>.crx and publish it; installed copies update themselves
+sh scripts/icons.sh                    # icons/*.png, every size, from the tile's SVG (needs rsvg-convert)
 npm run test:canary                    # five live tests; notifies the desktop on failure
 node scripts/canary.mjs --install      # …weekly, as a systemd user timer (--uninstall removes it)
 ```
