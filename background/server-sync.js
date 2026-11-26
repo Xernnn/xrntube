@@ -135,7 +135,11 @@
       }
     }
     const sent = Date.now();
-    const r = await fetch(cfg.url.replace(/\/+$/, "") + path, { method, headers, body: payload, cache: "no-store" });
+    // The default cache mode, not "no-store": the server answers every request
+    // Cache-Control: no-store, so nothing is ever kept or reused, and with
+    // "no-store" the browser also skipped its cache of CORS preflights, so
+    // every request was an OPTIONS and then the request, two round trips.
+    const r = await fetch(cfg.url.replace(/\/+$/, "") + path, { method, headers, body: payload });
 
     // Trust the server's clock over the device's for merge timestamps. Date is
     // in whole seconds, so it's read as the middle of its second at the middle

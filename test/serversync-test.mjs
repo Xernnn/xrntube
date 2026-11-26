@@ -381,6 +381,14 @@ try {
   gets.length >= 8 && gets.every((c) => c === "304")
     ? ok(`an idle round is answered "not modified" — ${gets.length} pulls, no list sent`)
     : fail(`idle pulls answered: ${gets.join(" ") || "none"}`);
+  // Each pull is a CORS request with a login, so the browser asks first (OPTIONS) unless it has
+  // the answer cached (Access-Control-Max-Age). Sent with cache: "no-store", it never used the
+  // cache: every poll was two round trips, as many OPTIONS as GETs in the server's log. Now
+  // only a URL it hasn't asked about yet (a new ?since=) costs one, at most one a device here.
+  const preflights = [...serverLog.slice(mark).matchAll(/"OPTIONS \/xrntube\/state(?:\?\S*)? HTTP\/1\.1" 204/g)].length;
+  preflights <= 2
+    ? ok(`an idle round's ${gets.length} pulls cost ${preflights} preflights, not one each`)
+    : fail(`an idle round's ${gets.length} pulls cost ${preflights} preflights (want at most 2)`);
 
   // ---- a poll alongside a pull adds nothing ----
   // The poll alarm mostly finds the worker stopped, and starting it runs
