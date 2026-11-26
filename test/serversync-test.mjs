@@ -5,6 +5,7 @@ import { join } from "path";
 import { createServer } from "http";
 import { connect } from "net";
 import { gzipSync } from "zlib";
+import { createHash, randomBytes } from "crypto";
 import { chromium } from "playwright";
 
 // Sync through your own server, end to end and offline: the real
@@ -44,6 +45,10 @@ import { chromium } from "playwright";
 //     written; one nested up to the limit is taken
 //   - a state.json that can't be read is kept aside, and the newest earlier
 //     copy stands in for it, never an empty document
+//   - a device token (Bearer xrndev_…) signs in as its user; one for other
+//     services gets 403 and isn't counted; wrong ones count like wrong
+//     passwords; a revoked one is refused at once; --device-users names the
+//     users file the tokens sit beside
 // Needs python3 with `bcrypt` (the server's one dependency).
 
 const fail = (m) => {
@@ -905,6 +910,84 @@ try {
     times.every(([status]) => status === 401) && held === 8
       ? ok("twelve wrong logins at once from twelve addresses: eight are held 2 s, the rest answered at once")
       : fail(`held wrong logins: ${JSON.stringify(times)}`);
+  }
+
+  // ---- device logins (Bearer xrndev_…) ----
+  // The add-on held the calendar's password: the server signs in against
+  // Radicale's users file, so a leaked browser profile opened every calendar.
+  // A device token reaches this service and nothing else, and is revoked on
+  // its own. device-tokens.json sits beside the users file (--device-users
+  // names another, the shared one, on the home server).
+  {
+    const made = (services, user = USER) => {
+      const id = randomBytes(4).toString("hex");
+      const secret = randomBytes(32).toString("base64url");
+      return {
+        token: `xrndev_${id}_${secret}`,
+        entry: { id, user, device: `test ${id}`, services, sha256: createHash("sha256").update(secret).digest("hex"), created: 1 }
+      };
+    };
+    const tokensFile = (folder, ...ts) => writeFileSync(join(folder, "device-tokens.json"), JSON.stringify({ tokens: ts.map((t) => t.entry) }));
+    const bearer = (token, addr, base = URL_) =>
+      fetch(`${base}/state`, { headers: { Authorization: `Bearer ${token}`, "X-Forwarded-For": addr } });
+    const here = made(["xrntube"]);
+    const other = made(["xrnwal", "xrnloops"]);
+    tokensFile(dir, here, other);
+
+    const byToken = await bearer(here.token, "198.18.6.1");
+    const byPassword = await fetch(`${URL_}/state`, { headers: { Authorization: "Basic " + Buffer.from(`${USER}:${PASS}`).toString("base64") } });
+    const [tokenBody, passwordBody] = [await byToken.text(), await byPassword.text()];
+    byToken.status === 200 && tokenBody === passwordBody && byToken.headers.get("etag") === byPassword.headers.get("etag")
+      ? ok("a device token signs in as its user: the same document and version the password gets")
+      : fail(`device token: ${byToken.status} ${byToken.headers.get("etag")} vs password ${byPassword.status} ${byPassword.headers.get("etag")}`);
+
+    // Right, but for other services: 403, and never a wrong login.
+    const elsewhere = [];
+    for (let i = 0; i < 12; i++) elsewhere.push(await bearer(other.token, "198.18.6.2").then((r) => r.status));
+    elsewhere.every((s) => s === 403)
+      ? ok("a token for other services only gets 403, twelve times over: it guessed nothing, so the address isn't locked out")
+      : fail(`token for other services: ${elsewhere} (want twelve 403s)`);
+
+    // Wrong ones count like wrong passwords.
+    const wrong = await Promise.all(Array.from({ length: 10 }, () => bearer(made(["xrntube"]).token, "198.18.6.3").then((r) => r.status)));
+    const eleventh = await bearer(here.token, "198.18.6.3").then((r) => r.status);
+    wrong.every((s) => s === 401) && eleventh === 429
+      ? ok("ten wrong device tokens lock the address out like ten wrong passwords (429, the right token too)")
+      : fail(`wrong device tokens: ${wrong}, then the right one ${eleventh} (want ten 401s, then 429)`);
+
+    // Revoked: refused from the very next request, no restart.
+    const seen = JSON.parse(readFileSync(join(dir, "device-seen", "xrntube.json"), "utf8"));
+    tokensFile(dir, other);
+    const revoked = await bearer(here.token, "198.18.6.4").then((r) => r.status);
+    revoked === 401 && here.entry.id in seen
+      ? ok("a revoked token is refused on its next request (401), and when it was last here was written to device-seen/xrntube.json")
+      : fail(`revoked token: ${revoked} (want 401); device-seen: ${JSON.stringify(seen)}`);
+
+    // --device-users: the tokens and users of the shared users file, while the
+    // password stays the one in --users.
+    const shared = join(dir, "xrn-sync");
+    mkdirSync(shared);
+    writeFileSync(join(shared, "users"), readFileSync(join(dir, "users"), "utf8").split("\n")[0] + "\n");
+    const there = made(["xrntube"]);
+    tokensFile(shared, there);
+    const port2 = PORT + 600;
+    const second = spawn("python3", [join(EXT_PATH, "server/xrntube-sync.py"), "--port", String(port2), "--data", join(dir, "data"),
+      "--users", join(dir, "users"), "--device-users", join(shared, "users")], { stdio: ["ignore", "ignore", "ignore"] });
+    try {
+      for (let i = 0; i < 50; i++) {
+        if (await fetch(`http://127.0.0.1:${port2}/health`).then((r) => r.ok, () => false)) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const base2 = `http://127.0.0.1:${port2}/xrntube`;
+      const sharedToken = await bearer(there.token, "198.18.6.5", base2).then((r) => r.status);
+      const besideUsers = await bearer(other.token, "198.18.6.5", base2).then((r) => r.status);
+      const password2 = await fetch(`${base2}/state`, { headers: { Authorization: "Basic " + Buffer.from(`${USER}:${PASS}`).toString("base64") } }).then((r) => r.status);
+      sharedToken === 200 && besideUsers === 401 && password2 === 200
+        ? ok("with --device-users, the tokens beside that file sign in (not those beside --users), and the password is still --users'")
+        : fail(`--device-users: its token ${sharedToken} (want 200), one beside --users ${besideUsers} (want 401), password ${password2} (want 200)`);
+    } finally {
+      second.kill();
+    }
   }
 
   // Last, since it locks this address out: ten wrong passwords (sent at once, each held 2 s) and

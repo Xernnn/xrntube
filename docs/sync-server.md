@@ -41,6 +41,16 @@ matter whether the proxy in front strips it.
   bcrypt, on this one-thread-per-request server, 18 of 30 got through), and
   a login that finds no place waits for the checks in flight rather than
   getting 429.
+- **Device logins**: `Authorization: Bearer xrndev_<id>_<secret>`, a login
+  for one device and the services it names, made and revoked by the server's
+  owner in `device-tokens.json` beside `--device-users` (the shared xrn-sync
+  users file on the home server; `--users` when not given). Only each
+  secret's SHA-256 is kept there. A token for service `xrntube` signs in as
+  its user; one for other services only gets 403, not counted; a wrong or
+  revoked one counts as a wrong password; the file is read again whenever it
+  changes, so a revoke counts from the next request. With a token in the
+  add-on, a leaked browser profile holds a login to this service alone,
+  not the calendar's password.
 - **CORS**: for extension origins only — `chrome-extension://<ID>` and
   `moz-extension://<uuid>`, each named back in `Access-Control-Allow-Origin`
   (with `Vary: Origin`); `Authorization` / `If-Match` allowed, `ETag` and
